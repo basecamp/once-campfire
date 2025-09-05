@@ -22,6 +22,9 @@ would deploy multiple instances of the application.
 
 ## Deploying with Docker
 
+WARNING: On the setup page, entered email address will be exposed on the login page avalible unauthenticated for everybody.
+Plase use a fake email or a aliased email to prevent spam.
+
 Campfire's Docker image contains everything needed for a fully-functional,
 single-machine deployment. This includes the web app, background jobs, caching,
 file serving, and SSL.
