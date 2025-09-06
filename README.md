@@ -19,11 +19,12 @@ would deploy multiple instances of the application.
 
     bin/setup
     bin/rails server
+## Email Address Exposure Warning
+
+During the initial setup, the email address you enter will be displayed on the login page, which is publicly accessible to anyone, including unauthenticated users.  
+To protect your privacy and avoid potential spam, we strongly recommend using a disposable or aliased email address during setup.
 
 ## Deploying with Docker
-
-WARNING: On the setup page, entered email address will be exposed on the login page avalible unauthenticated for everybody.
-Plase use a fake email or a aliased email to prevent spam.
 
 Campfire's Docker image contains everything needed for a fully-functional,
 single-machine deployment. This includes the web app, background jobs, caching,
