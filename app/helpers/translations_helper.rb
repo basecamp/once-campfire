@@ -30,7 +30,7 @@ module TranslationsHelper
         concat image_tag("globe.svg", size: 20, aria: { hidden: "true" }, class: "color-icon")
         concat tag.span("Translate", class: "for-screen-reader")
       end +
-      tag.div(class: "lanuage-list-menu shadow", data: { popup_target: "menu" }) do
+      tag.div(class: "language-list-menu shadow", data: { popup_target: "menu" }) do
         translations_for(translation_key)
       end
     end

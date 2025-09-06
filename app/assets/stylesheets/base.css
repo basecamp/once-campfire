@@ -226,7 +226,7 @@ pre {
 }
 
 /* Language translations */
-.lanuage-list-menu {
+.language-list-menu {
   --max-width: 40ch;
 
   background-color: var(--color-border);
