@@ -17,6 +17,13 @@ would deploy multiple instances of the application.
 
 ## Running in development
 
+### Prerequisites
+- Ruby 3.4.5+
+    - `brew install ruby`
+- Redis
+    - `brew install redis`
+
+### Run the local development server
     bin/setup
     bin/rails server
 
@@ -34,7 +41,7 @@ To configure additional features, you can set the following environment variable
 - `DISABLE_SSL` - alternatively, set `DISABLE_SSL` to serve over plain HTTP
 - `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` - set these to a valid keypair to
   allow sending Web Push notifications. You can generate a new keypair by running
-  `/script/admin/create-vapid-key`
+  `script/admin/create-vapid-key`
 - `SENTRY_DSN` - to enable error reporting to sentry in production, supply your
   DSN here
 
