@@ -19,6 +19,10 @@ would deploy multiple instances of the application.
 
     bin/setup
     bin/rails server
+## Email Address Exposure Warning
+
+During the initial setup, the email address you enter will be displayed on the login page, which is publicly accessible to anyone, including unauthenticated users.  
+To protect your privacy and avoid potential spam, we strongly recommend using a disposable or aliased email address during setup.
 
 ## Deploying with Docker
 
