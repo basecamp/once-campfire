@@ -4,6 +4,17 @@
   --sidebar-tools-height: calc(var(--block-space) + var(--btn-size) + (var(--block-space) * 2));
 }
 
+.sidebar__collapse {
+  position: absolute;
+  top: var(--block-space);
+  right: var(--sidebar-inline-space);
+  z-index: 999;
+  
+  @media (max-width: 100ch) {
+    display: none;
+  }
+}
+
 .sidebar__container {
   block-size: 100dvh;
   max-block-size: 100dvh;

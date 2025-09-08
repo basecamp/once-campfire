@@ -20,6 +20,10 @@ body {
       --sidebar-width: 26vw;
     }
   }
+  
+  &.sidebar:has(#sidebar.collapsed) {
+    --sidebar-width: 50px;
+  }
 }
 
 #app-logo {
@@ -97,6 +101,13 @@ body {
     @media (max-width: 100ch) {
       transform: translate(0);
     }
+  }
+  
+  &.collapsed {
+    width: 50px !important;
+    
+    * { visibility: hidden; }
+    .sidebar__collapse, .sidebar__collapse * { visibility: visible; }
   }
 }
 

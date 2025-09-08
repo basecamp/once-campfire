@@ -1,4 +1,7 @@
 <%= sidebar_turbo_frame_tag do %>
+  <button class="btn sidebar__collapse" onclick="document.getElementById('sidebar').classList.toggle('collapsed')">
+    <%= image_tag "menu.svg", size: 20, aria: { hidden: "true" } %>
+  </button>
   <%= turbo_stream_from :rooms %>
   <%= turbo_stream_from Current.user, :rooms %>
 
