@@ -136,6 +136,11 @@
     -webkit-mask-image: none;
     mask-image: none;
     padding-inline-end: var(--sidebar-inline-space);
+    
+    /* Prevent overlap with sidebar toggle button on desktop */
+    @media (min-width: 100ch) {
+      padding-inline-end: calc(var(--sidebar-inline-space) + 3.5em);
+    }
   }
 }
 

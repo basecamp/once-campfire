@@ -2,6 +2,11 @@
 .composer {
   flex: none;
   padding: var(--block-space-half) calc(var(--inline-space) + 1vw);
+  
+  /* Prevent overlap with sidebar toggle button on desktop */
+  @media (min-width: 100ch) {
+    padding-inline-end: calc(var(--inline-space) + 4em);
+  }
 }
 
 .composer__input-hint,
