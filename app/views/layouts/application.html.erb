@@ -57,9 +57,11 @@
     </main>
 
     <!-- Desktop toggle button must be outside sidebar to avoid transform inheritance -->
-    <button class="btn sidebar__toggle sidebar__toggle--desktop" onclick="let s=document.getElementById('sidebar');s.classList.toggle('open');if(window.matchMedia('(min-width: 100ch)').matches)localStorage.setItem('sidebar-open',s.classList.contains('open'))">
-      <%= image_tag "menu.svg", size: 20, aria: { hidden: "true" } %>
-    </button>
+    <% if Current.user %>
+      <button class="btn sidebar__toggle sidebar__toggle--desktop" onclick="let s=document.getElementById('sidebar');s.classList.toggle('open');if(window.matchMedia('(min-width: 100ch)').matches)localStorage.setItem('sidebar-open',s.classList.contains('open'))">
+        <%= image_tag "menu.svg", size: 20, aria: { hidden: "true" } %>
+      </button>
+    <% end %>
 
     <aside id="sidebar" data-controller="toggle-class" data-toggle-class-toggle-class="open">
       <%= yield :sidebar %>
