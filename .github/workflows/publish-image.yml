@@ -6,8 +6,6 @@ on:
       - main
     tags:
       - 'v*'
-  release:
-    types: [published]
   pull_request:
   workflow_dispatch:
 
@@ -79,7 +77,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           flavor: |
-            latest=auto
+            latest=false
             suffix=-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=${{ env.SOURCE_URL }}
@@ -99,8 +97,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max
-          sbom: true
-          provenance: true
+          sbom: false
+          provenance: false
 
       - name: Attest image provenance (per-arch)
         if: github.event_name != 'pull_request'
@@ -108,7 +106,7 @@ jobs:
         with:
           subject-name: ${{ steps.vars.outputs.canonical }}
           subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
+          push-to-registry: false
 
   manifest:
     name: Create multi-arch manifest and sign
@@ -151,8 +149,9 @@ jobs:
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           flavor: |
-            latest=auto
+            latest=false
           labels: |
             org.opencontainers.image.source=${{ env.SOURCE_URL }}
 
@@ -166,17 +165,22 @@ jobs:
           while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             echo "Creating manifest for $tag"
+            src_tag="$tag"
+            if [[ "$tag" == *:latest && "${GITHUB_REF}" == refs/tags/* ]]; then
+              ref="${GITHUB_REF#refs/tags/}"
+              src_tag="${tag%:latest}:$ref"
+            fi
             if [ -n "${IMAGE_DESCRIPTION:-}" ]; then
               docker buildx imagetools create \
                 --tag "$tag" \
                 --annotation "index:org.opencontainers.image.description=${IMAGE_DESCRIPTION}" \
-                "${tag}-amd64" \
-                "${tag}-arm64"
+                "${src_tag}-amd64" \
+                "${src_tag}-arm64"
             else
               docker buildx imagetools create \
                 --tag "$tag" \
-                "${tag}-amd64" \
-                "${tag}-arm64"
+                "${src_tag}-amd64" \
+                "${src_tag}-arm64"
             fi
           done <<< "$tags"
 
