@@ -19,7 +19,7 @@ module User::Bot
 
     def authenticate_bot(bot_key)
       bot_id, bot_token = bot_key.split("-")
-      active.find_by(id: bot_id, bot_token: bot_token)
+      active_bots.find_by(id: bot_id, bot_token: bot_token)
     end
 
     def generate_bot_token

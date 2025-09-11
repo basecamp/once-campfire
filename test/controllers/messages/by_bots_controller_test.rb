@@ -40,6 +40,17 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "create can't be abused to post messages as any user" do
+    user = users(:kevin)
+    bot_key = "#{user.id}-"
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(rooms(:bender_and_kevin), bot_key), params: "Hello 👋!"
+    end
+
+    assert_response :redirect
+  end
+
   test "denied index" do
     get room_messages_url(@room, bot_key: users(:bender).bot_key, format: :json)
     assert_response :forbidden
