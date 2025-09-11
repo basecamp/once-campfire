@@ -27,7 +27,7 @@ module ApplicationHelper
   end
 
   def link_back_to(destination)
-    link_to destination, class: "btn" do
+    link_to destination, class: "btn", data: { back_button: true } do
       image_tag("arrow-left.svg", aria: { hidden: "true" }, size: 20) +
       tag.span("Go Back", class: "for-screen-reader")
     end
