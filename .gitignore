@@ -42,3 +42,6 @@ app/assets/builds/*
 
 # Ignore our exported zipfiles
 /*.zip
+
+# Ignore Identifier files, created by running tests
+/*.Identifier
