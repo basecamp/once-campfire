@@ -33,7 +33,7 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 # processes).
 #
 worker_count = (Concurrent.processor_count * 0.666).ceil
-workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
+workers ENV.fetch("WEB_CONCURRENCY") { Rails.env.development? ? 1 : worker_count }
 
 ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
 
