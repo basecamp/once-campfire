@@ -37,3 +37,7 @@ externalPort = 80
 [[ports]]
 localPort = 34093
 externalPort = 3000
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bin/rails", "server", "-b", "0.0.0.0", "-p", "5000"]
