@@ -44,6 +44,7 @@ export default class Unfurler {
     }
   }
 
+
   #editorElementPermitsAttribute(element, attributeName) {
     if (element.hasAttribute("data-permitted-attributes")) {
       return Array.from(element.getAttribute("data-permitted-attributes").split(" ")).includes(attributeName)
