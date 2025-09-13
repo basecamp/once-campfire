@@ -1,11 +1,11 @@
 namespace :imports do
   desc "Import Slack standard export from PATH"
   task slack_export: :environment do
-    path = ENV["PATH"]
+    path = ENV["EXPORT_PATH"]
     
     if path.blank?
-      puts "Usage: rake imports:slack_export PATH=/path/to/slack/export"
-      puts "Example: rake imports:slack_export PATH=/tmp/slack-export"
+      puts "Usage: rake imports:slack_export EXPORT_PATH=/path/to/slack/export"
+      puts "Example: rake imports:slack_export EXPORT_PATH=/tmp/slack-export"
       exit 1
     end
     

@@ -1,5 +1,3 @@
-require_relative "../../../../lib/imports/slack/export_reader"
-
 module Imports
   module Slack
     class Importer
@@ -8,7 +6,7 @@ module Imports
       def initialize(path:, creator:)
         @path = Pathname.new(path)
         @creator = creator
-        @export_reader = ExportReader.new(path)
+        @export_reader = Imports::Slack::ExportReader.new(path)
         @stats = {
           users_created: 0,
           users_updated: 0,
