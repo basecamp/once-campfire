@@ -1,0 +1,235 @@
+Engineering Design Document — Slack Export Import (v0, no‑API) for Campfire
+
+Author: Jai / Eng
+
+Date: 2025‑09‑12
+Status: Draft for PR planning
+Target PRs: (1) Tests + docs (already shipped) (2) Importer v0 (CLI)
+Scope: User‑run, offline import of Slack standard export (JSON). No external APIs. Text‑first; attachments deferred.
+
+⸻
+
+1) Executive Summary
+
+Problem: Migrate initial histories from Slack into Campfire without OAuth/API complexity.
+Decision: Implement a CLI importer that consumes Slack’s export ZIP (or extracted dir), maps channels/users/messages into Campfire’s schema, and avoids side‑effects (push/broadcast) during bulk load.
+Non‑Goals: Real‑time sync; Teams/Graph; reactions/files parity; delta updates.
+
+Why now: Bootstraps adoption; validates domain mappings; sets seams for v1 (API syncing) with minimal risk.
+
+⸻
+
+2) Prior Art & Codebase Patterns (reverse‑engineered wisdom)
+
+We do not have .git history in the uploaded archive. Use the Owner Discovery commands below in the real repo to attribute authorship and find precedents. Meanwhile, code structure shows clear conventions:
+	•	Domain centers on Room and Message
+	•	Message after‑create triggers: after_create_commit -> { room.receive(self) }  → fanned out via Room::MessagePusher and Room::PushMessageJob.
+	•	Rich content via ActionText: has_rich_text :body on Message.
+	•	Attachments via Active Storage concern: Message::Attachment (variants, previews).
+	•	Real‑time via Action Cable (room_channel.rb), with Stimulus controllers for UI (app/javascript/controllers/*).
+	•	Membership involvement defaults to “mentions” to reduce noise (Room#default_involvement).
+	•	Namespacing & seams: jobs under app/jobs/room/*, service object Room::MessagePusher, message concerns in app/models/message/*. Follow this style for new features: Imports::Slack::*.
+
+Inference (wisdom to preserve):
+	•	Keep side‑effects out of core models; orchestrate via small service objects and jobs.
+	•	Prefer default‑quiet notifications (involvement = “mentions”).
+	•	Use inquiry pattern for simple state (Message#content_type).
+	•	Keep controllers thin, push domain work into models/services.
+
+Owner Discovery (run locally):
+
+# Top authors per relevant area
+git shortlog -sne app/models/message.rb app/controllers/messages_controller.rb \
+  app/channels/room_channel.rb app/jobs/room/push_message_job.rb app/models/room/message_pusher.rb
+
+# File churn (12 months) to find hotspots
+git log --format=format: --name-only --since=12.month | egrep -v '^\s*$' | sort | uniq -c | sort -nr | head -50
+
+# Fine‑grained authorship
+git blame app/models/message.rb | cut -d'(' -f1 | sort | uniq -c | sort -nr | head -10
+
+Paste the results into Appendix A and use them to request review from likely owners.
+
+⸻
+
+3) Data Model & Schema Compatibility
+
+Source: Slack standard export (users.json, channels.json, and per‑channel directories with daily message JSON files).
+Target: Campfire schema inferred from migrations.
+
+3.1 Key Tables (Campfire)
+	•	users: name (req), email_address (unique, nullable), password_digest (NOT NULL, validations disabled), active (bool), role.
+	•	rooms: name (nullable), type (NOT NULL, STI → defaults to Room), creator_id (NOT NULL).
+	•	memberships: room_id, user_id (unique pair), involvement (default "mentions"), connections, connected_at, unread_at.
+	•	messages: room_id, creator_id, client_message_id (NOT NULL), timestamps; rich text in action_text_rich_texts linked to Message.
+	•	boosts (reactions analogue): message_id, booster_id, content (≤16 chars).
+	•	active_storage_ / action_text_*:* for attachments and rich text.
+
+3.2 Field Mapping (v0)
+
+Slack	Campfire	Notes
+channels[].name	rooms.name	For DMs/privates, derive a name (e.g., dm-<userA>-<userB>).
+(implicit)	rooms.type	Leave default class Room (STI uses model name).
+channels[].members[]	memberships	Create membership rows; set involvement = "mentions".
+users[].profile.real_name or name	users.name	Required.
+users[].profile.email	users.email_address	Deduplicate; allow NULL if missing/duplicate.
+(generated)	users.password_digest	Set to empty string "" (allowed) or random; no validations enforced.
+messages[].text	messages.body (ActionText)	Convert Slack mrkdwn to HTML minimal subset; see §5.2.
+messages[].user	messages.creator_id	Map via Slack user id → Campfire User. Fallback to a placeholder user.
+messages[].ts	messages.created_at/updated_at	Convert ts (e.g., "1700000000.123") via Time.at.
+messages[].client_msg_id or composed	messages.client_message_id	Use Slack client_msg_id; else "slack:<channel>:<ts>".
+messages[].files[]	(defer)	v0: append link text to body; file binaries skipped.
+messages[].reactions[]	boosts	v1+: map name → content (≤16 chars).
+thread_ts, parent_user_id	(defer)	v0: flatten; preserve with a small preface like “(thread)”.
+
+Compatibility Notes:
+	•	No account scoping on Room/Message → safe for single‑tenant default.
+	•	Uniqueness: memberships (room_id,user_id) unique; ensure idempotency.
+	•	Presence: rooms.creator_id required → use current admin user as room creator during import.
+
+⸻
+
+4) Design (v0 CLI importer, no API)
+
+4.1 Overview
+
+Implement a user‑run Rake task that:
+	1.	Parses Slack export directory or ZIP,
+	2.	Upserts Users (by email/name),
+	3.	Creates Rooms,
+	4.	Creates Memberships,
+	5.	Streams Messages into Message with ActionText body,
+	6.	Avoids side‑effects (broadcasts/push) during bulk load,
+	7.	Is idempotent.
+
+4.2 Structure (follow repo conventions)
+
+lib/imports/slack/export_reader.rb          # reads users/channels/messages
+app/services/imports/slack/normalizer.rb    # mrkdwn→HTML, id mapping helpers
+app/services/imports/slack/importer.rb      # orchestrates user/room/message creation
+lib/tasks/imports.rake                      # rake imports:slack_export[PATH]
+
+	•	Service object style mirrors Room::MessagePusher (small, testable).
+	•	Jobs not required for v0 (offline). Add later for UI import.
+
+4.3 Idempotency
+	•	Users: upsert by email_address if present else by (name, active=true) heuristic; avoid changing existing names.
+	•	Rooms: upsert by canonicalized channel name.
+	•	Messages: unique on (room_id, client_message_id); if exists, skip.
+
+4.4 Side‑effects Suppression
+	•	Import in a maintenance window (Rails server not broadcasting).
+	•	Optionally wrap via a thread‑local flag:
+	•	Add Current.importing = true; guard after_create_commit in Message with unless Current.importing.
+	•	Alternative (no model change): use insert_all for messages + insert into action_text_rich_texts (skips callbacks). Prefer first approach for clarity.
+
+4.5 Error Handling
+	•	Skip malformed messages, log to log/import.log with channel + ts.
+	•	Continue on per‑message failures; summarize counts per channel.
+
+⸻
+
+5) Implementation Plan
+
+5.1 Rake Task (skeleton)
+
+# lib/tasks/imports.rake
+namespace :imports do
+  desc "Import Slack standard export from PATH"
+  task slack_export: :environment do
+    path = ENV["PATH"] or abort "Usage: rake imports:slack_export PATH=/abs/dir"
+    Imports::Slack::Importer.new(path:, creator: User.first).run
+  end
+end
+
+5.2 Importer (outline)
+
+# app/services/imports/slack/importer.rb
+module Imports
+  module Slack
+    class Importer
+      def initialize(path:, creator:)
+        @path, @creator = Pathname.new(path), creator
+      end
+
+      def run
+        ActiveRecord::Base.transaction do
+          Current.importing = true
+          upsert_users
+          upsert_rooms_and_memberships
+          import_messages
+        ensure
+          Current.importing = false
+        end
+      end
+
+      # … implement helpers using ExportReader + Normalizer …
+    end
+  end
+end
+
+Mrkdwn → HTML: start minimal: bold/italic/code, links, mentions (<@U123> → user name). Leave advanced blocks (lists/quotes) for v1.
+
+5.3 Tests
+	•	Unit: Imports::Slack::NormalizerTest (ts → Time, mrkdwn transforms, id mapping).
+	•	Service: small fixture with 1 channel / 2 users / 3 messages → verifies users/rooms/memberships/messages counts and idempotency.
+
+5.4 CLI UX
+	•	rake imports:slack_export PATH=/abs/slack_export
+	•	Output per channel: created/skipped/errors; total runtime.
+
+⸻
+
+6) Risks & Mitigations
+	•	Broadcast storm / unread flags: Guard callback with Current.importing or import while server is down. After import, Membership.update_all(unread_at: nil) to clear.
+	•	Big exports: Stream files; batch insert_all where safe; otherwise per‑message create! for ActionText.
+	•	Identity collisions: Duplicate emails → set email_address=nil and log. No password needed; has_secure_password validations: false.
+	•	Attachments: v0 skip; append URLs as plain text if present (many Slack export URLs require auth anyway).
+
+⸻
+
+7) Rollout Plan
+	1.	Local dry‑run on a small export; confirm counts.
+	2.	Staging import; validate rooms/messages display; spot‑check ActionText.
+	3.	Production import window (no users online) with logs enabled.
+	4.	Post‑import: rebuild search index if applicable; clear unread_at.
+
+Rollback: importer is additive; to roll back, delete imported Rooms (cascades membership/messages) identified by a tag (e.g., prefix room names with slack- during test).
+
+⸻
+
+8) Future Work (v1+)
+	•	Slack API OAuth importer: selective channels, delta sync, files download with auth headers, reactions → Boost.
+	•	Teams/Microsoft Graph importer: app registration, delta queries, id mapping; similar structure Imports::Teams::*.
+	•	Web UI for imports (progress, resume, error drill‑down) + background jobs.
+
+⸻
+
+9) Ownership & Reviewers
+
+Action (repo with history):
+	•	Run the Owner Discovery commands; paste into Appendix A.
+	•	Request review from top authors across message.rb, messages_controller.rb, room/message_pusher.rb, room_channel.rb.
+	•	Ask for guidance on: callback suppression pattern preference; mrkdwn fidelity; membership involvement default.
+
+⸻
+
+Appendix A — Commit History & Ownership (to fill)
+	•	git shortlog -sne … → paste here
+	•	git blame … top 10 → paste here
+	•	Hotspots (12 months) → paste here
+
+Appendix B — Schema Snapshots
+
+(From migrations in the uploaded archive; validate against your current schema before shipping)
+	•	messages: room_id (req), creator_id (req), client_message_id (req), timestamps.
+	•	rooms: name, type (req), creator_id (req).
+	•	memberships: (room_id,user_id) unique, involvement default "mentions".
+	•	users: name (req), email_address (unique, nullable), password_digest (NOT NULL), active (bool).
+	•	boosts: content ≤16 chars.
+	•	ActionText/ActiveStorage present.
+
+Appendix C — PR Breakdown
+	•	PR #1 (done): Characterization tests + onboarding docs.
+	•	PR #2: Add Current.importing guard (1 line in Message), importer skeleton, Rake task, tests, docs.
+	•	PR #3 (opt.): Minimal mrkdwn improvements + idempotency hardening.
