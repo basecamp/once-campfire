@@ -285,6 +285,7 @@ GEM
     rdoc (6.14.2)
       erb
       psych (>= 4.0.0)
+    redcarpet (3.6.1)
     redis (5.4.1)
       redis-client (>= 0.22.0)
     redis-client (0.25.2)
@@ -423,6 +424,7 @@ DEPENDENCIES
   puma (~> 6.6)
   rails!
   rails_autolink
+  redcarpet
   redis (~> 5.4)
   resque (~> 2.7.0)
   resque-pool (~> 0.7.1)
