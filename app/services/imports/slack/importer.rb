@@ -1,3 +1,5 @@
+require "imports/slack/export_reader"
+
 module Imports
   module Slack
     class Importer
