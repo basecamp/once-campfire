@@ -9,7 +9,7 @@ class Message < ApplicationRecord
   has_rich_text :body
 
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
-  after_create_commit -> { room.receive(self) }
+  after_create_commit -> { room.receive(self) }, unless: -> { Current.importing }
 
   scope :ordered, -> { order(:created_at) }
   scope :with_creator, -> { includes(:creator) }
