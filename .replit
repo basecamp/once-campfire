@@ -4,4 +4,4 @@ expertMode = true
 
 [nix]
 channel = "stable-25_05"
-packages = ["libyaml", "openssl", "libffi", "zlib", "pkg-config", "autoconf", "automake", "libtool"]
+packages = ["libyaml", "openssl", "libffi", "zlib", "pkg-config", "autoconf", "automake", "libtool", "sqlite"]
