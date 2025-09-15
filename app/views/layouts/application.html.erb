@@ -15,6 +15,7 @@
 
     <%= tag.meta name: "vapid-public-key", content: Rails.configuration.x.vapid.public_key %>
     <%= tag.meta name: "turbo-prefetch", content: "true" %>
+    <%= tag.meta name: "enable-url-unfurling", content: ENV['ENABLE_URL_UNFURLING'] || 'false' %>
 
     <%= tag.link rel: "manifest", href: webmanifest_path(format: :json) %>
     <%= tag.link rel: "icon", href: fresh_account_logo_path, type: "image/png" %>

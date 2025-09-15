@@ -14,10 +14,35 @@ export default class OpengraphEmbedOperation {
   }
 
   perform() {
+    // Check if unfurling is enabled via environment variable
+    if (!this.#isUnfurlingEnabled()) {
+      console.log("URL unfurling is disabled via ENABLE_URL_UNFURLING environment variable")
+      return Promise.resolve()
+    }
+
+    console.log(`Attempting to unfurl URL: ${this.url}`)
+    
     return this.#createOpenGraphMetadataRequest()
-      .then(response => response.json)
-      .then(this.#insertOpengraphAttachment.bind(this))
-      .catch(() => null)
+      .then(response => {
+        console.log(`Unfurl response for ${this.url}:`, response.status, response.statusText)
+        
+        if (!response.ok) {
+          console.warn(`Failed to fetch OpenGraph metadata for ${this.url}: ${response.status} ${response.statusText}`)
+          return null
+        }
+        return response.json
+      })
+      .then(data => {
+        if (data) {
+          console.log(`Successfully unfurled ${this.url}:`, data)
+          this.#insertOpengraphAttachment(data)
+        } else {
+          console.log(`No data returned for ${this.url}`)
+        }
+      })
+      .catch(error => {
+        console.warn(`Error unfurling URL ${this.url}:`, error)
+      })
   }
 
   abort() {
@@ -61,20 +86,37 @@ export default class OpengraphEmbedOperation {
   }
 
   #generateOpengraphEmbedHTML(embed) {
+    const escapedTitle = this.#escapeHtml(truncateString(embed.title, 560))
+    const escapedDescription = this.#escapeHtml(truncateString(embed.description, 560))
+    const escapedImage = this.#escapeHtml(embed.image)
+    
     return `<actiontext-opengraph-embed class="${this.#isTwitterAvatar(embed) ? UNFURLED_TWITTER_AVATAR_CSS_CLASS : ''}">
       <div class="og-embed">
         <div class="og-embed__content">
-          <div class="og-embed__title">${truncateString(embed.title, 560)}</div>
-          <div class="og-embed__description">${truncateString(embed.description, 560)}</div>
+          <div class="og-embed__title">${escapedTitle}</div>
+          <div class="og-embed__description">${escapedDescription}</div>
         </div>
         <div class="og-embed__image">
-          <img src="${embed.image}" class="image" alt="" />
+          <img src="${escapedImage}" class="image" alt="" />
         </div>
       </div>
     </actiontext-opengraph-embed>`
   }
 
+  #escapeHtml(text) {
+    const div = document.createElement('div')
+    div.textContent = text
+    return div.innerHTML
+  }
+
   #isTwitterAvatar(embed) {
     return embed.image.startsWith(TWITTER_AVATAR_URL_PREFIX)
+  }
+
+  #isUnfurlingEnabled() {
+    // Check if unfurling is enabled via environment variable
+    // This is set by the Rails application in a meta tag
+    const metaTag = document.querySelector('meta[name="enable-url-unfurling"]')
+    return metaTag && metaTag.getAttribute('content') === 'true'
   }
 }
