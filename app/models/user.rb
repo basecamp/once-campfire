@@ -52,6 +52,57 @@ class User < ApplicationRecord
     close_remote_connections reconnect: true
   end
 
+  def lock_out!
+    transaction do
+      close_remote_connections
+      sessions.delete_all
+      update!(active: false, email_address: deactived_email_address)
+    end
+  end
+
+  def unlock!
+    transaction do
+      update!(active: true)
+      # Restore original email if it was deactivated
+      if email_address&.include?("-deactivated-")
+        original_email = email_address.gsub(/-deactivated-[^@]+@/, "@")
+        update!(email_address: original_email) if original_email != email_address
+      end
+    end
+  end
+
+  def censor_messages!
+    transaction do
+      messages.find_each do |message|
+        if message.body.present?
+          message.body.update!(body: "[Message content removed by administrator]")
+        end
+      end
+    end
+  end
+
+  def admin_delete!(censor_messages: false)
+    transaction do
+      if censor_messages
+        censor_messages!
+      else
+        messages.destroy_all
+      end
+
+      # Remove from all rooms except direct rooms
+      memberships.without_direct_rooms.delete_all
+
+      # Clean up other associations
+      push_subscriptions.delete_all
+      searches.delete_all
+      sessions.delete_all
+      boosts.destroy_all
+
+      # Deactivate the user
+      update!(active: false, email_address: deactived_email_address)
+    end
+  end
+
   private
     def grant_membership_to_open_rooms
       Membership.insert_all(Rooms::Open.pluck(:id).collect { |room_id| { room_id: room_id, user_id: id } })
