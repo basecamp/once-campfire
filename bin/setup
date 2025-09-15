@@ -1,10 +1,28 @@
 #!/usr/bin/env ruby
 require "fileutils"
+require "socket"
+require "timeout"
 
+REDIS_PORT = 6379
+REDIS_HOST = "localhost"
 APP_ROOT = File.expand_path("..", __dir__)
 
 def system!(*args)
   system(*args, exception: true)
+end
+
+def installed?(tool)
+  system("command -v #{tool} > /dev/null 2>&1")
+end
+
+def redis_running?
+  Timeout::timeout(3) do
+    socket = TCPSocket.new(REDIS_HOST, REDIS_PORT)
+    socket.close
+    return true
+  end
+rescue Errno::ECONNREFUSED, Errno::EHOSTUNREACH, SocketError, Timeout::Error
+  return false
 end
 
 if ENV["RAILS_ENV"] == "production"
@@ -15,6 +33,15 @@ end
 FileUtils.chdir APP_ROOT do
   puts "== Installing dependencies =="
   system "mise install"
+
+  if installed?("brew")
+    system "brew install sqlite ffmpeg"
+  elsif installed?("pacman")
+    system "sudo pacman -S --noconfirm --needed sqlite ffmpeg"
+  elsif installed?("apt")
+    system "sudo apt-get install --no-install-recommends -y libsqlite3-0 ffmpeg"
+  end
+
   system("bundle check") || system!("bundle install")
 
   puts "\n== Preparing database =="
@@ -23,6 +50,16 @@ FileUtils.chdir APP_ROOT do
     system! "bin/rails db:reset"
   end
   system! "bin/rails db:prepare"
+
+  unless redis_running?
+    if installed?("docker")
+      system("docker run -d --name campfire-redis -p #{REDIS_PORT}:#{REDIS_PORT} redis:7")
+    else
+      puts "Couldn't start Redis"
+      puts "Install either docker or redis and then run this command again"
+      exit 1
+    end
+  end
 
   puts "\n== Removing old logs and tempfiles =="
   system! "bin/rails log:clear tmp:clear"
