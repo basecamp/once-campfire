@@ -1,0 +1,39 @@
+modules = ["ruby-3.2", "web", "nodejs-20"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+packages = ["libyaml", "openssl", "libffi", "zlib", "pkg-config", "autoconf", "automake", "libtool", "sqlite"]
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Campfire Server"
+
+[[workflows.workflow]]
+name = "Campfire Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "unset DATABASE_URL && bin/rails server -b 0.0.0.0 -p 5000"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bin/rails", "server", "-b", "0.0.0.0", "-p", "5000"]
