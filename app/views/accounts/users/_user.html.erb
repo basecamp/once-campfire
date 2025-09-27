@@ -17,6 +17,11 @@
           <%= image_tag "crown.svg", size: 20, aria: { hidden: "true" } %>
           <%= form.check_box :role, { data: { action: "form#submit" }, hidden: true, id: dom_id(user, :role) }, "administrator", "member" %>
         </label>
+      
+        <label class="btn txt-small flex-item-no-shrink" for="<%= dom_id(user, :banned) %>">
+          <%= image_tag "lock.svg", size: 25, aria: { hidden: "true" } %> 
+          <%= form.check_box :banned, { data: { action: "form#submit" }, hidden: true, id: dom_id(user, :banned) } %>
+        </label>
       <% end %>
     <% end %>
 

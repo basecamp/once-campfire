@@ -1,6 +1,9 @@
 class User < ApplicationRecord
   include Avatar, Bot, Mentionable, Role, Transferable
 
+  # Ban flag for user
+  attribute :banned, :boolean, default: false
+
   has_many :memberships, dependent: :delete_all
   has_many :rooms, through: :memberships
 
