@@ -132,11 +132,14 @@ GEM
       railties
     addressable (2.8.7)
       public_suffix (>= 2.0.2, < 7.0)
+    aes_key_wrap (1.1.0)
     ast (2.4.3)
+    attr_required (1.0.2)
     base64 (0.3.0)
     bcrypt (3.1.20)
     benchmark (0.4.1)
     bigdecimal (3.2.2)
+    bindata (2.5.1)
     brakeman (7.1.0)
       racc
     builder (3.3.0)
@@ -161,10 +164,20 @@ GEM
       irb (~> 1.10)
       reline (>= 0.3.8)
     drb (2.2.3)
+    email_validator (2.2.4)
+      activemodel
     erb (5.0.2)
     erubi (1.13.1)
     faker (3.5.2)
       i18n (>= 1.8.11, < 2)
+    faraday (2.14.0)
+      faraday-net_http (>= 2.0, < 3.5)
+      json
+      logger
+    faraday-follow_redirects (0.4.0)
+      faraday (>= 1, < 3)
+    faraday-net_http (3.4.1)
+      net-http (>= 0.5.0)
     ffi (1.17.2-aarch64-linux-gnu)
     ffi (1.17.2-arm64-darwin)
     ffi (1.17.2-x86_64-darwin)
@@ -175,6 +188,7 @@ GEM
     globalid (1.2.1)
       activesupport (>= 6.1)
     hashdiff (1.2.0)
+    hashie (5.0.0)
     i18n (1.14.7)
       concurrent-ruby (~> 1.0)
     image_processing (1.14.0)
@@ -189,6 +203,13 @@ GEM
       actionview (>= 7.0.0)
       activesupport (>= 7.0.0)
     json (2.13.2)
+    json-jwt (1.17.0)
+      activesupport (>= 4.2)
+      aes_key_wrap
+      base64
+      bindata
+      faraday (~> 2.0)
+      faraday-follow_redirects
     jwt (3.1.2)
       base64
     kredis (1.8.0)
@@ -218,6 +239,8 @@ GEM
     multi_json (1.17.0)
     mustermann (3.0.4)
       ruby2_keywords (~> 0.0.1)
+    net-http (0.6.0)
+      uri
     net-http-persistent (4.0.6)
       connection_pool (~> 2.2, >= 2.2.4)
     net-imap (0.5.9)
@@ -238,6 +261,27 @@ GEM
       racc (~> 1.4)
     nokogiri (1.18.9-x86_64-linux-gnu)
       racc (~> 1.4)
+    omniauth (2.1.4)
+      hashie (>= 3.4.6)
+      logger
+      rack (>= 2.2.3)
+      rack-protection
+    omniauth_openid_connect (0.8.0)
+      omniauth (>= 1.9, < 3)
+      openid_connect (~> 2.2)
+    openid_connect (2.3.1)
+      activemodel
+      attr_required (>= 1.0.0)
+      email_validator
+      faraday (~> 2.0)
+      faraday-follow_redirects
+      json-jwt (>= 1.16)
+      mail
+      rack-oauth2 (~> 2.2)
+      swd (~> 2.0)
+      tzinfo
+      validate_url
+      webfinger (~> 2.0)
     openssl (3.3.0)
     parallel (1.27.0)
     parser (3.3.9.0)
@@ -258,6 +302,13 @@ GEM
       nio4r (~> 2.0)
     racc (1.8.1)
     rack (3.2.0)
+    rack-oauth2 (2.2.1)
+      activesupport
+      attr_required
+      faraday (~> 2.0)
+      faraday-follow_redirects
+      json-jwt (>= 1.11.0)
+      rack (>= 2.1.0)
     rack-protection (4.1.1)
       base64 (>= 0.1.0)
       logger (>= 1.6.0)
@@ -368,6 +419,11 @@ GEM
     stimulus-rails (1.3.4)
       railties (>= 6.0.0)
     stringio (3.1.7)
+    swd (2.0.3)
+      activesupport (>= 3)
+      attr_required (>= 0.0.5)
+      faraday (~> 2.0)
+      faraday-follow_redirects
     thor (1.4.0)
     thruster (0.1.15-aarch64-linux)
     thruster (0.1.15-arm64-darwin)
@@ -383,9 +439,16 @@ GEM
     unicode-emoji (4.0.4)
     uri (1.0.3)
     useragent (0.16.11)
+    validate_url (1.0.15)
+      activemodel (>= 3.0.0)
+      public_suffix
     web-push (3.0.2)
       jwt (~> 3.0)
       openssl (~> 3.0)
+    webfinger (2.1.3)
+      activesupport
+      faraday (~> 2.0)
+      faraday-follow_redirects
     webmock (3.25.1)
       addressable (>= 2.8.0)
       crack (>= 0.3.2)
@@ -418,6 +481,8 @@ DEPENDENCIES
   kredis
   mocha
   net-http-persistent
+  omniauth
+  omniauth_openid_connect
   platform_agent
   propshaft!
   puma (~> 6.6)
