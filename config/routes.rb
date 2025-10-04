@@ -3,6 +3,10 @@ Rails.application.routes.draw do
 
   resource :first_run
 
+  # OIDC Authentication routes
+  get '/auth/:provider/callback', to: 'auth/oidc#callback'
+  get '/auth/failure', to: 'auth/oidc#failure'
+
   resource :session do
     scope module: "sessions" do
       resources :transfers, only: %i[ show update ]

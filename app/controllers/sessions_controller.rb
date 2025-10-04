@@ -8,7 +8,9 @@ class SessionsController < ApplicationController
   end
 
   def create
-    if user = User.active.authenticate_by(email_address: params[:email_address], password: params[:password])
+    if params[:oidc_login]
+      redirect_to '/auth/oidc'
+    elsif user = User.active.authenticate_by(email_address: params[:email_address], password: params[:password])
       start_new_session_for user
       redirect_to post_authenticating_url
     else
