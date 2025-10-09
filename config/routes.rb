@@ -8,6 +8,7 @@ Rails.application.routes.draw do
   get '/auth/failure', to: 'auth/oidc#failure'
 
   resource :session do
+    get :oidc, on: :member
     scope module: "sessions" do
       resources :transfers, only: %i[ show update ]
     end

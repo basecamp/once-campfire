@@ -1,5 +1,5 @@
 class SessionsController < ApplicationController
-  allow_unauthenticated_access only: %i[ new create ]
+  allow_unauthenticated_access only: %i[ new create oidc ]
   rate_limit to: 10, within: 3.minutes, only: :create, with: -> { render_rejection :too_many_requests }
 
   before_action :ensure_user_exists, only: :new
@@ -9,13 +9,17 @@ class SessionsController < ApplicationController
 
   def create
     if params[:oidc_login]
-      redirect_to '/auth/oidc'
+      redirect_to oidc_session_path, allow_other_host: true
     elsif user = User.active.authenticate_by(email_address: params[:email_address], password: params[:password])
       start_new_session_for user
       redirect_to post_authenticating_url
     else
       render_rejection :unauthorized
     end
+  end
+
+  def oidc
+    redirect_to '/auth/oidc', allow_other_host: true
   end
 
   def destroy

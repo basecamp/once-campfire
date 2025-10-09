@@ -1,5 +1,9 @@
 # Only configure OIDC if the required environment variables are present
 if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CLIENT_SECRET'].present?
+  # Configure OmniAuth
+  OmniAuth.config.allowed_request_methods = [:post, :get]
+  OmniAuth.config.silence_get_warning = true
+  
   Rails.application.config.middleware.use OmniAuth::Builder do
     provider :openid_connect, {
       name: :oidc,
