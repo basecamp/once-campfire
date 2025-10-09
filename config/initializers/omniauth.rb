@@ -9,16 +9,16 @@ if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CL
       name: :oidc,
       scope: [:openid, :email, :profile],
       response_type: :code,
-      discovery: true,
+      discovery: false,  # Disable auto-discovery since we're providing endpoints manually
       issuer: ENV['OIDC_ISSUER'],
       client_options: {
         identifier: ENV['OIDC_CLIENT_ID'],
         secret: ENV['OIDC_CLIENT_SECRET'],
         redirect_uri: ENV['OIDC_REDIRECT_URI'] || '/auth/oidc/callback',
-        authorization_endpoint: ENV['OIDC_AUTHORIZATION_ENDPOINT'],
-        token_endpoint: ENV['OIDC_TOKEN_ENDPOINT'],
-        userinfo_endpoint: ENV['OIDC_USERINFO_ENDPOINT']
-      }.compact
+        authorization_endpoint: ENV['OIDC_AUTHORIZATION_ENDPOINT'] || "#{ENV['OIDC_ISSUER']}/authorize",
+        token_endpoint: ENV['OIDC_TOKEN_ENDPOINT'] || "#{ENV['OIDC_ISSUER']}/token",
+        userinfo_endpoint: ENV['OIDC_USERINFO_ENDPOINT'] || "#{ENV['OIDC_ISSUER']}/userinfo"
+      }
     }
   end
 end
