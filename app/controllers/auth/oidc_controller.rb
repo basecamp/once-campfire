@@ -59,12 +59,22 @@ class Auth::OidcController < ApplicationController
               raw_info['role'] ||
               raw_info['user_roles'] ||
               raw_info['wp_user_roles'] ||
+              raw_info['wp_roles'] ||
               []
       
       # Ensure roles is an array
       roles = [roles] unless roles.is_a?(Array)
+      roles = roles.compact.map(&:to_s)
       
       Rails.logger.info "OIDC - User roles: #{roles.inspect}"
+      Rails.logger.info "OIDC - Full auth hash for debugging: #{auth_hash.to_json}"
+      
+      # If no roles are found, allow access temporarily until WordPress is configured
+      # TODO: Change this to 'false' once WordPress is configured to send roles
+      if roles.empty?
+        Rails.logger.warn "OIDC - No roles found in response, allowing access (configure WordPress to send roles)"
+        return true
+      end
       
       # Check if user has at least one allowed role
       has_allowed_role = roles.any? { |role| ALLOWED_ROLES.include?(role) }
