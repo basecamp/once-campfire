@@ -8,7 +8,7 @@
     <!-- OIDC Login Button -->
     <% if ENV['OIDC_ISSUER'].present? %>
       <div class="flex flex-column gap center-block upad margin-block-end">
-        <%= form_with url: session_url, method: :post, class: "flex flex-column gap" do |form| %>
+        <%= form_with url: session_url, method: :post, class: "flex flex-column gap", data: { turbo: false } do |form| %>
           <%= form.hidden_field :oidc_login, value: "1" %>
           <%= form.button class: "btn btn--primary center txt-large", type: "submit" do %>
             Sign in with <%= ENV.fetch('OIDC_PROVIDER_NAME', 'OpenID Connect') %>
