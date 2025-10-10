@@ -7,6 +7,14 @@ class Auth::OidcController < ApplicationController
     Rails.logger.info "OIDC Callback - Auth Hash: #{auth_hash.inspect}"
     
     if auth_hash.present?
+      # Check if user has an allowed role
+      unless user_has_allowed_role?(auth_hash)
+        Rails.logger.warn "OIDC Login - User does not have an allowed role"
+        flash[:alert] = "Access denied. Your account does not have the required permissions."
+        redirect_to new_session_url
+        return
+      end
+      
       user = find_or_create_user_from_oidc(auth_hash)
       if user
         Rails.logger.info "OIDC Login - User found/created: #{user.email_address}"
@@ -35,6 +43,36 @@ class Auth::OidcController < ApplicationController
   end
 
   private
+    ALLOWED_ROLES = ["Administrator", "Paid Member", "Free Trial", "Student"].freeze
+
+    def user_has_allowed_role?(auth_hash)
+      # Extract roles from the auth hash
+      # WordPress roles can be in different places depending on the OIDC provider configuration
+      info = auth_hash['info'] || auth_hash.info
+      extra = auth_hash['extra'] || auth_hash.extra
+      raw_info = extra&.dig('raw_info') || {}
+      
+      # Try to find roles in various possible locations
+      roles = info['roles'] || 
+              info['role'] || 
+              raw_info['roles'] || 
+              raw_info['role'] ||
+              raw_info['user_roles'] ||
+              raw_info['wp_user_roles'] ||
+              []
+      
+      # Ensure roles is an array
+      roles = [roles] unless roles.is_a?(Array)
+      
+      Rails.logger.info "OIDC - User roles: #{roles.inspect}"
+      
+      # Check if user has at least one allowed role
+      has_allowed_role = roles.any? { |role| ALLOWED_ROLES.include?(role) }
+      
+      Rails.logger.info "OIDC - Has allowed role: #{has_allowed_role}"
+      
+      has_allowed_role
+    end
 
     def find_or_create_user_from_oidc(auth_hash)
       info = auth_hash['info'] || auth_hash.info
