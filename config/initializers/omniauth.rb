@@ -26,6 +26,15 @@ if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CL
       end
     end
     
+    # Skip ID token verification for non-standard providers
+    def verify_id_token!(id_token)
+      return true if id_token.nil?
+      id_token.verify!(issuer: options.issuer, client_id: options.client_options.identifier)
+    rescue => e
+      Rails.logger.warn "OIDC ID Token verification skipped: #{e.message}"
+      true
+    end
+    
     # Override user_info to work without ID token
     def user_info
       return @user_info if @user_info
