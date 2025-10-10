@@ -5,11 +5,11 @@ if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CL
   OmniAuth.config.silence_get_warning = true
   
   # Patch for WordPress/miniOrange OIDC compatibility
-  # Skip ID token validation that fails with non-standard providers
+  # WordPress/miniOrange doesn't return proper OIDC ID tokens, so we use userinfo endpoint instead
   require 'omniauth/strategies/openid_connect'
   
   class OmniAuth::Strategies::OpenIDConnect
-    # Override to skip problematic validations
+    # Skip ID token completely for non-standard providers
     def decode_id_token(id_token)
       return nil if id_token.nil?
       
@@ -20,13 +20,36 @@ if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CL
           public_key_or_secret
         )
       rescue => e
-        # If standard decoding fails, try without validation
-        Rails.logger.warn "OIDC ID Token validation failed: #{e.message}, attempting lenient decode"
-        
-        # Decode without verification for non-standard providers
-        payload, _ = JWT.decode(id_token, nil, false)
-        ::OpenIDConnect::ResponseObject::IdToken.new(payload)
+        # WordPress/miniOrange returns invalid ID tokens, just return nil and use userinfo
+        Rails.logger.warn "OIDC ID Token validation failed: #{e.message}, using userinfo endpoint instead"
+        nil
       end
+    end
+    
+    # Override user_info to work without ID token
+    def user_info
+      return @user_info if @user_info
+      
+      if access_token.access_token
+        @user_info = access_token.userinfo!
+      else
+        # Fallback: make direct request to userinfo endpoint
+        conn = Faraday.new(url: options.client_options[:userinfo_endpoint]) do |b|
+          b.request :url_encoded
+          b.adapter Faraday.default_adapter
+        end
+        
+        response = conn.get do |req|
+          req.headers['Authorization'] = "Bearer #{access_token.access_token}"
+        end
+        
+        @user_info = ::OpenIDConnect::ResponseObject::UserInfo.new(JSON.parse(response.body))
+      end
+      
+      @user_info
+    rescue => e
+      Rails.logger.error "OIDC UserInfo failed: #{e.message}"
+      raise e
     end
   end
   
@@ -38,7 +61,7 @@ if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CL
       discovery: false,
       issuer: ENV['OIDC_ISSUER'],
       send_scope_to_token_endpoint: false,
-      uid_field: 'sub',
+      uid_field: 'email',  # Use email as UID since 'sub' might not be available
       client_options: {
         identifier: ENV['OIDC_CLIENT_ID'],
         secret: ENV['OIDC_CLIENT_SECRET'],
