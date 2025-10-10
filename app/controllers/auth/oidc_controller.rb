@@ -86,10 +86,28 @@ class Auth::OidcController < ApplicationController
 
     def find_or_create_user_from_oidc(auth_hash)
       info = auth_hash['info'] || auth_hash.info
-      email = info['email'] || info.email
-      name = info['name'] || info.name || info['nickname'] || info.nickname || email&.split('@')&.first
+      extra = auth_hash['extra'] || auth_hash.extra
+      raw_info = extra&.dig('raw_info') || {}
       
-      Rails.logger.info "OIDC - Extracted email: #{email}, name: #{name}"
+      email = info['email'] || info.email
+      
+      # Build name from first_name and last_name if available
+      first_name = raw_info['first_name'] || info['first_name'] || ''
+      last_name = raw_info['last_name'] || info['last_name'] || ''
+      
+      # Construct full name, falling back to other fields if first/last name are empty
+      name = if first_name.present? || last_name.present?
+               [first_name, last_name].reject(&:blank?).join(' ')
+             else
+               raw_info['display_name'] || 
+               info['name'] || 
+               info.name || 
+               info['nickname'] || 
+               info.nickname || 
+               email&.split('@')&.first
+             end
+      
+      Rails.logger.info "OIDC - Extracted email: #{email}, name: #{name} (from first_name: '#{first_name}', last_name: '#{last_name}')"
       
       return nil if email.blank?
       
