@@ -3,6 +3,7 @@ class UsersController < ApplicationController
 
   before_action :set_user, only: :show
   before_action :verify_join_code, only: %i[ new create ]
+  before_action :check_local_registration_disabled, only: %i[ new create ]
 
   def new
     @user = User.new
@@ -26,6 +27,12 @@ class UsersController < ApplicationController
 
     def verify_join_code
       head :not_found if Current.account.join_code != params[:join_code]
+    end
+
+    def check_local_registration_disabled
+      if ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true'
+        redirect_to root_url, alert: "Local registration is disabled. Please contact your administrator."
+      end
     end
 
     def user_params

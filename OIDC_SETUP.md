@@ -14,6 +14,7 @@ Set the following environment variables to enable OIDC authentication:
 ### Optional Variables
 - `OIDC_PROVIDER_NAME` - Display name for the provider (defaults to "OpenID Connect")
 - `OIDC_REDIRECT_URI` - Callback URL (defaults to `{app_url}/auth/oidc/callback`)
+- `DISABLE_LOCAL_LOGIN` - Set to `true` to disable local email/password authentication (defaults to `false`)
 
 ### Optional Endpoint Overrides
 If your OIDC provider doesn't support auto-discovery, you can manually specify endpoints:
@@ -54,6 +55,32 @@ If your OIDC provider doesn't support auto-discovery, you can manually specify e
 
 - Existing users are matched by email address
 - New users are automatically created with information from the OIDC provider
-- User names are extracted from the OIDC profile (name, nickname, or email prefix)
+- User names are built from first_name and last_name from WordPress, with fallbacks to display_name, nickname, or email prefix
 - Random passwords are generated for OIDC users (since they authenticate via OIDC)
+
+## Role-Based Access Control
+
+The application filters users by WordPress role. Only users with the following roles can log in:
+- Administrator
+- Paid Member
+- Free Trial
+- Student
+
+**Note:** Configure your WordPress OIDC provider to include user roles in the response. Until roles are configured, all authenticated users are allowed access.
+
+## Disabling Local Authentication
+
+To enforce SSO-only access, set:
+```bash
+DISABLE_LOCAL_LOGIN=true
+```
+
+When enabled, this will:
+- Hide the email/password login form (only OIDC button is shown)
+- Block local login attempts
+- Prevent new user registration via the join code
+- Hide email and password fields from user profile pages
+- Prevent password changes through the application
+
+Users will only be able to authenticate through the configured OIDC provider.
 

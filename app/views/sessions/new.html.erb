@@ -16,13 +16,16 @@
         <% end %>
       </div>
       
-      <div class="txt-align-center margin-block-end">
-        <span class="txt-muted">or</span>
-      </div>
+      <% unless ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true' %>
+        <div class="txt-align-center margin-block-end">
+          <span class="txt-muted">or</span>
+        </div>
+      <% end %>
     <% end %>
 
     <!-- Traditional Email/Password Form -->
-    <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
+    <% unless ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true' %>
+      <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
       <fieldset class="flex flex-column gap center-block upad">
         <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
 
@@ -47,6 +50,7 @@
           <span class="for-screen-reader">Go</span>
         <% end %>
       </fieldset>
+      <% end %>
     <% end %>
   </div>
 

@@ -17,7 +17,14 @@ class Users::ProfilesController < ApplicationController
     end
 
     def user_params
-      params.require(:user).permit(:name, :avatar, :email_address, :password, :bio).compact
+      # Remove password and email_address from permitted params if local login is disabled
+      permitted_params = [:name, :avatar, :bio]
+      
+      unless ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true'
+        permitted_params += [:email_address, :password]
+      end
+      
+      params.require(:user).permit(*permitted_params).compact
     end
 
     def update_notice

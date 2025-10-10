@@ -3,6 +3,7 @@ class SessionsController < ApplicationController
   rate_limit to: 10, within: 3.minutes, only: :create, with: -> { render_rejection :too_many_requests }
 
   before_action :ensure_user_exists, only: :new
+  before_action :check_local_login_disabled, only: :create
 
   def new
   end
@@ -31,6 +32,13 @@ class SessionsController < ApplicationController
   private
     def ensure_user_exists
       redirect_to first_run_url if User.none?
+    end
+
+    def check_local_login_disabled
+      if ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true' && !params[:oidc_login]
+        flash[:alert] = "Local login is disabled. Please use SSO to sign in."
+        redirect_to new_session_url
+      end
     end
 
     def render_rejection(status)
