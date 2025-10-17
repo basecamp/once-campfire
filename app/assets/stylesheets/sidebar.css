@@ -75,6 +75,18 @@
   }
 }
 
+/* Quick Links */
+.quick-links {
+  padding-block: var(--block-space);
+  padding-inline: var(--sidebar-inline-space);
+  margin-block-start: var(--block-space);
+  border-top: 1px solid var(--color-border);
+}
+
+.quick-links h3 {
+  margin-block-end: var(--block-space-half);
+}
+
 /* Direct messsages */
 .directs {
   --btn-border-color: var(--color-border-darker);
