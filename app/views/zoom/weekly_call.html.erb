@@ -9,7 +9,7 @@
       <h1 class="txt-xx-large margin-block-end">Weekly Zoom Call</h1>
       
       <div class="txt-large margin-block-end">
-        Join Abidah on <strong><%= @next_tuesday[:day] %> <%= @next_tuesday[:date] %></strong> at 1pm EST / 6pm UK / 8pm KSA
+        Join Abidah on <strong><%= @next_tuesday[:day] %> <%= @next_tuesday[:date] %></strong> at <%= @meeting_times[:est] %> / <%= @meeting_times[:gmt] %> / <%= @meeting_times[:ksa] %>
       </div>
 
       <div class="flex flex-column gap center-block upad">
