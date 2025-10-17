@@ -95,6 +95,9 @@ Rails.application.routes.draw do
 
   resource :unfurl_link, only: :create
 
+  # Zoom call routes
+  get "zoom/weekly_call", to: "zoom#weekly_call", as: :zoom_weekly_call
+
   get "webmanifest"    => "pwa#manifest"
   get "service-worker" => "pwa#service_worker"
 

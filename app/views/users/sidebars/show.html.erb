@@ -41,6 +41,16 @@
       <% end %>
     </div>
 
+    <!-- Quick Links Section -->
+    <div class="quick-links flex flex-column gap">
+      <h3 class="margin-block-start">Quick Links</h3>
+      
+      <%= link_to zoom_weekly_call_path, class: "btn room align-center gap" do %>
+        <%= image_tag "external/web.svg", size: 20, aria: { hidden: "true" } %>
+        <span>Weekly Zoom Call</span>
+      <% end %>
+    </div>
+
     <button class="btn sidebar__toggle" data-action="toggle-class#toggle">
       <%= image_tag "menu.svg", size: 20, aria: { hidden: "true" } %>
       <span class="for-screen-reader">Open menu</span>

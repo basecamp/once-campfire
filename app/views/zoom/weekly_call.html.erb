@@ -1,0 +1,60 @@
+<% @page_title = "Weekly Zoom Call" %>
+<% @body_class = "sidebar" %>
+
+<% content_for :sidebar, sidebar_turbo_frame_tag(src: user_sidebar_path) %>
+
+<div class="message-area">
+  <div class="message-area--empty min-width center">
+    <div class="panel txt-align-center">
+      <h1 class="txt-xx-large margin-block-end">Weekly Zoom Call</h1>
+      
+      <div class="txt-large margin-block-end">
+        Join Abidah on <strong><%= @next_tuesday[:day] %> <%= @next_tuesday[:date] %></strong> at 1pm EST / 6pm UK / 8pm KSA
+      </div>
+
+      <div class="flex flex-column gap center-block upad">
+        <div class="txt-align-center">
+          <span class="txt-large">🗓️</span>
+          <div class="txt-large margin-block-start">
+            <%= link_to @meeting_link, target: "_blank", class: "btn btn--primary txt-large", rel: "noopener noreferrer" do %>
+              Click Here to join on Zoom
+            <% end %>
+          </div>
+        </div>
+
+        <div class="txt-align-center">
+          <%= link_to @meeting_link, target: "_blank", class: "txt-muted txt-small", rel: "noopener noreferrer" do %>
+            <%= @meeting_link %>
+          <% end %>
+        </div>
+
+        <div class="flex flex-column gap txt-align-center">
+          <div class="txt-small">
+            <strong>Meeting ID:</strong> <%= @meeting_id %>
+          </div>
+          <div class="txt-small">
+            <strong>Passcode:</strong> <%= @passcode %>
+          </div>
+        </div>
+
+        <div class="txt-align-center">
+          <%= link_to "https://support.zoom.us/hc/en-us/articles/201362193-Joining-a-meeting", target: "_blank", class: "txt-muted txt-small", rel: "noopener noreferrer" do %>
+            Click here for help joining the Zoom call.
+          <% end %>
+          <div class="txt-small txt-muted margin-block-start">
+            Note: the time and Zoom link are the same every Tuesday.
+          </div>
+        </div>
+
+        <div class="txt-align-center margin-block-start">
+          <div class="txt-small txt-muted">
+            🚨 <strong>Cameras will be switched OFF</strong>, but please ensure there are no men around you during the call.
+          </div>
+          <div class="txt-small txt-muted margin-block-start">
+            I recommend that you have a place where you can sit or lie down comfortably during the relaxation or breathwork we may do on the call.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
