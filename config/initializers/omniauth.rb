@@ -1,5 +1,5 @@
-# Only configure OIDC if the required environment variables are present
-if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CLIENT_SECRET'].present?
+# Only configure OIDC if the required environment variables are present and SSO is not disabled
+if ENV['OIDC_ISSUER'].present? && ENV['OIDC_CLIENT_ID'].present? && ENV['OIDC_CLIENT_SECRET'].present? && ENV['DISABLE_SSO'].to_s.downcase != 'true'
   # Configure OmniAuth
   OmniAuth.config.allowed_request_methods = [:post, :get]
   OmniAuth.config.silence_get_warning = true

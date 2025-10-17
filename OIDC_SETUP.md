@@ -15,6 +15,7 @@ Set the following environment variables to enable OIDC authentication:
 - `OIDC_PROVIDER_NAME` - Display name for the provider (defaults to "OpenID Connect")
 - `OIDC_REDIRECT_URI` - Callback URL (defaults to `{app_url}/auth/oidc/callback`)
 - `DISABLE_LOCAL_LOGIN` - Set to `true` to disable local email/password authentication (defaults to `false`)
+- `DISABLE_SSO` - Set to `true` to disable SSO/OIDC authentication (defaults to `false`)
 
 ### Optional Endpoint Overrides
 If your OIDC provider doesn't support auto-discovery, you can manually specify endpoints:
@@ -83,4 +84,20 @@ When enabled, this will:
 - Prevent password changes through the application
 
 Users will only be able to authenticate through the configured OIDC provider.
+
+## Disabling SSO Authentication
+
+To disable SSO/OIDC authentication and only allow local email/password authentication, set:
+```bash
+DISABLE_SSO=true
+```
+
+When enabled, this will:
+- Hide the SSO login button from the login page
+- Block OIDC login attempts
+- Prevent OmniAuth configuration from being loaded
+- Redirect OIDC callback attempts back to the login page
+- Focus the email field by default on the login page
+
+Users will only be able to authenticate using email/password authentication.
 

@@ -1,6 +1,8 @@
 class Auth::OidcController < ApplicationController
   allow_unauthenticated_access only: [:callback, :failure]
 
+  before_action :check_sso_enabled, only: [:callback, :failure]
+
   def callback
     auth_hash = request.env['omniauth.auth']
     
@@ -43,6 +45,14 @@ class Auth::OidcController < ApplicationController
   end
 
   private
+    def check_sso_enabled
+      if ENV['DISABLE_SSO'].to_s.downcase == 'true'
+        Rails.logger.warn "OIDC - SSO is disabled, redirecting to login"
+        flash[:alert] = "SSO login is disabled."
+        redirect_to new_session_url
+      end
+    end
+
     ALLOWED_ROLES = ["Administrator", "Paid Member", "Free Trial", "Student"].freeze
 
     def user_has_allowed_role?(auth_hash)

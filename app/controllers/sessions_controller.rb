@@ -10,7 +10,12 @@ class SessionsController < ApplicationController
 
   def create
     if params[:oidc_login]
-      redirect_to oidc_session_path, allow_other_host: true
+      if ENV['DISABLE_SSO'].to_s.downcase == 'true'
+        flash[:alert] = "SSO login is disabled."
+        redirect_to new_session_url
+      else
+        redirect_to oidc_session_path, allow_other_host: true
+      end
     elsif user = User.active.authenticate_by(email_address: params[:email_address], password: params[:password])
       start_new_session_for user
       redirect_to post_authenticating_url
@@ -20,7 +25,12 @@ class SessionsController < ApplicationController
   end
 
   def oidc
-    redirect_to '/auth/oidc', allow_other_host: true
+    if ENV['DISABLE_SSO'].to_s.downcase == 'true'
+      flash[:alert] = "SSO login is disabled."
+      redirect_to new_session_url
+    else
+      redirect_to '/auth/oidc', allow_other_host: true
+    end
   end
 
   def destroy

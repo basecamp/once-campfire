@@ -6,7 +6,7 @@
     <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
 
     <!-- OIDC Login Button -->
-    <% if ENV['OIDC_ISSUER'].present? %>
+    <% if ENV['OIDC_ISSUER'].present? && ENV['DISABLE_SSO'].to_s.downcase != 'true' %>
       <div class="flex flex-column gap center-block upad margin-block-end">
         <%= form_with url: session_url, method: :post, class: "flex flex-column gap", data: { turbo: false } do |form| %>
           <%= form.hidden_field :oidc_login, value: "1" %>
@@ -32,7 +32,7 @@
         <div class="flex align-center gap">
           <%= translation_button(:email_address) %>
           <label class="flex align-center gap input input--actor txt-large">
-            <%= form.email_field :email_address, required: true, class: "input", autofocus: ENV['OIDC_ISSUER'].blank?, autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
+            <%= form.email_field :email_address, required: true, class: "input", autofocus: ENV['OIDC_ISSUER'].blank? || ENV['DISABLE_SSO'].to_s.downcase == 'true', autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
             <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
           </label>
         </div>
