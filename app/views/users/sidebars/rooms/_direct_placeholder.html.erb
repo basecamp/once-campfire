@@ -1,12 +1,11 @@
-<%= button_to rooms_directs_path(user_ids: [ user.id ]), class: "direct borderless fill-transparent unpad" do %>
+<div class="direct borderless fill-transparent unpad">
   <span class="avatar">
     <%= image_tag fresh_user_avatar_path(user), aria: { hidden: "true" } %>
   </span>
 
   <span class="direct__author flex align-center gap max-width min-width border-radius txt-small">
     <span class="txt-nowrap overflow-ellipsis">
-      <span class="for-screen-reader">Start a ping with</span>
       <%= user.name.split(' ')[0] %>
     </span>
   </span>
-<% end %>
+</div>

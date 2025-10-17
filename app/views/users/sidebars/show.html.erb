@@ -8,17 +8,6 @@
       data-action="rooms-list:unread@window->badge-dot#update rooms-list:read@window->badge-dot#update turbo:submit-start->turbo-frame#unpermanize">
     <turbo-frame id="direct_rooms_control" target="_top">
       <div class="directs gap overflow-x overflow-hide-scrollbar">
-        <%= link_to new_rooms_direct_path, class: "direct direct__new", data: { turbo_frame: "_self" } do %>
-          <span class="avatar avatar--icon">
-            <%= image_tag "messages-add.svg", size: 20, aria: { hidden: "true" }, class: "colorize--black" %>
-          </span>
-
-          <span class="direct__author flex max-width min-width border-radius pad-inline-half">
-            <span class="for-screen-reader">New</span>
-            <span class="txt-small overflow-clip">Ping</span>
-          </span>
-        <% end %>
-
         <div id="direct_rooms" contents data-controller="sorted-list" data-action="rooms-list:unread@window->sorted-list#updateItem">
           <%= render partial: "users/sidebars/rooms/direct", collection: @direct_memberships, as: :membership, cached: true %>
         </div>
