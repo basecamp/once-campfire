@@ -38,6 +38,11 @@
         <%= image_tag "mobile-phone.svg", size: 20, aria: { hidden: "true" } %>
         <span>Weekly Zoom Call</span>
       <% end %>
+      
+      <%= link_to "https://ambba.com/previous-recordings/", target: "_blank", class: "btn room align-center gap", rel: "noopener noreferrer" do %>
+        <%= image_tag "download.svg", size: 20, aria: { hidden: "true" } %>
+        <span>Previous Recordings</span>
+      <% end %>
     </div>
 
     <button class="btn sidebar__toggle" data-action="toggle-class#toggle">
