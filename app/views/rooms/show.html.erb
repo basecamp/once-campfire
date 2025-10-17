@@ -13,7 +13,6 @@
   <%= render "messages/template" %>
 
   <%= messages_tag(@room) do %>
-    <%= render "rooms/show/invitation", room: @room %>
     <%= render partial: "messages/message", collection: @messages, cached: true %>
   <% end %>
 

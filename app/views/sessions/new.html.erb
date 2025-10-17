@@ -5,14 +5,34 @@
   <div class="panel <%= "shake" if flash[:alert] %>">
     <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
 
-    <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
+    <!-- OIDC Login Button -->
+    <% if ENV['OIDC_ISSUER'].present? && ENV['DISABLE_SSO'].to_s.downcase != 'true' %>
+      <div class="flex flex-column gap center-block upad margin-block-end">
+        <%= form_with url: session_url, method: :post, class: "flex flex-column gap", data: { turbo: false } do |form| %>
+          <%= form.hidden_field :oidc_login, value: "1" %>
+          <%= form.button class: "btn btn--primary center txt-large", type: "submit" do %>
+            Sign in with <%= ENV.fetch('OIDC_PROVIDER_NAME', 'OpenID Connect') %>
+          <% end %>
+        <% end %>
+      </div>
+      
+      <% unless ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true' %>
+        <div class="txt-align-center margin-block-end">
+          <span class="txt-muted">or</span>
+        </div>
+      <% end %>
+    <% end %>
+
+    <!-- Traditional Email/Password Form -->
+    <% unless ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true' %>
+      <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
       <fieldset class="flex flex-column gap center-block upad">
         <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
 
         <div class="flex align-center gap">
           <%= translation_button(:email_address) %>
           <label class="flex align-center gap input input--actor txt-large">
-            <%= form.email_field :email_address, required: true, class: "input", autofocus: true, autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
+            <%= form.email_field :email_address, required: true, class: "input", autofocus: ENV['OIDC_ISSUER'].blank? || ENV['DISABLE_SSO'].to_s.downcase == 'true', autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
             <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
           </label>
         </div>
@@ -30,6 +50,7 @@
           <span class="for-screen-reader">Go</span>
         <% end %>
       </fieldset>
+      <% end %>
     <% end %>
   </div>
 

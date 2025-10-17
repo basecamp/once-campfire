@@ -44,6 +44,11 @@ gem "kredis"
 gem "platform_agent"
 gem "thruster"
 
+# Authentication
+gem "omniauth"
+gem "omniauth_openid_connect"
+gem "jwt"
+
 group :development, :test do
   gem "debug"
   gem "rubocop-rails-omakase", require: false

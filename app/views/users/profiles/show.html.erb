@@ -59,25 +59,27 @@
         </label>
       </div>
 
-      <div class="flex align-center gap">
-        <%= translation_button(:email_address) %>
+      <% unless ENV['DISABLE_LOCAL_LOGIN'].to_s.downcase == 'true' %>
+        <div class="flex align-center gap">
+          <%= translation_button(:email_address) %>
 
-        <label class="flex align-center gap flex-item-grow input input--actor">
-          <%= form.email_field :email_address, class: "input txt-large", value: @user.email_address, autocomplete: "username",
-                placeholder: "Enter your email address", required: false %>
-          <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
-        </label>
-      </div>
+          <label class="flex align-center gap flex-item-grow input input--actor">
+            <%= form.email_field :email_address, class: "input txt-large", value: @user.email_address, autocomplete: "username",
+                  placeholder: "Enter your email address", required: false %>
+            <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+          </label>
+        </div>
 
-      <div class="flex align-center gap">
-        <%= translation_button(:update_password) %>
+        <div class="flex align-center gap">
+          <%= translation_button(:update_password) %>
 
-        <label class="flex align-center gap flex-item-grow input input--actor">
-          <%= form.password_field :password, class: "input txt-large", autocomplete: "new-password", placeholder: "Change password",
-                required: false, maxlength: 72 %>
-          <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
-        </label>
-      </div>
+          <label class="flex align-center gap flex-item-grow input input--actor">
+            <%= form.password_field :password, class: "input txt-large", autocomplete: "new-password", placeholder: "Change password",
+                  required: false, maxlength: 72 %>
+            <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+          </label>
+        </div>
+      <% end %>
 
       <div class="flex align-start gap">
         <%= translation_button(:bio) %>
