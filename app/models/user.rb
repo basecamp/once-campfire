@@ -15,6 +15,7 @@ class User < ApplicationRecord
   has_many :sessions, dependent: :destroy
 
   scope :active, -> { where(active: true) }
+  scope :active_and_banned, -> { where.not(active: false, banned: false) }
 
   has_secure_password validations: false
 
@@ -50,6 +51,23 @@ class User < ApplicationRecord
 
   def reset_remote_connections
     close_remote_connections reconnect: true
+  end
+
+  def ban
+    transaction do
+      close_remote_connections
+
+      memberships.without_direct_rooms.delete_all
+      push_subscriptions.delete_all
+      searches.delete_all
+      sessions.delete_all
+
+      update! active: false, banned: true
+    end
+  end
+
+  def unban
+    update! active: true, banned: false
   end
 
   private

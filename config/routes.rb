@@ -37,6 +37,7 @@ Rails.application.routes.draw do
   resources :users, only: :show do
     scope module: "users" do
       resource :avatar, only: %i[ show destroy ]
+      resource :bans, only: :update
 
       scope defaults: { user_id: "me" } do
         resource :sidebar, only: :show

@@ -60,4 +60,17 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_url
     assert_not cookies[:session_token].present?
   end
+
+  test "Banned user gets forbidden access" do
+    user = users(:bruce_banned)
+    post session_url, params: { email_address: user.email_address, password: "secret123456" }
+    assert_not cookies[:session_token].present?
+
+    assert users(:bruce_banned).member?
+    assert users(:bruce_banned).banned?
+
+    get edit_account_url
+
+    assert_redirected_to new_session_url
+  end
 end

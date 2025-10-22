@@ -225,6 +225,19 @@ pre {
   }
 }
 
+/* Banned user images */
+.banned_user_badge {
+  --btn-background: var(--color-text);
+ img {
+    filter: invert(0);
+  }
+}
+.unbanned_user_badge {
+  img {
+    filter: invert(1);
+  }
+}
+
 /* Language translations */
 .language-list-menu {
   --max-width: 40ch;
