@@ -17,7 +17,7 @@ class Accounts::UsersController < ApplicationController
 
   private
     def set_user
-      @user = User.active.find(params[:user_id] || params[:id])
+      @user = User.active_and_banned.find(params[:user_id] || params[:id])
     end
 
     def role_params

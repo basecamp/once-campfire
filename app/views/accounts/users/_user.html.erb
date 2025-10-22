@@ -11,12 +11,23 @@
 
   <% if Current.user.can_administer? && user != Current.user %>
     <% unless user.bot? %>
-      <%= form_with model: user, url: account_user_path(user), data: { controller: "form" }, method: :patch do | form | %>
+      <%= form_with model: user, url: account_user_path(user), class: "flex", data: { controller: "form" }, method: :patch do | form | %>
         <label class="btn txt-small flex-item-no-shrink" for="<%= dom_id(user, :role) %>">
           <span class="for-screen-reader">Role: <%= user.administrator? ? "Administrator" : "Member" %></span>
           <%= image_tag "crown.svg", size: 20, aria: { hidden: "true" } %>
           <%= form.check_box :role, { data: { action: "form#submit" }, hidden: true, id: dom_id(user, :role) }, "administrator", "member" %>
         </label>
+      <% end %>
+      <% if !user.can_administer? %>
+        <turbo-frame id="<%= dom_id(user, :_ban) %>">
+          <%= button_to user_bans_path(user), method: :put, class: "btn txt-small flex-item-no-shrink", data: {
+            turbo_confirm: "#{ user.banned? ? "Are you sure you want to remove the ban from the user?" : "Are you sure you want to ban user? Banning the user will result in: deactivating their account, deleting all memberships, searches, sessions. This ban can be undone at any time"}"} do %>
+            <div class="btn txt-small flex-item-no-shrink <%= user.banned? ? 'banned_user_badge' : 'unbanned_user_badge'%>">
+              <span class="for-screen-reader">Ban <%= user.name %></span>
+              <%= image_tag user.banned? ? "lock.svg" : "login-keys.svg", size: 20, aria: { hidden: "true" }, class: 'ban_user_img'%>
+            </div>
+          <% end %>
+        </turbo-frame>
       <% end %>
     <% end %>
 

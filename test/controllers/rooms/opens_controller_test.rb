@@ -20,7 +20,7 @@ class Rooms::OpensControllerTest < ActionDispatch::IntegrationTest
       post rooms_opens_url, params: { room: { name: "My New Room" } }
     end
 
-    assert_equal Room.last.memberships.count, User.count
+    assert_equal Room.last.memberships.count, User.active.count
     assert_redirected_to room_url(Room.last)
   end
 
@@ -46,6 +46,6 @@ class Rooms::OpensControllerTest < ActionDispatch::IntegrationTest
 
   test "update a closed room to be open" do
     put rooms_open_url(rooms(:designers)), params: { room: { name: "Doesn't matter" } }
-    assert_equal rooms(:designers).memberships.count, User.count
+    assert_equal rooms(:designers).memberships.count, User.active.count
   end
 end
