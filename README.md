@@ -10,6 +10,7 @@ expect, including:
 - Notifications (via Web Push)
 - @mentions
 - API, with support for bot integrations
+- Video conferencing (via LiveKit integration)
 
 ## Deploying with Docker
 
@@ -28,6 +29,9 @@ To configure additional features, you can set the following environment variable
   `/script/admin/create-vapid-key`
 - `SENTRY_DSN` - to enable error reporting to sentry in production, supply your
   DSN here
+- `LIVEKIT_URL` - LiveKit server WebSocket URL (e.g., `wss://your-livekit-server.com`)
+- `LIVEKIT_API_KEY` - LiveKit API key for token generation
+- `LIVEKIT_API_SECRET` - LiveKit API secret for token generation
 
 For example:
 
@@ -41,6 +45,9 @@ For example:
       --env VAPID_PUBLIC_KEY=$YOUR_PUBLIC_KEY \
       --env VAPID_PRIVATE_KEY=$YOUR_PRIVATE_KEY \
       --env TLS_DOMAIN=chat.example.com \
+      --env LIVEKIT_URL=wss://your-livekit-server.com \
+      --env LIVEKIT_API_KEY=$YOUR_LIVEKIT_API_KEY \
+      --env LIVEKIT_API_SECRET=$YOUR_LIVEKIT_API_SECRET \
       campfire
 
 ## Running in development

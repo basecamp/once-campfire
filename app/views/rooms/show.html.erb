@@ -10,6 +10,7 @@
 <% content_for :sidebar, sidebar_turbo_frame_tag(src: user_sidebar_path) %>
 
 <%= message_area_tag(@room) do %>
+  <%= render "rooms/show/video_call", room: @room %>
   <%= render "messages/template" %>
 
   <%= messages_tag(@room) do %>

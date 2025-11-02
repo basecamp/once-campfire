@@ -7,10 +7,10 @@ module RoomsHelper
 
   def link_to_edit_room(room, &)
     link_to \
-      [ :edit, @room ],
+      [ :edit, room ],
       class: "btn",
-      style: "view-transition-name: edit-room-#{@room.id}",
-      data: { room_id: @room.id },
+      style: "view-transition-name: edit-room-#{room.id}",
+      data: { room_id: room.id },
       &
   end
 

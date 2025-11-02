@@ -32,7 +32,7 @@
     <div class="rooms position-relative flex flex-column gap">
       <div id="shared_rooms" contents data-controller="sorted-list">
         <% @other_memberships.each do |membership| %>
-          <%= render "users/sidebars/rooms/shared", room: membership.room, unread: membership.unread? %>
+          <%= render "users/sidebars/rooms/shared", room: membership.room, unread: membership.unread?, current_room: @current_room %>
         <% end %>
       </div>
 
@@ -48,6 +48,10 @@
   </div>
 
   <div class="flex align-end sidebar__tools gap justify-end">
+    <% if @current_room %>
+      <%= render "rooms/involvements/bell", room: @current_room %>
+    <% end %>
+    
     <%= link_to user_profile_path, class: "btn avatar flex-item-no-shrink sidebar__tool" do %>
       <%= image_tag fresh_user_avatar_path(Current.user), size: 48, aria: { hidden: "true" }, style: "view-transition-name: avatar-#{Current.user.id}" %>
       <span class="for-screen-reader">My Settings</span>

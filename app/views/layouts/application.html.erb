@@ -8,6 +8,7 @@
     <meta name="color-scheme" content="light dark">
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
@@ -32,10 +33,6 @@
   <body class="<%= body_classes %>" data-controller="local-time lightbox">
     <a href="#main-content" class="skip-navigation btn">Skip to main content</a>
 
-    <nav id="nav">
-      <%= yield :nav %>
-    </nav>
-
     <% if notice = flash[:notice] || flash[:alert] %>
       <div class="flash" data-controller="element-removal" data-action="animationend->element-removal#remove">
         <div class="flash__inner shadow" style="<%= "--flash-background: var(--color-negative)" if flash[:alert] %>">
@@ -48,6 +45,12 @@
         <span class="for-screen-reader" role="alert" aria-atomic="true"><%= notice %></span>
       </div>
     <% end %>
+
+    <aside id="left-sidebar" data-controller="toggle-class" data-toggle-class-toggle-class="open">
+      <nav id="nav">
+        <%= yield :nav %>
+      </nav>
+    </aside>
 
     <main id="main-content">
       <%= yield %>

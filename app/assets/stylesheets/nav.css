@@ -1,48 +1,33 @@
 #nav {
   align-items: center;
-  column-gap: var(--inline-space-half);
   display: flex;
-  inset: 0 0 auto 0;
-  inset-inline-end: var(--sidebar-width);
-  padding-block: var(--block-space);
-  padding-inline: calc(var(--inline-space) * 1.5) var(--inline-space-double);
-  pointer-events: none;
-  position: fixed;
-  row-gap: var(--block-space);
-  z-index: 2;
+  flex-direction: column;
+  gap: var(--inline-space);
+  padding: var(--block-space);
+  position: relative;
+  width: 100%;
+  pointer-events: auto;
 
-  &:has(.room--current) {
-    padding-inline: var(--inline-space);
-
-    @media (min-width: 100ch) {
-      margin-inline-start: 5vw;
-
-      .room--current {
-        margin-inline-start: -3vw;
-
-        .account-logo + & {
-          margin-inline-start: 0;
-        }
-      }
-
-      .account-logo {
-        margin-inline-start: calc((var(--btn-size) / 2 + var(--inline-space)) * -1);
-      }
-    }
+  > * {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
   }
 
-  .sidebar & {
-    @media (max-width: 100ch) {
-      padding-block: var(--block-space-half);
+  .account-logo {
+    margin-block-end: var(--block-space);
+  }
 
-      &::before {
-        background: linear-gradient(180deg, oklch(var(--lch-white)) 20%, oklch(var(--lch-white) / 0) 100%);
-        content: "";
-        inset: 0;
-        position: absolute;
-        z-index: -1;
-      }
-    }
+  .room--current {
+    margin-block-end: var(--block-space);
+    width: auto;
+    min-width: fit-content;
+  }
+
+  .btn {
+    width: auto;
+    min-width: fit-content;
   }
 }
 

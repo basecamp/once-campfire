@@ -90,6 +90,13 @@ Rails.application.routes.draw do
 
   resource :unfurl_link, only: :create
 
+  namespace :api do
+    namespace :livekit do
+      post :token, to: "livekit#token"
+      get :participant_avatar, to: "livekit#participant_avatar"
+    end
+  end
+
   get "webmanifest"    => "pwa#manifest"
   get "service-worker" => "pwa#service_worker"
 

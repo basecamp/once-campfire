@@ -7,6 +7,10 @@ class Users::SidebarsController < ApplicationController
     @other_memberships  = all_memberships.without(@direct_memberships)
 
     @direct_placeholder_users = find_direct_placeholder_users
+    
+    # Get current room from cookie for highlighting and edit button
+    @current_room_id = cookies[:last_room].presence&.to_i
+    @current_room = @current_room_id ? Current.user.rooms.find_by(id: @current_room_id) : nil
   end
 
   private

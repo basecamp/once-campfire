@@ -1,0 +1,92 @@
+<div class="video-call" 
+     data-controller="video-call"
+     data-video-call-room-id-value="<%= room.id %>"
+     data-video-call-active-class="video-call--active"
+     data-video-call-muted-class="video-call__button--muted"
+     data-video-call-hidden-class="video-call--hidden"
+     data-video-call-icon-messages-value="<%= asset_path('messages.svg') %>"
+     data-video-call-icon-remove-value="<%= asset_path('remove.svg') %>"
+     data-video-call-icon-disclosure-value="<%= asset_path('disclosure.svg') %>">
+  
+  <div class="video-call__error" data-video-call-target="errorMessage" role="alert" aria-live="polite" style="display: none;">
+    <span class="video-call__error-text"></span>
+    <button type="button" class="video-call__error-dismiss" data-action="click->video-call#dismissError" aria-label="Dismiss error">
+      ×
+    </button>
+  </div>
+
+  <div class="video-call__videos">
+    <div class="video-call__local">
+      <video data-video-call-target="localVideo" 
+             autoplay 
+             playsinline 
+             muted 
+             class="video-call__video video-call__video--local"></video>
+      <img data-video-call-target="localPlaceholder"
+           src="<%= fresh_user_avatar_path(Current.user) %>"
+           alt="<%= Current.user.name %>"
+           class="video-call__placeholder video-call__placeholder--local" />
+      <div class="video-call__participant-name">You</div>
+      <div class="video-call__remote-controls" data-video-call-target="localControls">
+        <button type="button"
+                class="video-call__remote-control-button"
+                data-action="click->video-call#toggleFullscreen"
+                data-participant-identity="local"
+                aria-label="Fullscreen">
+          <%= image_tag "disclosure.svg", size: 16, aria: { hidden: "true" }, class: "colorize--white" %>
+        </button>
+      </div>
+    </div>
+
+    <div class="video-call__remotes" data-video-call-target="remoteVideos">
+      <!-- Remote participants will be inserted here -->
+    </div>
+  </div>
+
+  <div class="video-call__controls">
+    <button type="button" 
+            class="video-call__button" 
+            data-video-call-target="muteButton"
+            data-action="click->video-call#toggleMute"
+            aria-label="Toggle microphone">
+      <span class="video-call__button-icon">
+        <%= image_tag "messages.svg", size: 20, aria: { hidden: "true" }, class: "colorize--black" %>
+      </span>
+      <span class="video-call__button-label">Mute</span>
+    </button>
+
+    <button type="button" 
+            class="video-call__button" 
+            data-video-call-target="cameraButton"
+            data-action="click->video-call#toggleCamera"
+            aria-label="Toggle camera">
+      <span class="video-call__button-icon">
+        <%= image_tag "camera.svg", size: 20, aria: { hidden: "true" }, class: "colorize--black" %>
+      </span>
+      <span class="video-call__button-label">Camera</span>
+    </button>
+
+    <button type="button" 
+            class="video-call__button" 
+            data-video-call-target="screenShareButton"
+            data-action="click->video-call#toggleScreenShare"
+            aria-label="Toggle screen share">
+      <span class="video-call__button-icon">
+        <%= image_tag "share.svg", size: 20, aria: { hidden: "true" }, class: "colorize--black" %>
+      </span>
+      <span class="video-call__button-label">Share</span>
+    </button>
+
+    <button type="button" 
+            class="video-call__button" 
+            data-video-call-target="joinLeaveButton"
+            data-action="click->video-call#toggleJoinLeave"
+            aria-label="Join video call">
+      <span class="video-call__button-icon" data-video-call-target="joinLeaveIcon">
+        <%= image_tag "messages.svg", size: 20, aria: { hidden: "true" }, class: "colorize--black" %>
+      </span>
+      <span class="video-call__button-label" data-video-call-target="joinLeaveLabel">Join</span>
+    </button>
+  </div>
+</div>
+

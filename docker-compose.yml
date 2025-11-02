@@ -1,0 +1,32 @@
+services:
+  campfire:
+    image: 'howieduhzit/campfire:meet-latest'
+    restart: unless-stopped
+    volumes:
+      - 'campfire-storage:/rails/storage'
+    environment:
+      - SERVICE_URL_CAMPFIRE_80
+      - 'SECRET_KEY_BASE=${SERVICE_BASE64_64_CAMPFIRE}'
+      - 'VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}'
+      - 'VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}'
+      - 'DISABLE_SSL=${DISABLE_SSL:-true}'
+      - 'SSL_DOMAIN=${SSL_DOMAIN:-false}'
+      - 'SKIP_TELEMETRY=${SKIP_TELEMETRY:-true}'
+      - 'SENTRY_DSN=${SENTRY_DSN}'
+      - 'LIVEKIT_URL=${LIVEKIT_URL}'
+      - 'LIVEKIT_API_KEY=${LIVEKIT_API_KEY}'
+      - 'LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}'
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - 'http://localhost/up'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  campfire-storage:
+
+

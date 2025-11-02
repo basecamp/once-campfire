@@ -1,0 +1,439 @@
+/* Video Call Container */
+.video-call {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  max-height: 60vh;
+  min-height: 300px;
+  overflow: hidden; /* Prevent scrolling of the container */
+}
+
+.video-call--active {
+  /* Class kept for compatibility, but container is always visible */
+}
+
+/* Video Grid */
+.video-call__videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1em;
+  padding: 1em;
+  overflow: hidden; /* Never scroll - fit to container */
+  flex: 1;
+  min-height: 0; /* Allow grid to shrink below content size */
+  align-content: start;
+  /* When only one video, center it and make it fit better */
+}
+
+/* When only local video exists (no remotes), make it fit better */
+.video-call__videos:has(.video-call__local):not(:has(.video-call__remote-video)) {
+  grid-template-columns: 1fr;
+  justify-items: center;
+}
+
+.video-call__videos:has(.video-call__local):not(:has(.video-call__remote-video)) .video-call__local {
+  max-width: min(100%, 500px);
+  width: 100%;
+}
+
+/* Local Video */
+.video-call__local {
+  position: relative;
+  background-color: var(--color-border);
+  border-radius: 0.5em;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  min-width: 250px;
+  max-width: 100%;
+  max-height: 100%; /* Constrain to container */
+  width: 100%;
+  height: auto;
+}
+
+.video-call__local:hover .video-call__remote-controls {
+  opacity: 1;
+}
+
+.video-call__video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+.video-call__video--local {
+  transform: scaleX(-1); /* Mirror local video */
+}
+
+.video-call__placeholder {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+.video-call__placeholder--local {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.video-call__placeholder--remote {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* Remote Videos */
+.video-call__remotes {
+  display: contents;
+}
+
+.video-call__remote-video {
+  position: relative;
+  background-color: var(--color-border);
+  border-radius: 0.5em;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  min-width: 250px;
+  max-width: 100%;
+  max-height: 100%; /* Constrain to container */
+  width: 100%;
+  height: auto;
+}
+
+.video-call__remote-video video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Participant Name Overlay */
+.video-call__participant-name {
+  position: absolute;
+  bottom: 0.5em;
+  left: 0.5em;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: #ffffff !important; /* Force white text always */
+  padding: 0.25em 0.75em;
+  border-radius: 1em;
+  font-size: 0.875em;
+  font-weight: 600;
+  z-index: 1;
+}
+
+/* Force white text in dark mode */
+@media (prefers-color-scheme: dark) {
+  .video-call__participant-name {
+    color: #ffffff !important;
+  }
+}
+
+/* Controls */
+.video-call__controls {
+  display: flex;
+  justify-content: center;
+  gap: 0.75em;
+  padding: 1em;
+  background-color: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+  flex-wrap: wrap;
+}
+
+.video-call__button {
+  align-items: center;
+  background-color: var(--color-text-reversed);
+  border: 1px solid var(--color-border-darker);
+  border-radius: 2em;
+  color: var(--color-text);
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  font-weight: 600;
+  gap: 0.25em;
+  justify-content: center;
+  padding: 0.5em 1em;
+  text-align: center;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.video-call__button:hover {
+  background-color: var(--color-selected);
+  border-color: var(--color-selected-dark);
+}
+
+.video-call__button:active {
+  background-color: var(--color-selected-dark);
+}
+
+.video-call__button--muted {
+  background-color: var(--color-negative, #dc3545) !important;
+  border-color: var(--color-negative, #dc3545) !important;
+  color: var(--color-text-reversed, #fff) !important;
+}
+
+.video-call__button--muted:hover {
+  background-color: var(--color-negative, #dc3545) !important;
+  opacity: 0.9;
+}
+
+.video-call__button--danger {
+  background-color: var(--color-negative);
+  border-color: var(--color-negative);
+  color: var(--color-text-reversed);
+}
+
+.video-call__button--danger:hover {
+  background-color: var(--color-negative);
+  opacity: 0.9;
+}
+
+
+.video-call__button-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-call__button-label {
+  font-size: 0.75em;
+  line-height: 1;
+}
+
+/* Active state for screen share button */
+.video-call__button.video-call__button--active {
+  background-color: var(--color-selected-dark);
+  border-color: var(--color-selected-dark);
+}
+
+/* Mobile adjustments */
+@media (max-width: 768px) {
+  .video-call {
+    max-height: 50vh;
+    min-height: 250px;
+  }
+
+  .video-call__videos {
+    grid-template-columns: 1fr;
+    gap: 0.5em;
+    padding: 0.5em;
+  }
+
+  .video-call__local,
+  .video-call__remote-video {
+    min-width: unset;
+    width: 100%;
+    max-width: 100%;
+    max-height: 100%;
+  }
+
+  .video-call__controls {
+    gap: 0.5em;
+    padding: 0.75em;
+  }
+
+  .video-call__button {
+    padding: 0.4em 0.8em;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .video-call__button-label {
+    font-size: 0.65em;
+  }
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+  .video-call__local,
+  .video-call__remote-video {
+    background-color: var(--color-border-dark);
+  }
+}
+
+/* Remote Video Controls */
+.video-call__remote-video {
+  position: relative;
+}
+
+.video-call__remote-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: 2;
+}
+
+.video-call__remote-video:hover .video-call__remote-controls,
+.video-call__local:hover .video-call__remote-controls {
+  opacity: 1;
+}
+
+.video-call__remote-control-button {
+  background-color: rgba(0, 0, 0, 0.6);
+  border: none;
+  border-radius: 4px;
+  color: #ffffff !important;
+  cursor: pointer;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s ease;
+}
+
+.video-call__remote-control-button:hover {
+  background-color: rgba(0, 0, 0, 0.8);
+}
+
+.video-call__remote-control-button:active {
+  background-color: rgba(0, 0, 0, 0.9);
+}
+
+.video-call__remote-control-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Connection State Indicators */
+.video-call--connecting {
+  opacity: 0.8;
+}
+
+.video-call--connected {
+  opacity: 1;
+}
+
+.video-call--reconnecting {
+  opacity: 0.7;
+  position: relative;
+}
+
+.video-call--reconnecting::after {
+  content: "Reconnecting...";
+  position: absolute;
+  top: 0.5em;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(255, 193, 7, 0.9);
+  color: #000;
+  padding: 0.25em 0.75em;
+  border-radius: 1em;
+  font-size: 0.75em;
+  font-weight: 600;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.video-call--disconnected {
+  opacity: 0.6;
+}
+
+/* Connection Quality Indicators */
+.video-call--quality-poor::before {
+  content: "";
+  position: absolute;
+  top: 0.5em;
+  right: 0.5em;
+  width: 8px;
+  height: 8px;
+  background-color: #dc3545;
+  border-radius: 50%;
+  z-index: 100;
+  box-shadow: 0 0 0 2px var(--color-bg);
+}
+
+.video-call--quality-fair::before {
+  content: "";
+  position: absolute;
+  top: 0.5em;
+  right: 0.5em;
+  width: 8px;
+  height: 8px;
+  background-color: #ffc107;
+  border-radius: 50%;
+  z-index: 100;
+  box-shadow: 0 0 0 2px var(--color-bg);
+}
+
+.video-call--quality-good::before,
+.video-call--quality-excellent::before {
+  content: "";
+  position: absolute;
+  top: 0.5em;
+  right: 0.5em;
+  width: 8px;
+  height: 8px;
+  background-color: #28a745;
+  border-radius: 50%;
+  z-index: 100;
+  box-shadow: 0 0 0 2px var(--color-bg);
+}
+
+/* Error Message Display */
+.video-call__error {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 0.75em 1em;
+  margin: 0.5em 1em;
+  background-color: var(--color-negative, #dc3545);
+  color: var(--color-text-reversed, #fff);
+  border-radius: 0.5em;
+  font-size: 0.875em;
+  font-weight: 500;
+  z-index: 1000;
+}
+
+.video-call__error--permission {
+  background-color: #ffc107;
+  color: #000;
+}
+
+.video-call__error--device {
+  background-color: #ff9800;
+}
+
+.video-call__error--network,
+.video-call__error--reconnect {
+  background-color: #2196f3;
+}
+
+.video-call__error--auth {
+  background-color: var(--color-negative, #dc3545);
+}
+
+.video-call__error-text {
+  flex: 1;
+}
+
+.video-call__error-dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.5em;
+  line-height: 1;
+  padding: 0;
+  width: 1.5em;
+  height: 1.5em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25em;
+  transition: background-color 0.2s;
+}
+
+.video-call__error-dismiss:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+

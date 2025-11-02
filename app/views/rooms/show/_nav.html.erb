@@ -1,15 +1,23 @@
 <% content_for :nav do %>
   <%= account_logo_tag if Current.account.logo.attached? %>
 
-  <%= tag.span class: "btn btn--reversed btn--faux room--current" do %>
-    <h1 class="room__contents txt-medium overflow-ellipsis">
-      <% if room.direct? %>
-        <span class="for-screen-reader">Ping with</span>
-      <% end %>
+  <% if defined?(room) && room %>
+    <%= tag.span class: "btn btn--reversed btn--faux room--current" do %>
+      <h1 class="room__contents txt-medium overflow-ellipsis">
+        <% if room.direct? %>
+          <span class="for-screen-reader">Ping with</span>
+        <% end %>
 
-      <%= room_display_name(room) %>
-    </h1>
+        <%= room_display_name(room) %>
+      </h1>
+    <% end %>
+
+    <%= link_to_edit_room(room) do %>
+      <%= image_tag "menu-dots-horizontal.svg", size: 20, aria: { hidden: "true" } %>
+      <span class="for-screen-reader">Settings for this <%= room.direct? ? "Ping" : "room" %></span>
+    <% end %>
   <% end %>
+<% end %>
 
   <%= link_to_edit_room(room) do %>
     <%= image_tag "menu-dots-horizontal.svg", size: 20, aria: { hidden: "true" } %>
