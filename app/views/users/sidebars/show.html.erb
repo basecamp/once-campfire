@@ -6,39 +6,48 @@
       data-controller="badge-dot"
       data-badge-dot-unread-class="unread"
       data-action="rooms-list:unread@window->badge-dot#update rooms-list:read@window->badge-dot#update turbo:submit-start->turbo-frame#unpermanize">
+    
+    <!-- Direct Messages Section -->
     <turbo-frame id="direct_rooms_control" target="_top">
-      <div class="directs gap overflow-x overflow-hide-scrollbar">
-        <%= link_to new_rooms_direct_path, class: "direct direct__new", data: { turbo_frame: "_self" } do %>
-          <span class="avatar avatar--icon">
-            <%= image_tag "messages-add.svg", size: 20, aria: { hidden: "true" }, class: "colorize--black" %>
-          </span>
-
-          <span class="direct__author flex max-width min-width border-radius pad-inline-half">
-            <span class="for-screen-reader">New</span>
-            <span class="txt-small overflow-clip">Ping</span>
-          </span>
-        <% end %>
-
-        <div id="direct_rooms" contents data-controller="sorted-list" data-action="rooms-list:unread@window->sorted-list#updateItem">
-          <%= render partial: "users/sidebars/rooms/direct", collection: @direct_memberships, as: :membership, cached: true %>
+      <div class="sidebar__section">
+        <div class="sidebar__section-header">
+          <span>Direct Messages</span>
+          <%= link_to new_rooms_direct_path, class: "sidebar__section-header-button", data: { turbo_frame: "_self" }, title: "New Ping" do %>
+            <%= image_tag "messages-add.svg", size: 16, aria: { hidden: "true" }, class: "colorize--black" %>
+            <span class="for-screen-reader">New Ping</span>
+          <% end %>
         </div>
+        
+        <div class="directs">
+          <div id="direct_rooms" contents data-controller="sorted-list" data-action="rooms-list:unread@window->sorted-list#updateItem">
+            <%= render partial: "users/sidebars/rooms/direct", collection: @direct_memberships, as: :membership, cached: true %>
+          </div>
 
-        <div contents>
-          <%= render partial: "users/sidebars/rooms/direct_placeholder", collection: @direct_placeholder_users, as: :user %>
+          <div contents>
+            <%= render partial: "users/sidebars/rooms/direct_placeholder", collection: @direct_placeholder_users, as: :user %>
+          </div>
         </div>
       </div>
     </turbo-frame>
 
-    <div class="rooms position-relative flex flex-column gap">
-      <div id="shared_rooms" contents data-controller="sorted-list">
-        <% @other_memberships.each do |membership| %>
-          <%= render "users/sidebars/rooms/shared", room: membership.room, unread: membership.unread?, current_room: @current_room %>
+    <!-- Shared Rooms Section -->
+    <div class="sidebar__section">
+      <div class="sidebar__section-header">
+        <span>Rooms</span>
+      </div>
+      
+      <div class="rooms">
+        <div id="shared_rooms" contents data-controller="sorted-list">
+          <% @other_memberships.each do |membership| %>
+            <%= render "users/sidebars/rooms/shared", room: membership.room, unread: membership.unread?, current_room: @current_room %>
+          <% end %>
+        </div>
+
+        <%= link_to new_rooms_open_path, class: "rooms__new-btn", aria: { label: "New Chat Room" } do %>
+          <%= image_tag "add.svg", size: 20, aria: { hidden: "true" }, style: "view-transition-name: new-room" %>
+          <span>New Room</span>
         <% end %>
       </div>
-
-      <%= link_to new_rooms_open_path, class: "rooms__new-btn btn room align-center gap txt-reversed", aria: { label: "New Chat Room" } do %>
-        <%= image_tag "add.svg", size: 20, aria: { hidden: "true" }, style: "view-transition-name: new-room" %>
-      <% end %>
     </div>
 
     <button class="btn sidebar__toggle" data-action="toggle-class#toggle">
@@ -47,17 +56,18 @@
     </button>
   </div>
 
-  <div class="flex align-end sidebar__tools gap justify-end">
+  <!-- Sidebar Tools (Bottom Fixed) -->
+  <div class="sidebar__tools">
     <% if @current_room %>
       <%= render "rooms/involvements/bell", room: @current_room %>
     <% end %>
     
-    <%= link_to user_profile_path, class: "btn avatar flex-item-no-shrink sidebar__tool" do %>
-      <%= image_tag fresh_user_avatar_path(Current.user), size: 48, aria: { hidden: "true" }, style: "view-transition-name: avatar-#{Current.user.id}" %>
+    <%= link_to user_profile_path, class: "btn avatar sidebar__tool", title: "My Settings" do %>
+      <%= image_tag fresh_user_avatar_path(Current.user), aria: { hidden: "true" }, style: "view-transition-name: avatar-#{Current.user.id}" %>
       <span class="for-screen-reader">My Settings</span>
     <% end %>
 
-    <%= link_to edit_account_path, class: "btn align-center gap txt-reversed sidebar__tool" do %>
+    <%= link_to edit_account_path, class: "btn sidebar__tool", title: "Account Settings" do %>
       <%= image_tag "settings.svg", size: 20, aria: { hidden: "true" }, style: "view-transition-name: account-settings" %>
       <span class="for-screen-reader">Account Settings</span>
     <% end %>

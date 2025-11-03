@@ -5,12 +5,13 @@ module RoomsHelper
     }.merge(attributes.delete(:data) || {}), &
   end
 
-  def link_to_edit_room(room, &)
+  def link_to_edit_room(room, **options, &)
     link_to \
       [ :edit, room ],
-      class: "btn",
+      class: "btn #{options[:class]}".strip,
       style: "view-transition-name: edit-room-#{room.id}",
       data: { room_id: room.id },
+      title: options[:title],
       &
   end
 

@@ -1,28 +1,74 @@
 <% content_for :nav do %>
-  <%= account_logo_tag if Current.account.logo.attached? %>
+  <% 
+    # Get data for nav
+    all_memberships = Current.user.memberships.visible.with_ordered_room
+    direct_memberships = all_memberships.select { |m| m.room.direct? }.sort_by { |m| m.room.updated_at }.reverse
+    other_memberships = all_memberships.reject { |m| m.room.direct? }
+    
+    direct_placeholders_count = 20
+    exclude_user_ids = Membership.where(room_id: Current.user.rooms.directs.pluck(:id)).pluck(:user_id).uniq.including(Current.user.id)
+    direct_placeholder_users = User.active.where.not(id: exclude_user_ids).order(:created_at).limit(direct_placeholders_count - exclude_user_ids.count)
+  %>
+  
+  <% if Current.account.logo.attached? %>
+    <div class="nav__account-logo">
+      <%= account_logo_tag %>
+    </div>
+  <% end %>
 
+  <!-- Direct Messages - Top Horizontal Icons -->
+  <turbo-frame id="direct_rooms_control" target="_top">
+    <div class="nav__direct-messages">
+      <%= link_to new_rooms_direct_path, class: "nav__direct-item nav__direct-new", data: { turbo_frame: "_self" }, title: "New Ping" do %>
+        <span class="avatar">
+          <%= image_tag "messages-add.svg", size: 24, aria: { hidden: "true" }, class: "colorize--black" %>
+        </span>
+        <span class="nav__direct-label">Ping</span>
+      <% end %>
+
+      <div id="direct_rooms" class="nav__direct-items" contents data-controller="sorted-list" data-action="rooms-list:unread@window->sorted-list#updateItem">
+        <%= render partial: "users/sidebars/rooms/direct", collection: direct_memberships, as: :membership, cached: true %>
+      </div>
+
+      <div class="nav__direct-items" contents>
+        <%= render partial: "users/sidebars/rooms/direct_placeholder", collection: direct_placeholder_users, as: :user %>
+      </div>
+    </div>
+  </turbo-frame>
+
+  <!-- Rooms List - Vertical Buttons -->
   <% if defined?(room) && room %>
-    <%= tag.span class: "btn btn--reversed btn--faux room--current" do %>
-      <h1 class="room__contents txt-medium overflow-ellipsis">
-        <% if room.direct? %>
-          <span class="for-screen-reader">Ping with</span>
+    <div class="nav__room-info">
+      <div class="nav__rooms-list">
+        <div id="shared_rooms" contents data-controller="sorted-list">
+          <% other_memberships.each do |membership| %>
+            <%= render "users/sidebars/rooms/shared", room: membership.room, unread: membership.unread?, current_room: room %>
+          <% end %>
+        </div>
+
+        <%= link_to new_rooms_open_path, class: "nav__new-room-btn", aria: { label: "New Chat Room" } do %>
+          <%= image_tag "add.svg", size: 20, aria: { hidden: "true" }, style: "view-transition-name: new-room" %>
         <% end %>
+      </div>
 
-        <%= room_display_name(room) %>
-      </h1>
-    <% end %>
+      <!-- Current Room Info -->
+      <div class="nav__current-room">
+        <div class="nav__room-name">
+          <%= tag.span class: "room__contents txt-medium overflow-ellipsis" do %>
+            <% if room.direct? %>
+              <span class="for-screen-reader">Ping with</span>
+            <% end %>
+            <%= room_display_name(room) %>
+          <% end %>
+        </div>
 
-    <%= link_to_edit_room(room) do %>
-      <%= image_tag "menu-dots-horizontal.svg", size: 20, aria: { hidden: "true" } %>
-      <span class="for-screen-reader">Settings for this <%= room.direct? ? "Ping" : "room" %></span>
-    <% end %>
+        <div class="nav__room-actions">
+          <%= link_to_edit_room(room, title: "Settings for this #{room.direct? ? "Ping" : "room"}") do %>
+            <%= image_tag "menu-dots-horizontal.svg", size: 20, aria: { hidden: "true" } %>
+            <span class="for-screen-reader">Settings for this <%= room.direct? ? "Ping" : "room" %></span>
+          <% end %>
+        </div>
+      </div>
+    </div>
   <% end %>
-<% end %>
-
-  <%= link_to_edit_room(room) do %>
-    <%= image_tag "menu-dots-horizontal.svg", size: 20, aria: { hidden: "true" } %>
-    <span class="for-screen-reader">Settings for this <%= room.direct? ? "Ping" : "room" %></span>
-  <% end %>
-
-  <%= render "rooms/involvements/bell", room: room %>
 <% end %>
