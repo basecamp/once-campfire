@@ -28,3 +28,11 @@ bender:
   name: Bender Bot
   bot_token: <%= User.generate_bot_token %>
   role: bot
+
+bruce_banned:
+  name: Bruce Banner
+  email_address: bruce_banned@37signals.com
+  password_digest: <%= password_digest %>
+  bio: A banned user
+  active: false
+  banned: true
