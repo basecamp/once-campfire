@@ -16,7 +16,7 @@ threads min_threads_count, max_threads_count
 worker_timeout 3600 if ENV.fetch("RAILS_ENV", "development") == "development"
 
 # Bind http listener.
-PORT=ENV.fetch("PORT", 3000)
+PORT=ENV.fetch("PORT", 5000)
 bind "tcp://0.0.0.0:#{PORT}"
 
 # Specifies the `environment` that Puma will run in.
@@ -33,7 +33,7 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 # processes).
 #
 worker_count = (Concurrent.processor_count * 0.666).ceil
-workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
+workers ENV.fetch("WEB_CONCURRENCY") { Rails.env.development? ? 1 : worker_count }
 
 ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
 
