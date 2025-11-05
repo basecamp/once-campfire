@@ -1,0 +1,11 @@
+<section class="txt-align-center">
+  <div class="panel upad stack gap">
+    <h1 class="txt-xx-large">Account access restricted</h1>
+    <p class="txt-large">Your account has been banned. Please contact an administrator if you believe this is a mistake.</p>
+    <div class="flex justify-center">
+      <%= button_to "Sign out", session_path, method: :delete, class: "btn btn--reversed" %>
+    </div>
+  </div>
+
+  <%= render "accounts/help_contact" %>
+</section>

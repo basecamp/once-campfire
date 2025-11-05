@@ -1,6 +1,7 @@
 class User < ApplicationRecord
   include Avatar, Bot, Mentionable, Role, Transferable
 
+
   has_many :memberships, dependent: :delete_all
   has_many :rooms, through: :memberships
 
