@@ -9,6 +9,13 @@ trix-editor,
     margin-block: var(--block-space) var(--block-space-half);
     overflow: clip;
     padding: var(--block-space) calc(var(--inline-space) * 1.5);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    cursor: pointer;
+
+    &:hover {
+      border-color: var(--color-link);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
 
     @media (min-width: 100ch) {
       align-items: start;
@@ -27,6 +34,25 @@ trix-editor,
     overflow: hidden;
     text-overflow: clip;
     white-space: normal;
+    position: relative;
+    flex: 1;
+  }
+
+  .og-embed__expand-indicator {
+    position: absolute;
+    top: 0;
+    right: 0;
+    background: var(--color-bg);
+    padding: 0.25em;
+    border-radius: 0.25em;
+    opacity: 0.7;
+    transition: opacity 0.2s ease;
+    font-size: 0.875em;
+    color: var(--color-text-muted);
+  }
+
+  .og-embed:hover .og-embed__expand-indicator {
+    opacity: 1;
   }
 
   .og-embed__description {
