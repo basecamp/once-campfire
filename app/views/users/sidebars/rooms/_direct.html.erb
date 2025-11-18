@@ -1,5 +1,5 @@
 <% cache membership do %>
-  <% members = membership.room.users.without(membership.user).presence || [ membership.user ] %>
+  <% members = membership.room.users.without(membership.user).where(active: true).presence || (membership.user.deactivated? ? [] : [ membership.user ]) %>
 
   <%= link_to_room membership.room, class: [ "direct", "unread": membership.unread? ], id: dom_id(membership.room, :list),
         data: { sorted_list_number: membership.room.updated_at.to_fs(:epoch) } do %>
