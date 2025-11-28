@@ -28,6 +28,7 @@ To configure additional features, you can set the following environment variable
   `/script/admin/create-vapid-key`
 - `SENTRY_DSN` - to enable error reporting to sentry in production, supply your
   DSN here
+- `MAX_ATTACHMENT_SIZE_IN_BYTES` - sets maximum size in bytes, per attachment, if not defined there is no limit in size
 
 For example:
 

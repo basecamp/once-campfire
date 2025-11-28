@@ -66,7 +66,9 @@ module RoomsHelper
         controller: "composer drop-target",
         action: composer_data_actions,
         composer_messages_outlet: "#message-area",
-        composer_toolbar_class: "composer--rich-text", composer_room_id_value: room.id
+        composer_toolbar_class: "composer--rich-text",
+        composer_room_id_value: room.id,
+        composer_max_attachment_size_in_bytes_value: max_attachment_size_in_bytes
       }
     end
 
