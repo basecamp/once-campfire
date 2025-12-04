@@ -24,13 +24,36 @@ class Opengraph::Fetch
   private
     def request(url, request_class, ip:)
       MAX_REDIRECTS.times do
-        Net::HTTP.start(url.host, url.port, ipaddr: ip, use_ssl: url.scheme == "https") do |http|
-          http.request request_class.new(url) do |response|
-            if response.is_a?(Net::HTTPRedirection)
-              url, ip = resolve_redirect(response["location"])
-            else
-              yield response
+        begin
+          Net::HTTP.start(url.host, url.port, ipaddr: ip, use_ssl: url.scheme == "https") do |http|
+            http.request request_class.new(url) do |response|
+              if response.is_a?(Net::HTTPRedirection)
+                url, ip = resolve_redirect(response["location"])
+              else
+                yield response
+              end
             end
+          end
+        rescue => e
+          Rails.logger.warn "Failed to fetch #{url} at #{ip} (#{e})"
+          # Try without specifying IP if the first attempt fails
+          if ip
+            begin
+              Net::HTTP.start(url.host, url.port, use_ssl: url.scheme == "https") do |http|
+                http.request request_class.new(url) do |response|
+                  if response.is_a?(Net::HTTPRedirection)
+                    url, ip = resolve_redirect(response["location"])
+                  else
+                    yield response
+                  end
+                end
+              end
+            rescue => e2
+              Rails.logger.warn "Failed to fetch #{url} without IP (#{e2})"
+              raise e2
+            end
+          else
+            raise e
           end
         end
       end
