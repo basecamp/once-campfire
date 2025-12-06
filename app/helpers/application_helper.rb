@@ -22,6 +22,22 @@ module ApplicationHelper
     [ @body_class, admin_body_class, account_logo_body_class ].compact.join(" ")
   end
 
+  def is_attachment_size_valid(attachment_size_in_bytes)
+    return true unless max_attachment_size_enabled?
+
+    attachment_size_in_bytes <= max_attachment_size_in_bytes
+  end
+
+  def max_attachment_size_enabled?
+    ENV.fetch("MAX_ATTACHMENT_SIZE_IN_BYTES", nil).present? && Integer(ENV.fetch("MAX_ATTACHMENT_SIZE_IN_BYTES", nil)).positive?
+  end
+
+  def max_attachment_size_in_bytes
+    return nil unless max_attachment_size_enabled?
+
+    Integer(ENV["MAX_ATTACHMENT_SIZE_IN_BYTES"])
+  end
+
   def link_back
     back_url = request.referrer
     back_url = root_path if back_url.nil? || back_url == request.url
