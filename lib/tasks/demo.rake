@@ -79,7 +79,7 @@ namespace :demo do
     closed_rooms << engineering_room
 
     # Design room - designers only
-    design_members = all_users.select { |u| u.bio&.match?(/design/i) } + [admins.first]
+    design_members = all_users.select { |u| u.bio&.match?(/design/i) } + [ admins.first ]
     design_room = Rooms::Closed.find_or_create_by!(name: "Design") do |r|
       r.creator = admins.first
     end
@@ -106,10 +106,10 @@ namespace :demo do
     # Create Direct Rooms between some users
     direct_rooms = []
     user_pairs = [
-      [admins[0], admins[1]],
-      [admins[0], members[0]],
-      [members[0], members[1]],
-      [members[2], members[3]]
+      [ admins[0], admins[1] ],
+      [ admins[0], members[0] ],
+      [ members[0], members[1] ],
+      [ members[2], members[3] ]
     ]
 
     user_pairs.each do |pair|
@@ -175,7 +175,7 @@ namespace :demo do
     ]
 
     # Emoji reactions for boosts
-    reactions = ["👍", "❤️", "🎉", "🚀", "💯", "👏", "🔥", "✨", "😄", "🙌"]
+    reactions = [ "👍", "❤️", "🎉", "🚀", "💯", "👏", "🔥", "✨", "😄", "🙌" ]
 
     # Add messages to open rooms
     puts "  Adding messages to rooms..."
@@ -312,5 +312,5 @@ namespace :demo do
   end
 
   desc "Reset and regenerate demo data"
-  task reset: [:clear, :seed]
+  task reset: [ :clear, :seed ]
 end
