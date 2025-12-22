@@ -5,7 +5,8 @@
         <div class="og-embed__title">
           <%= link_to truncate(opengraph_embed.filename, length: 280, omission: "…"), opengraph_embed.href, rel: "noreferrer", target: "_blank" %>
         </div>
-        <div class="og-embed__description"><%= truncate(opengraph_embed.caption, length: 560, omission: "…").html_safe %></div>
+        <div class="og-embed__description"><%= truncate(opengraph_embed.description, length: 560, omission: "…").html_safe %></div>
+        <div class="og-embed__expand-indicator">↗</div>
       </div>
       <% if opengraph_embed.url %>
         <div class="og-embed__image">
