@@ -593,3 +593,9 @@ img.message__attachment {
     inline-size: 1.4em;
   }
 }
+
+/* Reset password */
+.reset-password-alert {
+  color: var(--color-negative);
+  visibility: hidden;
+}

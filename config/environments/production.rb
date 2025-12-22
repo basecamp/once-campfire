@@ -93,4 +93,19 @@ Rails.application.configure do
   config.active_record.attributes_for_inspect = [ :id ]
 
   config.active_job.queue_adapter = :resque
+
+  # SMTP mailer setup
+  config.feature_enable_smtp = ENV.fetch("SMTP_ENABLED", false)
+  config.action_mailer.delivery_method = :smtp
+  config.action_mailer.smtp_settings = {
+    address:         ENV.fetch("SMTP_ADDRESS", nil),
+    port:            ENV.fetch("SMTP_PORT", nil),
+    domain:          ENV.fetch("SMTP_DOMAIN", nil),
+    user_name:       ENV.fetch("SMTP_USER_NAME", nil),
+    password:        ENV.fetch("SMTP_PASSWORD", nil),
+    authentication:  "plain",
+    enable_starttls: true,
+    open_timeout:    5,
+    read_timeout:    5
+  }
 end
