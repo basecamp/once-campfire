@@ -28,7 +28,8 @@ module MessagesHelper
     tag.div id: dom_id(message),
       class: "message #{"message--emoji" if message.plain_text_body.all_emoji?}",
       data: {
-        controller: "reply",
+        controller: "reply swipe-reply tap-react",
+        action: "touchstart->swipe-reply#touchstart touchmove->swipe-reply#touchmove touchend->swipe-reply#touchend click->tap-react#tap click@document->tap-react#closeOnClickOutside keydown.esc@document->tap-react#closeOnEscape",
         user_id: message.creator_id,
         message_id: message.id,
         message_timestamp: message_timestamp_milliseconds,
@@ -37,7 +38,8 @@ module MessagesHelper
         messages_target: "message",
         search_results_target: "message",
         refresh_room_target: "message",
-        reply_composer_outlet: "#composer"
+        reply_composer_outlet: "#composer",
+        swipe_reply_composer_outlet: "#composer"
       }, &
   rescue Exception => e
     Sentry.capture_exception(e, extra: { message: message })

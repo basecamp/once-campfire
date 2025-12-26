@@ -1,10 +1,14 @@
 <script type="text/template" data-messages-target="template">
   <div class="message message--me $messageClasses$"
       id="message_$clientMessageId$"
+      data-controller="reply swipe-reply tap-react"
+      data-action="touchstart->swipe-reply#touchstart touchmove->swipe-reply#touchmove touchend->swipe-reply#touchend click->tap-react#tap"
       data-format-message-target="message"
       data-user-id="<%= Current.user.id %>"
       data-message-timestamp="$messageTimestamp$"
-      data-messages-target="message">
+      data-messages-target="message"
+      data-reply-composer-outlet="#composer"
+      data-swipe-reply-composer-outlet="#composer">
     <div class="message__day-separator"><time class="message__timestamp" datetime="$messageDatetime$" data-local-time-target="date"></time></div>
 
     <figure class="avatar message__avatar">

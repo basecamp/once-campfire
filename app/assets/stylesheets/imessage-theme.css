@@ -1,0 +1,508 @@
+/* ==========================================================================
+   iMessage Dark Theme for Campfire
+   ========================================================================== */
+
+/* Force dark mode always */
+:root {
+  color-scheme: dark;
+
+  /* iMessage Dark Colors */
+  --lch-black: 95% 0 0;
+  --lch-white: 0% 0 0;
+  --lch-gray: 18% 0.005 260;
+  --lch-gray-dark: 22% 0.005 260;
+  --lch-gray-darker: 35% 0.005 260;
+  --lch-blue: 60% 0.22 255;
+  --lch-blue-light: 25% 0.08 255;
+  --lch-blue-dark: 35% 0.1 255;
+  --lch-orange: 75% 0.18 50;
+  --lch-red: 65% 0.22 25;
+  --lch-green: 70% 0.22 145;
+
+  /* iMessage bubble colors */
+  --imessage-blue: oklch(55% 0.24 255);
+  --imessage-gray: oklch(28% 0.01 260);
+  --imessage-bg: oklch(0% 0 0);
+  --imessage-text: oklch(95% 0 0);
+  --imessage-text-subtle: oklch(60% 0 0);
+
+  /* Override base colors */
+  --color-bg: var(--imessage-bg);
+  --color-text: var(--imessage-text);
+  --color-message-bg: var(--imessage-gray);
+}
+
+/* ==========================================================================
+   Base Layout
+   ========================================================================== */
+
+body {
+  background-color: var(--imessage-bg) !important;
+}
+
+#main-content {
+  background-color: var(--imessage-bg);
+}
+
+.messages {
+  background-color: var(--imessage-bg);
+  padding-inline: 0.5rem;
+}
+
+/* ==========================================================================
+   Message Bubbles - iMessage Style
+   ========================================================================== */
+
+.message {
+  padding-inline: 1rem;
+  margin-block: 0.25rem;
+
+  /* Smooth swipe animation */
+  will-change: transform;
+  touch-action: pan-y;
+}
+
+.message__body-content {
+  --content-padding-block: 0.6rem;
+  --content-padding-inline: 1rem;
+
+  background-color: var(--imessage-gray);
+  border-radius: 18px;
+  max-inline-size: 75%;
+  position: relative;
+
+  /* Smooth corners like iMessage */
+  border-end-start-radius: 18px;
+  border-end-end-radius: 18px;
+  border-start-start-radius: 18px;
+  border-start-end-radius: 18px;
+}
+
+/* My messages - blue bubbles on right */
+.message--me .message__body-content {
+  background: linear-gradient(135deg, var(--imessage-blue), oklch(50% 0.26 260));
+  color: white;
+
+  /* iMessage tail effect for my messages */
+  border-end-end-radius: 4px;
+}
+
+/* Other's messages - gray bubbles on left */
+.message:not(.message--me) .message__body-content {
+  background-color: var(--imessage-gray);
+  color: var(--imessage-text);
+
+  /* iMessage tail effect for others */
+  border-end-start-radius: 4px;
+}
+
+/* Threaded/consecutive messages - smaller radius */
+.message--threaded .message__body-content {
+  border-radius: 18px;
+}
+
+.message--threaded.message--me .message__body-content {
+  border-end-end-radius: 4px;
+  border-start-end-radius: 4px;
+}
+
+.message--threaded:not(.message--me) .message__body-content {
+  border-end-start-radius: 4px;
+  border-start-start-radius: 4px;
+}
+
+/* ==========================================================================
+   Hide Default Elements - Clean iMessage Look
+   ========================================================================== */
+
+/* Hide avatars for cleaner look (optional - comment out to keep) */
+.message__avatar {
+  display: none;
+}
+
+/* Adjust grid without avatar */
+.message {
+  grid-auto-columns: 1fr;
+  grid-template-areas:
+    "sep"
+    "body";
+}
+
+.message--me {
+  grid-auto-columns: 1fr;
+  grid-template-areas:
+    "sep"
+    "body";
+}
+
+/* Hide author name (iMessage doesn't show it in 1-on-1) */
+.message__author {
+  display: none;
+}
+
+/* Keep timestamp subtle */
+.message__permalink {
+  font-size: 0.7rem;
+  opacity: 0.4;
+}
+
+/* ==========================================================================
+   Reactions Popup - iMessage Tapback Style
+   ========================================================================== */
+
+.message__actions-menu {
+  background: oklch(22% 0.01 260);
+  border: none;
+  border-radius: 22px;
+  padding: 0.4rem;
+  box-shadow: 0 8px 32px oklch(0% 0 0 / 0.5);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Arrow styling */
+.message__actions-menu::before,
+.message__actions-menu::after {
+  display: none; /* Hide arrow for cleaner look */
+}
+
+/* Emoji reactions grid - horizontal like iMessage */
+.quick-boosts {
+  display: flex;
+  gap: 0.25rem;
+  grid-template-columns: none;
+}
+
+.quick-boosts .btn {
+  --btn-size: 2.5rem;
+
+  border-radius: 50%;
+  padding: 0;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.quick-boosts .btn:hover {
+  transform: scale(1.2);
+  background: oklch(30% 0.01 260);
+}
+
+.quick-boosts .btn:active {
+  transform: scale(0.95);
+}
+
+.boost-character {
+  font-size: 1.5rem;
+}
+
+/* Action buttons row */
+.message__actions-grid {
+  border-top: 1px solid oklch(30% 0.01 260);
+  margin-block-start: 0.4rem;
+  padding-block-start: 0.4rem;
+}
+
+.message__actions-grid .btn {
+  color: var(--imessage-text);
+  opacity: 0.8;
+}
+
+.message__actions-grid .btn:hover {
+  opacity: 1;
+  background: oklch(28% 0.01 260);
+}
+
+/* ==========================================================================
+   Swipe to Reply Indicator
+   ========================================================================== */
+
+.message {
+  position: relative;
+}
+
+.message::before {
+  content: "↩";
+  position: absolute;
+  left: -2rem;
+  top: 50%;
+  transform: translateY(-50%) scale(0.5);
+  opacity: 0;
+  font-size: 1.5rem;
+  color: var(--imessage-blue);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+
+.message.swipe-reply--ready::before {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+/* ==========================================================================
+   Tap to React - Active State
+   ========================================================================== */
+
+.message.tap-react--active {
+  z-index: 100;
+}
+
+.message.tap-react--active .message__body-content {
+  transform: scale(0.98);
+  transition: transform 0.15s ease;
+}
+
+/* ==========================================================================
+   Boosts/Reactions Display - iMessage Style
+   ========================================================================== */
+
+.boosts {
+  margin-block-start: 0.25rem;
+}
+
+.boost {
+  background: oklch(25% 0.01 260);
+  border: none;
+  border-radius: 12px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.9rem;
+  box-shadow: 0 2px 8px oklch(0% 0 0 / 0.3);
+}
+
+.boost:hover {
+  background: oklch(30% 0.01 260);
+}
+
+.boost__avatar {
+  --avatar-size: 1.5ch;
+}
+
+/* ==========================================================================
+   Composer - iMessage Style
+   ========================================================================== */
+
+.composer {
+  background: oklch(12% 0.01 260);
+  border-top: 1px solid oklch(20% 0.01 260);
+  padding: 0.75rem 1rem;
+}
+
+.composer__form {
+  background: oklch(20% 0.01 260);
+  border-radius: 20px;
+  border: none;
+}
+
+.composer .input,
+.composer .trix-content {
+  background: transparent;
+  color: var(--imessage-text);
+}
+
+/* Send button - blue circle like iMessage */
+.composer .btn[type="submit"],
+.composer button[type="submit"] {
+  background: var(--imessage-blue);
+  border-radius: 50%;
+  aspect-ratio: 1;
+  padding: 0.5rem;
+}
+
+/* ==========================================================================
+   Navigation & Sidebar
+   ========================================================================== */
+
+#nav {
+  background: oklch(8% 0.01 260);
+  border-bottom: 1px solid oklch(18% 0.01 260);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+#sidebar {
+  background: oklch(8% 0.01 260);
+  border-right: 1px solid oklch(18% 0.01 260);
+}
+
+.sidebar__container {
+  background: oklch(8% 0.01 260);
+}
+
+/* ==========================================================================
+   Day Separator - Subtle
+   ========================================================================== */
+
+.message__day-separator {
+  color: var(--imessage-text-subtle);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: none;
+}
+
+.message__day-separator time,
+.message__day-separator span {
+  background: oklch(15% 0.01 260);
+  color: var(--imessage-text-subtle);
+  padding: 0.4em 1em;
+  border-radius: 12px;
+}
+
+.message__day-separator::before,
+.message__day-separator::after {
+  border-color: oklch(15% 0.01 260);
+}
+
+/* ==========================================================================
+   Hide Campfire Branding
+   ========================================================================== */
+
+#app-logo {
+  display: none;
+}
+
+#footer a[href*="once.com"],
+#footer a[href*="campfire"] {
+  display: none;
+}
+
+/* ==========================================================================
+   Scrollbar - Dark Theme
+   ========================================================================== */
+
+.messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.messages::-webkit-scrollbar-thumb {
+  background: oklch(30% 0 0);
+  border-radius: 3px;
+}
+
+.messages::-webkit-scrollbar-thumb:hover {
+  background: oklch(40% 0 0);
+}
+
+/* ==========================================================================
+   Panels & Dialogs
+   ========================================================================== */
+
+.panel {
+  background: oklch(15% 0.01 260);
+  border: 1px solid oklch(25% 0.01 260);
+  border-radius: 16px;
+}
+
+.dialog::backdrop {
+  background: oklch(0% 0 0 / 0.7);
+  backdrop-filter: blur(10px);
+}
+
+/* ==========================================================================
+   Inputs & Buttons
+   ========================================================================== */
+
+.input {
+  background: oklch(18% 0.01 260);
+  border-color: oklch(28% 0.01 260);
+  color: var(--imessage-text);
+  border-radius: 10px;
+}
+
+.input:focus {
+  border-color: var(--imessage-blue);
+  box-shadow: 0 0 0 2px oklch(55% 0.24 255 / 0.3);
+}
+
+.btn {
+  border-radius: 10px;
+}
+
+.btn:not(.btn--plain):not(.btn--faux) {
+  background: var(--imessage-blue);
+  border-color: var(--imessage-blue);
+}
+
+/* ==========================================================================
+   Emoji-only Messages - Big like iMessage
+   ========================================================================== */
+
+.message--emoji:not(:has(.composer--edit)) .message__body-content {
+  background: transparent !important;
+  padding: 0.25rem 0;
+}
+
+.message--emoji .trix-content {
+  font-size: 3rem;
+  line-height: 1.2;
+}
+
+/* ==========================================================================
+   Animations
+   ========================================================================== */
+
+@keyframes message-appear {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.message {
+  animation: message-appear 0.25s ease-out;
+}
+
+/* Reaction popup animation */
+@keyframes popup-appear {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+.message:has([open]) .message__actions-menu {
+  animation: popup-appear 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+/* ==========================================================================
+   Mobile Optimizations
+   ========================================================================== */
+
+@media (max-width: 100ch) {
+  .message {
+    padding-inline: 0.75rem;
+  }
+
+  .message__body-content {
+    max-inline-size: 85%;
+  }
+
+  .quick-boosts .btn {
+    --btn-size: 2.75rem;
+  }
+
+  .boost-character {
+    font-size: 1.6rem;
+  }
+}
+
+/* Disable hover effects on touch devices */
+@media (hover: none) {
+  .message__options-btn {
+    opacity: 0.6;
+  }
+
+  .quick-boosts .btn:hover {
+    transform: none;
+    background: transparent;
+  }
+}
