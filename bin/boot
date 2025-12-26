@@ -51,4 +51,4 @@ class MonitoredProcess
   end
 end
 
-ProcessMonitor.new("Procfile")
+ProcessMonitor.new(ARGV[0] || ENV.fetch("PROCFILE", "Procfile"))
