@@ -16,7 +16,7 @@ module RestrictedHTTP
 
     def private_ip?(ip)
       IPAddr.new(ip).then do |ipaddr|
-        ipaddr.private? || ipaddr.loopback? || ipaddr.link_local? || ipaddr.ipv4_mapped? || LOCAL_IP.include?(ipaddr)
+        ipaddr.private? || ipaddr.loopback? || ipaddr.link_local? || ipaddr.ipv4_mapped? || ipaddr.ipv4_compat? || LOCAL_IP.include?(ipaddr)
       end
     rescue IPAddr::InvalidAddressError
       true
