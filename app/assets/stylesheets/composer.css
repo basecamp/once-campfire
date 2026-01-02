@@ -4,6 +4,24 @@
   padding: var(--block-space-half) calc(var(--inline-space) + 1vw);
 }
 
+.composer-notice {
+  text-align: right;
+  color: red;
+  font-size: 12px;
+  opacity: 0;
+}
+
+.composer-notice-show {
+   animation: flashMaxAttachmentNotice 2s ease-in
+}
+
+@keyframes flashMaxAttachmentNotice
+{
+  0% { opacity: 1; }
+  95% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 .composer__input-hint,
 .composer__context-btn {
   .composer:has(.composer__input:focus-within) & {

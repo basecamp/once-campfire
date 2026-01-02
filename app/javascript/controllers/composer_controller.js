@@ -5,8 +5,8 @@ import { escapeHTML } from "helpers/dom_helpers"
 
 export default class extends Controller {
   static classes = ["toolbar"]
-  static targets = [ "clientid", "fields", "fileList", "text" ]
-  static values = { roomId: Number }
+  static targets = [ "clientid", "fields", "fileList", "text", "attachmentNotice" ]
+  static values = { roomId: Number, maxAttachmentSizeInBytes: Number }
   static outlets = [ "messages" ]
 
   #files = []
@@ -65,7 +65,14 @@ export default class extends Controller {
 
   filePicked(event) {
     for (const file of event.target.files) {
-      this.#files.push(file)
+      if(this.maxAttachmentSizeInBytesValue === null || file.size <= this.maxAttachmentSizeInBytesValue) {
+        this.#files.push(file)
+      } else {
+        this.attachmentNoticeTarget.addEventListener("animationend", () => {
+          this.attachmentNoticeTarget.classList.remove("composer-notice-show")
+        });
+        this.attachmentNoticeTarget.classList.add("composer-notice-show")
+      }
     }
     event.target.value = null
     this.#updateFileList()
