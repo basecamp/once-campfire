@@ -9,6 +9,8 @@ require "turbo/broadcastable/test_helper"
 
 WebMock.enable!
 
+BCrypt::Engine.cost = BCrypt::Engine::MIN_COST
+
 class ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
