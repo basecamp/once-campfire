@@ -15,7 +15,7 @@ gem "redis", "~> 5.4"
 gem "puma", "~> 6.6"
 
 # Jobs
-gem "solid_queue"
+gem "solid_queue", github: "joshleblanc/solid_queue", branch: "async-mode"
 
 # Assets
 gem "propshaft", github: "rails/propshaft"

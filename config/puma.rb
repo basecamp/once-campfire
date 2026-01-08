@@ -47,8 +47,11 @@ ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
 
-# Run Solid Queue inside Puma in development (no separate bin/jobs process needed)
-plugin :solid_queue if Rails.env.development?
+# Run Solid Queue inside Puma (async mode = threads instead of forking processes)
+if ENV["SOLID_QUEUE_IN_PUMA"]
+  plugin :solid_queue
+  solid_queue_mode :async
+end
 
 # Reset all membership connections
 Membership.disconnect_all

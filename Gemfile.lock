@@ -7,6 +7,19 @@ GIT
       railties (>= 7.1.0)
 
 GIT
+  remote: https://github.com/joshleblanc/solid_queue.git
+  revision: d122b5eb5ce26ea1cf1f5741a2c40a88cc02822d
+  branch: async-mode
+  specs:
+    solid_queue (1.2.4)
+      activejob (>= 7.1)
+      activerecord (>= 7.1)
+      concurrent-ruby (>= 1.3.1)
+      fugit (~> 1.11)
+      railties (>= 7.1)
+      thor (>= 1.3.1)
+
+GIT
   remote: https://github.com/rails/importmap-rails.git
   revision: 51c1a531327fc04ed4552bb0fd523eb43561b817
   specs:
@@ -345,13 +358,6 @@ GEM
     sentry-ruby (5.26.0)
       bigdecimal
       concurrent-ruby (~> 1.0, >= 1.0.2)
-    solid_queue (1.2.4)
-      activejob (>= 7.1)
-      activerecord (>= 7.1)
-      concurrent-ruby (>= 1.3.1)
-      fugit (~> 1.11)
-      railties (>= 7.1)
-      thor (>= 1.3.1)
     sqlite3 (2.7.3-aarch64-linux-gnu)
     sqlite3 (2.7.3-arm64-darwin)
     sqlite3 (2.7.3-x86_64-darwin)
@@ -421,7 +427,7 @@ DEPENDENCIES
   selenium-webdriver
   sentry-rails
   sentry-ruby
-  solid_queue
+  solid_queue!
   sqlite3
   stimulus-rails
   thruster
