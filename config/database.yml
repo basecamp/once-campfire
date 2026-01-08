@@ -14,6 +14,10 @@ development:
   primary:
     <<: *default
     database: storage/db/development.sqlite3
+  queue:
+    <<: *default
+    database: storage/db/development_queue.sqlite3
+    migrations_paths: db/queue_migrate
 
 # Warning: The database defined as "test" will be erased and
 # re-generated from your development database when you run "rake".
@@ -22,13 +26,25 @@ test:
   primary:
     <<: *default
     database: storage/db/test.sqlite3
+  queue:
+    <<: *default
+    database: storage/db/test_queue.sqlite3
+    migrations_paths: db/queue_migrate
 
 performance:
   primary:
     <<: *default
     database: storage/db/performance.sqlite3
+  queue:
+    <<: *default
+    database: storage/db/performance_queue.sqlite3
+    migrations_paths: db/queue_migrate
 
 production:
   primary:
     <<: *default
     database: storage/db/production.sqlite3
+  queue:
+    <<: *default
+    database: storage/db/production_queue.sqlite3
+    migrations_paths: db/queue_migrate

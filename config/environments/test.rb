@@ -57,4 +57,6 @@ Rails.application.configure do
 
   # Load test helpers
   config.autoload_paths += %w[ test/test_helpers ]
+
+  config.solid_queue.connects_to = { database: { writing: :queue } }
 end
