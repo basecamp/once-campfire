@@ -28,7 +28,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "create with valid credentials" do
-    post session_url, params: { email_address: "david@37signals.com", password: "secret123456" }
+    assert_difference -> { Session.count }, +1 do
+      post session_url, params: { email_address: "david@37signals.com", password: "secret123456" }
+    end
 
     assert_redirected_to root_url
     assert parsed_cookies.signed[:session_token]
@@ -43,11 +45,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "destroy" do
     sign_in :david
+    session = users(:david).sessions.last
 
-    delete session_url
+    assert_difference -> { Session.count }, -1 do
+      delete session_url
+    end
 
     assert_redirected_to root_url
     assert_not cookies[:session_token].present?
+    assert_nil Session.find_by(id: session.id)
   end
 
   test "destroy removes the push subscription for the device" do
