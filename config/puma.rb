@@ -47,7 +47,8 @@ ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
 
-# Run Solid Queue inside Puma (async mode = threads instead of forking processes)
+# Optionally run Solid Queue inside Puma for lower memory usage.
+# Set SOLID_QUEUE_IN_PUMA=true and remove the jobs process from Procfile.
 if ENV["SOLID_QUEUE_IN_PUMA"]
   plugin :solid_queue
   solid_queue_mode :async

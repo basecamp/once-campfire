@@ -1,2 +1,3 @@
-web: SOLID_QUEUE_IN_PUMA=true bundle exec thrust bin/start-app
+web: bundle exec thrust bin/start-app
+jobs: bundle exec bin/jobs
 redis: redis-server config/redis.conf
