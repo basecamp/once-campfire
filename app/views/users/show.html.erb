@@ -16,7 +16,7 @@
 <% end %>
 
 <section class="panel txt-align-center">
-  <div class="flex flex-column gap">
+  <div class="flex flex-column gap <%= "banned" if @user.banned? %>">
     <div class="avatar txt-xx-large center" style="background: white">
       <%= image_tag fresh_user_avatar_path(@user), alt: "Profile avatar", class: "avatar" %>
     </div>
@@ -30,7 +30,7 @@
         <% end %>
       </div>
     <% else %>
-      <% if @user.active? %>
+      <% unless @user.deactivated? %>
         <div class="flex flex-column gap" style="--row-gap: calc(var(--block-space) / 3)">
           <h1 class="txt-x-large txt-tight-lines margin-none"><%= @user.name %></h1>
           <% if Current.user.can_administer? %>
@@ -39,16 +39,24 @@
           <div><%= @user.bio %></div>
         </div>
 
-        <div class="pad-inline-double margin-inline margin-block-start">
-          <%= button_to rooms_directs_path(user_ids: [ @user.id ]), class: "btn btn--reversed full-width txt-large" do %>
-            <%= image_tag "messages.svg", aria: { hidden: "true", label: "Ping #{@user.name}" } %>
+        <% if @user.active? %>
+          <div class="pad-inline-double margin-inline margin-block-start">
+            <%= button_to rooms_directs_path(user_ids: [ @user.id ]), class: "btn btn--reversed full-width txt-large" do %>
+              <%= image_tag "messages.svg", aria: { hidden: "true", label: "Ping #{@user.name}" } %>
+            <% end %>
+          </div>
+
+          <% if Current.user.can_administer? %>
+            <hr class="margin-block-start borderless">
+
+            <%= render "users/profiles/transfer", user: @user %>
           <% end %>
-        </div>
+        <% end %>
 
-        <% if Current.user.can_administer? %>
-          <hr class="margin-block-start borderless">
-
-          <%= render "users/profiles/transfer", user: @user %>
+        <% if Current.user.can_administer? && Current.user != @user %>
+          <div class="margin-block-start">
+            <%= render "users/ban_button", user: @user %>
+          </div>
         <% end %>
       <% else %>
         <div>

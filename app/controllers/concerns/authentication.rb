@@ -67,17 +67,27 @@ module Authentication
       authenticated_as session
     end
 
+    def terminate_current_session
+      Current.session&.destroy!
+      reset_session
+      remove_authentication_cookie
+    end
+
     def authenticated_as(session)
-      Current.user = session.user
+      Current.session = session
       set_authenticated_by(:session)
-      cookies.signed.permanent[:session_token] = { value: session.token, httponly: true, same_site: :lax }
+      set_authentication_cookie(session)
     end
 
     def post_authenticating_url
       session.delete(:return_to_after_authenticating) || root_url
     end
 
-    def reset_authentication
+    def set_authentication_cookie(session)
+      cookies.signed.permanent[:session_token] = { value: session.token, httponly: true, same_site: :lax }
+    end
+
+    def remove_authentication_cookie
       cookies.delete(:session_token)
     end
 

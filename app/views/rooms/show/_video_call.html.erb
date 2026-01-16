@@ -6,7 +6,8 @@
      data-video-call-hidden-class="video-call--hidden"
      data-video-call-icon-messages-value="<%= asset_path('messages.svg') %>"
      data-video-call-icon-remove-value="<%= asset_path('remove.svg') %>"
-     data-video-call-icon-disclosure-value="<%= asset_path('disclosure.svg') %>">
+     data-video-call-icon-disclosure-value="<%= asset_path('disclosure.svg') %>"
+     data-video-call-livekit-configured-value="<%= Rails.configuration.x.livekit.url.present? && Rails.configuration.x.livekit.api_key.present? && Rails.configuration.x.livekit.api_secret.present? %>">
   
   <div class="video-call__error" data-video-call-target="errorMessage" role="alert" aria-live="polite" style="display: none;">
     <span class="video-call__error-text"></span>
@@ -89,4 +90,3 @@
     </button>
   </div>
 </div>
-

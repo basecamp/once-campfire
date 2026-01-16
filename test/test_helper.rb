@@ -5,6 +5,7 @@ require "rails/test_help"
 require "minitest/unit"
 require "mocha/minitest"
 require "webmock/minitest"
+require "turbo/broadcastable/test_helper"
 
 WebMock.enable!
 

@@ -64,6 +64,30 @@
         <% end %>
       </div>
     <% end %>
+
+    <div class="margin-block-start pad-block pad-inline-double fill-shade border-radius">
+      <%= form_with model: @account, method: :put, data: { controller: "form" }, class: "flex align-center gap center" do |form| %>
+        <div class="flex-item-grow flex align-center gap txt-align-start">
+          <%= image_tag "crown.svg", class: "colorize--black", aria: { hidden: "true" }, size: 18 %> Must be admin to create new rooms
+        </div>
+        <%= form.fields_for :settings, @account.settings do |settings_form| %>
+          <%= settings_form.hidden_field :restrict_room_creation_to_administrators,
+              value: !Current.account.settings.restrict_room_creation_to_administrators? %>
+        <% end %>
+
+        <label class="switch">
+          <input type="checkbox"
+                class="switch__input"
+                <%= "checked" if Current.account.settings.restrict_room_creation_to_administrators? %>
+                data-action="change->form#submit">
+          <span class="switch__btn round"></span>
+          <span class="for-screen-reader">
+            Must be admin to create new rooms
+          </span>
+        </label>
+
+      <% end %>
+    </div>
   <% else %>
     <%= account_logo_tag style: "txt-xx-large center" %>
     <h1 class="flex-item-grow txt-x-large"><%= @account.name %></h1>
@@ -76,7 +100,13 @@
 
     <menu class="flex flex-column gap margin-none pad">
       <turbo-frame id="account_users">
-        <%= render partial: "accounts/users/user", collection: @page.records, as: :user %>
+        <%= render partial: "accounts/users/user", collection: @administrators, as: :user %>
+
+        <% if @administrators.any? && @members.any? %>
+          <hr class="separator full-width" style="--border-style: solid">
+        <% end %>
+
+        <%= render partial: "accounts/users/user", collection: @members, as: :user %>
         <%= render "accounts/users/next_page_container", page: @page.next_param unless @page.last? %>
       </turbo-frame>
     </menu>

@@ -43,4 +43,13 @@ class Rooms::InvolvementsControllerTest < ActionDispatch::IntegrationTest
     end
     end
   end
+
+  test "a non-admin can update their room involvement" do
+    sign_in :jz
+
+    assert_changes -> { memberships(:jz_designers).reload.involvement }, from: "everything", to: "mentions" do
+      put room_involvement_url(rooms(:designers)), params: { involvement: "mentions" }
+      assert_redirected_to room_involvement_url(rooms(:designers))
+    end
+  end
 end

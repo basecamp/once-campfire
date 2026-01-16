@@ -7,6 +7,7 @@
   inline-size: var(--avatar-size, 5ch);
   margin: 0;
   place-items: center;
+  position: relative;
 
   img {
     aspect-ratio: 1;
@@ -16,6 +17,25 @@
     inline-size: var(--avatar-size, 5ch);
     max-inline-size: 100%;
     object-fit: cover;
+
+    .banned & {
+      opacity: 0.5;
+    }
+  }
+
+  .banned &:after {
+    background: url(cancel.svg) no-repeat center center;
+    block-size: auto;
+    content: "";
+    filter: invert(0%);
+    inline-size: var(--avatar-size, 5ch);
+    inset: 0;
+    max-inline-size: 100%;
+    position: absolute;
+
+    @media (prefers-color-scheme: dark) {
+      filter: invert(100%);
+    }
   }
 }
 

@@ -29,6 +29,16 @@ class Rooms::ClosedsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to room_url(Room.last)
   end
 
+  test "create forbidden by non-admin when account restricts creation to admins" do
+    accounts(:signal).settings.restrict_room_creation_to_administrators = true
+    accounts(:signal).save!
+
+    sign_in :jz
+    post rooms_closeds_url, params: { room: { name: "My New Room" }, user_ids: [ users(:david).id, users(:kevin).id, users(:jason).id ] }
+    assert_response :forbidden
+  end
+
+
   test "update with membership revisions" do
     assert_difference -> { rooms(:designers).reload.users.count }, -1 do
       put rooms_closed_url(rooms(:designers)), params: {

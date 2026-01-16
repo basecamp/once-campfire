@@ -37,6 +37,17 @@
   width: 100%;
 }
 
+/* Fallback for browsers without :has() support */
+.video-call--solo .video-call__videos {
+  grid-template-columns: 1fr;
+  justify-items: center;
+}
+
+.video-call--solo .video-call__local {
+  max-width: min(100%, 500px);
+  width: 100%;
+}
+
 /* Local Video */
 .video-call__local {
   position: relative;
@@ -170,6 +181,23 @@
   background-color: var(--color-selected-dark);
 }
 
+.video-call__button:disabled {
+  background-color: var(--color-border);
+  border-color: var(--color-border-darker);
+  color: var(--color-text);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.video-call__button:disabled:hover,
+.video-call__button:disabled:active {
+  background-color: var(--color-border);
+  border-color: var(--color-border-darker);
+}
+
+.video-call__button:disabled img {
+  opacity: 0.6;
+}
 .video-call__button--muted {
   background-color: var(--color-negative, #dc3545) !important;
   border-color: var(--color-negative, #dc3545) !important;
@@ -274,6 +302,17 @@
 .video-call__remote-video:hover .video-call__remote-controls,
 .video-call__local:hover .video-call__remote-controls {
   opacity: 1;
+}
+
+.video-call__remote-video:focus-within .video-call__remote-controls,
+.video-call__local:focus-within .video-call__remote-controls {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .video-call__remote-controls {
+    opacity: 1;
+  }
 }
 
 .video-call__remote-control-button {
@@ -412,6 +451,11 @@
   background-color: var(--color-negative, #dc3545);
 }
 
+.video-call__error--config {
+  background-color: #607d8b;
+  color: #fff;
+}
+
 .video-call__error-text {
   flex: 1;
 }
@@ -436,4 +480,3 @@
 .video-call__error-dismiss:hover {
   background-color: rgba(0, 0, 0, 0.1);
 }
-

@@ -53,7 +53,7 @@ class Webhook < ApplicationRecord
     end
 
     def extract_text_from(response)
-      response.body.dup.force_encoding("UTF-8") if response.code == "200" && response.content_type.in?(%w[ text/html text/plain ])
+      String.new(response.body).force_encoding("UTF-8") if response.code == "200" && response.content_type.in?(%w[ text/html text/plain ])
     end
 
     def receive_text_reply_to(room, text:)

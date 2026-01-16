@@ -20,7 +20,8 @@ export default class extends Controller {
     roomId: Number,
     iconMessages: String,
     iconRemove: String,
-    iconDisclosure: String
+    iconDisclosure: String,
+    livekitConfigured: Boolean
   }
 
   #room = null
@@ -38,11 +39,18 @@ export default class extends Controller {
   #isReconnecting = false
   #connectionQuality = null
   #videoPresets = null // Store VideoPresets for quality adaptation
+  #joinLeaveDisabled = false
 
   async connect() {
     this.#setupEventListeners()
     // Update button immediately - DOM should be ready in connect()
     this.#updateJoinLeaveButton()
+    const livekitConfigured = this.#isLiveKitConfigured()
+    this.#setJoinLeaveDisabled(!livekitConfigured)
+    if (!livekitConfigured) {
+      this.#showError("LiveKit is not configured for this deployment.", "config")
+    }
+    this.#updateSoloLayout()
     // Show placeholder initially if no camera track exists
     if (!this.#localVideoTrack && this.hasLocalPlaceholderTarget) {
       this.localPlaceholderTarget.style.display = "block"
@@ -84,6 +92,10 @@ export default class extends Controller {
 
 
   async startVideoCall(event) {
+    if (!this.#isLiveKitConfigured()) {
+      this.#showError("LiveKit is not configured for this deployment.", "config")
+      return
+    }
     if (this.#room) {
       console.log("Already connected to room")
       return // Already connected
@@ -430,33 +442,7 @@ export default class extends Controller {
 
   async toggleScreenShare() {
     if (this.#localScreenTrack) {
-      // Stop screen sharing
-      if (this.#localScreenTrack.video) {
-        await this.#room.localParticipant.unpublishTrack(this.#localScreenTrack.video)
-        this.#localScreenTrack.video.stop()
-      }
-      if (this.#localScreenTrack.audio) {
-        await this.#room.localParticipant.unpublishTrack(this.#localScreenTrack.audio)
-        this.#localScreenTrack.audio.stop()
-      }
-      this.#localScreenTrack = null
-
-      // Show camera again if available
-      if (this.#localVideoTrack && this.hasLocalVideoTarget) {
-        this.#attachVideoTrack(this.#localVideoTrack, this.localVideoTarget)
-        // Ensure mirror transform for camera
-        this.localVideoTarget.style.transform = "scaleX(-1)"
-        this.localVideoTarget.classList.remove("video-call__video--screen-share")
-        if (this.hasLocalPlaceholderTarget) {
-          this.localPlaceholderTarget.style.display = "none"
-        }
-      } else if (this.hasLocalPlaceholderTarget) {
-        // Show placeholder if no camera
-        if (this.hasLocalVideoTarget) {
-          this.localVideoTarget.style.display = "none"
-        }
-        this.localPlaceholderTarget.style.display = "block"
-      }
+      await this.#stopScreenShare()
     } else {
       // Start screen sharing
       try {
@@ -585,6 +571,7 @@ export default class extends Controller {
       
       // Update UI based on room state
       this.#updateJoinLeaveButton()
+      this.#updateSoloLayout()
     })
 
     // Connect to room - adaptive streaming is handled automatically by LiveKit
@@ -723,6 +710,9 @@ export default class extends Controller {
       if (!videoTrack) {
         throw new Error("No video track in screen share stream")
       }
+      videoTrack.addEventListener("ended", () => {
+        void this.#stopScreenShare()
+      }, { once: true })
       
       // Get the audio track if available (not all screen sharing includes audio)
       const audioTrack = stream.getAudioTracks()[0]
@@ -916,12 +906,14 @@ export default class extends Controller {
 
   #onParticipantConnected(participant) {
     this.#remoteParticipants.set(participant.identity, participant)
+    this.#updateSoloLayout()
     this.dispatch("participant-joined", { detail: { participant } })
   }
 
   #onParticipantDisconnected(participant) {
     this.#remoteParticipants.delete(participant.identity)
     this.#removeRemoteVideoElement(participant)
+    this.#updateSoloLayout()
     this.dispatch("participant-left", { detail: { participant } })
   }
 
@@ -1525,6 +1517,7 @@ export default class extends Controller {
     if (this.remoteVideosTarget) {
       this.remoteVideosTarget.innerHTML = ""
     }
+    this.#updateSoloLayout()
   }
 
   #setupEventListeners() {
@@ -1559,19 +1552,29 @@ export default class extends Controller {
     if (isMuted) {
       this.muteButtonTarget.classList.add(this.mutedClass)
     }
+    const label = this.muteButtonTarget.querySelector(".video-call__button-label")
+    if (label) {
+      label.textContent = isMuted ? "Unmute" : "Mute"
+    }
+    this.muteButtonTarget.setAttribute("aria-label", isMuted ? "Unmute microphone" : "Mute microphone")
   }
 
   #updateCameraButtonState() {
     if (this.cameraButtonTarget) {
       const isMuted = this.#localVideoTrack?.isMuted ?? true
       this.cameraButtonTarget.classList.toggle(this.mutedClass, isMuted)
+      const label = this.cameraButtonTarget.querySelector(".video-call__button-label")
+      if (label) {
+        label.textContent = isMuted ? "Camera On" : "Camera Off"
+      }
+      this.cameraButtonTarget.setAttribute("aria-label", isMuted ? "Turn camera on" : "Turn camera off")
     }
   }
 
   #updateScreenShareButtonState() {
     if (this.screenShareButtonTarget) {
       const isSharing = this.#localScreenTrack !== null && this.#localScreenTrack.video !== null
-      this.screenShareButtonTarget.classList.toggle(this.activeClass, isSharing)
+      this.screenShareButtonTarget.classList.toggle("video-call__button--active", isSharing)
     }
   }
 
@@ -1601,6 +1604,9 @@ export default class extends Controller {
     } else if (error.message?.includes("token") || error.message?.includes("authentication")) {
       userMessage = "Authentication failed. Please try again."
       errorType = "auth"
+    } else if (error.message?.includes("not configured")) {
+      userMessage = "LiveKit is not configured for this deployment."
+      errorType = "config"
     } else if (error.message?.includes("reconnect")) {
       userMessage = "Connection lost. Attempting to reconnect..."
       errorType = "reconnect"
@@ -1631,7 +1637,7 @@ export default class extends Controller {
     errorElement.setAttribute("role", "alert")
     
     // Auto-dismiss after 10 seconds for non-critical errors
-    if (type !== "reconnect") {
+    if (type !== "reconnect" && type !== "config") {
       setTimeout(() => {
         this.dismissError()
       }, 10000)
@@ -1675,6 +1681,15 @@ export default class extends Controller {
       console.warn("Could not find joinLeaveButton element")
       return
     }
+
+    if (this.#joinLeaveDisabled) {
+      button.disabled = true
+      button.setAttribute("aria-label", "Video call unavailable")
+      if (label) {
+        label.textContent = "Unavailable"
+      }
+      return
+    }
     
     // Check multiple ways room might indicate connection
     const isConnected = this.#room && (
@@ -1708,6 +1723,7 @@ export default class extends Controller {
         label.textContent = "Leave"
       }
     } else {
+      button.disabled = false
       button.classList.remove("video-call__button--danger")
       button.classList.add("video-call__button--join")
       button.setAttribute("aria-label", "Join video call")
@@ -1724,5 +1740,71 @@ export default class extends Controller {
       }
     }
   }
-}
 
+  #setJoinLeaveDisabled(disabled) {
+    this.#joinLeaveDisabled = disabled
+    this.#updateJoinLeaveButton()
+  }
+
+  #updateSoloLayout() {
+    const hasRemotes = (this.#room?.remoteParticipants?.size || 0) > 0 || this.#remoteParticipants.size > 0
+    this.element.classList.toggle("video-call--solo", !hasRemotes)
+  }
+
+  #isLiveKitConfigured() {
+    if (this.hasLivekitConfiguredValue) {
+      return this.livekitConfiguredValue
+    }
+    return true
+  }
+
+  async #stopScreenShare() {
+    if (!this.#localScreenTrack) {
+      return
+    }
+
+    const screenTrack = this.#localScreenTrack
+    this.#localScreenTrack = null
+
+    if (this.#room && screenTrack.video) {
+      try {
+        await this.#room.localParticipant.unpublishTrack(screenTrack.video)
+      } catch (error) {
+        console.warn("Failed to unpublish screen share video:", error)
+      }
+    }
+    if (screenTrack.video) {
+      screenTrack.video.stop()
+    }
+    if (screenTrack.audio) {
+      if (this.#room) {
+        try {
+          await this.#room.localParticipant.unpublishTrack(screenTrack.audio)
+        } catch (error) {
+          console.warn("Failed to unpublish screen share audio:", error)
+        }
+      }
+      screenTrack.audio.stop()
+    }
+
+    // Show camera again if available
+    if (this.#localVideoTrack && this.hasLocalVideoTarget) {
+      this.#attachVideoTrack(this.#localVideoTrack, this.localVideoTarget)
+      // Ensure mirror transform for camera
+      this.localVideoTarget.style.transform = "scaleX(-1)"
+      this.localVideoTarget.classList.remove("video-call__video--screen-share")
+      if (this.hasLocalPlaceholderTarget) {
+        this.localPlaceholderTarget.style.display = "none"
+      }
+    } else if (this.hasLocalPlaceholderTarget) {
+      // Show placeholder if no camera
+      if (this.hasLocalVideoTarget) {
+        this.localVideoTarget.style.display = "none"
+      }
+      this.localPlaceholderTarget.style.display = "block"
+    }
+
+    this.#updateLocalControlsVisibility()
+    this.#updateScreenShareButtonState()
+  }
+}

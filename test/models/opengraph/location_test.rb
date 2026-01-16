@@ -21,6 +21,28 @@ class Opengraph::LocationTest < ActiveSupport::TestCase
     assert_equal [ "is not public" ], location.errors[:url]
   end
 
+  test "link-local addresses are blocked" do
+    Resolv.stubs(:getaddress).with("metadata.internal").returns("169.254.169.254")
+
+    location = Opengraph::Location.new("https://metadata.internal")
+    assert_not location.valid?
+    assert_equal [ "is not public" ], location.errors[:url]
+  end
+
+  test "IPv6 addresses mapped to IPv4 addresses are blocked" do
+    Resolv.stubs(:getaddress).with("metadata.internal").returns("::ffff:192.168.1.1")
+
+    location = Opengraph::Location.new("https://metadata.internal")
+    assert_not location.valid?
+    assert_equal [ "is not public" ], location.errors[:url]
+
+    Resolv.stubs(:getaddress).with("metadata.internal").returns("::ffff:c0a8:0101")
+
+    location = Opengraph::Location.new("https://metadata.internal")
+    assert_not location.valid?
+    assert_equal [ "is not public" ], location.errors[:url]
+  end
+
   test "avoid reading file urls when expecting HTML" do
     large_file = Opengraph::Location.new("https://www.example.com/100gb.zip")
 

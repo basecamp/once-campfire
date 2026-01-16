@@ -1,13 +1,14 @@
 source "https://rubygems.org"
 
 git_source(:github) { |repo| "https://github.com/#{repo}.git" }
-git_source(:bc)     { |repo| "https://github.com/basecamp/#{repo}" }
 
 # Rails
 gem "rails", github: "rails/rails", branch: "main"
+gem "ostruct"
+gem "benchmark"
 
 # Drivers
-gem "sqlite3", "~> 2.7"
+gem "sqlite3"
 gem "redis", "~> 5.4"
 
 # Deployment

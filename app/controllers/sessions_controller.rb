@@ -18,7 +18,7 @@ class SessionsController < ApplicationController
 
   def destroy
     remove_push_subscription
-    reset_authentication
+    terminate_current_session
     redirect_to root_url
   end
 
