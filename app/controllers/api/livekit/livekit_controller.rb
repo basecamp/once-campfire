@@ -3,6 +3,7 @@ module Api
     class LivekitController < ApplicationController
       def token
         room_id = params.require(:room_id)
+        mode = params[:mode].to_s
         room = Current.user.rooms.find_by(id: room_id)
 
         unless room
@@ -22,7 +23,8 @@ module Api
         access_token = generate_access_token(
           room_name: livekit_room_name,
           participant_identity: participant_identity,
-          participant_name: participant_name
+          participant_name: participant_name,
+          mode: mode
         )
 
         render json: {
@@ -54,7 +56,7 @@ module Api
       end
 
       private
-        def generate_access_token(room_name:, participant_identity:, participant_name:)
+        def generate_access_token(room_name:, participant_identity:, participant_name:, mode:)
           require "jwt"
 
           api_key = Rails.configuration.x.livekit.api_key
@@ -63,6 +65,7 @@ module Api
           now = Time.now.to_i
           expires = now + (6 * 60 * 60) # 6 hours
 
+          publish_enabled = mode != "observe"
           claims = {
             iss: api_key,
             sub: participant_identity,
@@ -71,9 +74,9 @@ module Api
             video: {
               room: room_name,
               roomJoin: true,
-              canPublish: true,
+              canPublish: publish_enabled,
               canSubscribe: true,
-              canPublishData: true
+              canPublishData: publish_enabled
             }
           }
 
@@ -84,4 +87,3 @@ module Api
     end
   end
 end
-

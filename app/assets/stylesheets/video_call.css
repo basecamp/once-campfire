@@ -480,3 +480,13 @@
 .video-call__error-dismiss:hover {
   background-color: rgba(0, 0, 0, 0.1);
 }
+
+.voice-call__sink {
+  position: fixed;
+  inset: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}

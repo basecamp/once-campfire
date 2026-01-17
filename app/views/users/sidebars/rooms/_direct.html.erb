@@ -1,29 +1,31 @@
 <% cache membership do %>
   <% members = membership.room.users.without(membership.user).presence || [ membership.user ] %>
 
-  <%= link_to_room membership.room, class: [ "nav__direct-item", "unread": membership.unread? ], id: dom_id(membership.room, :list),
-        data: { sorted_list_number: membership.room.updated_at.to_fs(:epoch) }, title: members.map(&:name).join(", ") do %>
+  <%= link_to_room membership.room, class: [ "direct", "unread": membership.unread? ], id: dom_id(membership.room, :list),
+        data: { sorted_list_number: membership.room.updated_at.to_fs(:epoch) } do %>
     <% if members.many? %>
       <div class="avatar__group">
         <% members.first(4).each do |member| %>
           <span class="avatar">
-            <%= image_tag fresh_user_avatar_path(member), size: 32, aria: { hidden: "true" } %>
+            <%= image_tag fresh_user_avatar_path(member), size: 20, aria: { hidden: "true" } %>
           </span>
         <% end %>
       </div>
     <% else %>
       <span class="avatar">
-        <%= image_tag fresh_user_avatar_path(members.first), size: 32, aria: { hidden: "true" } %>
+        <%= image_tag fresh_user_avatar_path(members.first), size: 48, aria: { hidden: "true" } %>
       </span>
     <% end %>
 
-    <span class="nav__direct-label">
-      <span class="for-screen-reader">Ping with</span>
-      <% if members.many? %>
-        <%= members.map { |member| member.name.split(' ')[0, 3].map { |str| str[0].capitalize }.join }.to_sentence(two_words_connector: '+') %>
-      <% else %>
-        <%= members.first.name.split(' ')[0] %>
-      <% end %>
+    <span class="direct__author flex align-center gap max-width min-width border-radius txt-small">
+      <span class="txt-nowrap overflow-ellipsis">
+        <span class="for-screen-reader">Ping with</span>
+        <% if members.many? %>
+          <%= members.map { |member| member.name.split(' ')[0, 3].map { |str| str[0].capitalize }.join }.to_sentence(two_words_connector: '+') %>
+        <% else %>
+          <%= members.first.name.split(' ')[0] %>
+        <% end %>
+      </span>
     </span>
   <% end %>
 <% end %>

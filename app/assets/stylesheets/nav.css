@@ -1,34 +1,36 @@
 #nav {
-  align-items: center;
+  align-items: stretch;
   display: flex;
   flex-direction: column;
   gap: var(--inline-space);
   padding: var(--block-space);
+  pointer-events: auto;
   position: relative;
   width: 100%;
-  pointer-events: auto;
-
-  > * {
-    width: 100%;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-  }
-
-  .account-logo {
-    margin-block-end: var(--block-space);
-  }
 
   .room--current {
-    margin-block-end: var(--block-space);
-    width: auto;
-    min-width: fit-content;
+    justify-content: flex-start;
+    max-inline-size: 100%;
+    width: 100%;
   }
 
   .btn {
-    width: auto;
-    min-width: fit-content;
+    max-inline-size: 100%;
   }
+
+  .btn:not(.room--current) {
+    align-self: center;
+  }
+}
+
+#nav .nav__room-settings {
+  --btn-border-radius: 50%;
+  --btn-padding: 0;
+
+  aspect-ratio: 1;
+  block-size: var(--btn-size);
+  inline-size: var(--btn-size);
+  justify-content: center;
 }
 
 .skip-navigation {

@@ -18,7 +18,7 @@ body {
   &.sidebar {
     @media (min-width: 100ch) {
       --sidebar-width: 26vw;
-      --left-sidebar-width: 5vw;
+      --left-sidebar-width: clamp(10rem, 14vw, 18rem);
     }
   }
 }

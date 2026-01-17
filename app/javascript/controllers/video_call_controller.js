@@ -25,6 +25,7 @@ export default class extends Controller {
   }
 
   #room = null
+  #observerRoom = null
   #localVideoTrack = null
   #localAudioTrack = null
   #localScreenTrack = null
@@ -40,9 +41,13 @@ export default class extends Controller {
   #connectionQuality = null
   #videoPresets = null // Store VideoPresets for quality adaptation
   #joinLeaveDisabled = false
+  #roomEventHandlers = new Map()
+  #turboLoadHandler = null
 
   async connect() {
     this.#setupEventListeners()
+    this.#bindTurboHandlers()
+    this.#updateRoomContextFromMeta()
     // Update button immediately - DOM should be ready in connect()
     this.#updateJoinLeaveButton()
     const livekitConfigured = this.#isLiveKitConfigured()
@@ -61,16 +66,27 @@ export default class extends Controller {
     }
     // Update controls visibility immediately
     this.#updateLocalControlsVisibility()
+    await this.#adoptActiveCallIfPresent()
+    await this.#ensureObserverIfNeeded()
   }
 
   disconnect() {
     // Clear any pending reconnection attempts
     this.#clearReconnectionTimeout()
-    
+    this.#unbindTurboHandlers()
+
+    if (this.#room && !this.#isUserDisconnect) {
+      this.#persistActiveCall()
+      return
+    }
+
     // Only cleanup if controller is still connected to DOM
     if (this.element.isConnected) {
       this.leave()
     } else {
+      if (this.#observerRoom) {
+        this.#disconnectObserver()
+      }
       // Element already removed, just cleanup resources
       if (this.#room) {
         this.#room.disconnect()
@@ -114,6 +130,10 @@ export default class extends Controller {
       console.log("Starting video call...")
     try {
       this.#isUserDisconnect = false // Reset user disconnect flag
+      await this.#endActiveCallIfNeeded()
+      if (this.#observerRoom) {
+        this.#disconnectObserver()
+      }
       this.#setLoading(true)
       this.#updateConnectionState("connecting")
       
@@ -130,6 +150,14 @@ export default class extends Controller {
       console.log("Camera/microphone setup complete")
       
       this.#setLoading(false)
+      this.#setActiveCall({
+        roomId: this.roomIdValue,
+        room: this.#room,
+        localVideoTrack: this.#localVideoTrack,
+        localAudioTrack: this.#localAudioTrack,
+        localScreenTrack: this.#localScreenTrack,
+        connectionCredentials: this.#connectionCredentials
+      })
       // Button state will be updated by RoomEvent.Connected handler
       this.dispatch("started", { detail: { room: this.#room } })
     } catch (error) {
@@ -145,11 +173,17 @@ export default class extends Controller {
     this.#connectionCredentials = null
     this.#reconnectionAttempts = 0
     this.#isReconnecting = false
+    this.#clearActiveCall()
     
     // Disconnect room (this will clean up all event listeners)
     if (this.#room) {
+      this.#unbindRoomEvents(this.#room)
       this.#room.disconnect()
       this.#room = null
+    }
+
+    if (this.#observerRoom) {
+      this.#disconnectObserver()
     }
 
     // Clean up all tracks
@@ -323,7 +357,13 @@ export default class extends Controller {
     )
     if (!container) return
     
-    const audioElement = container.querySelector('[data-audio-track="true"]')
+    let audioElement = container.querySelector('[data-audio-track="true"]')
+    if (!audioElement) {
+      const sink = this.#audioSink()
+      if (sink) {
+        audioElement = sink.querySelector(`[data-audio-track="true"][data-participant-identity="${participantIdentity}"]`)
+      }
+    }
     if (!audioElement) return
     
     const isMuted = container.dataset.audioMuted === "true"
@@ -497,7 +537,7 @@ export default class extends Controller {
 
   // Private methods
 
-  async #fetchToken() {
+  async #fetchToken(options = {}) {
     // Get room ID from value or current room
     const roomId = this.roomIdValue || Current?.room?.id
     if (!roomId) {
@@ -510,7 +550,7 @@ export default class extends Controller {
         "Content-Type": "application/json",
         "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || ""
       },
-      body: JSON.stringify({ room_id: roomId })
+      body: JSON.stringify({ room_id: roomId, mode: options.mode })
     })
 
     if (!response.ok) {
@@ -526,7 +566,7 @@ export default class extends Controller {
 
   async #connectToRoom(url, token, roomName) {
     const LiveKit = await this.#loadLiveKit()
-    const { Room, RoomEvent, Track, ConnectionQuality, VideoPresets, createLocalVideoTrack, createLocalAudioTrack } = LiveKit
+    const { Room, VideoPresets } = LiveKit
     
     this.LiveKit = LiveKit
     this.#videoPresets = VideoPresets // Store for later use (don't assign to module)
@@ -538,42 +578,9 @@ export default class extends Controller {
     this.#connectionCredentials = { url, token, roomName }
 
     // Set up event handlers before connecting
-    this.#room.on(RoomEvent.TrackSubscribed, this.#onTrackSubscribed.bind(this))
-    this.#room.on(RoomEvent.TrackUnsubscribed, this.#onTrackUnsubscribed.bind(this))
-    this.#room.on(RoomEvent.ParticipantConnected, this.#onParticipantConnected.bind(this))
-    this.#room.on(RoomEvent.ParticipantDisconnected, this.#onParticipantDisconnected.bind(this))
-    this.#room.on(RoomEvent.Disconnected, this.#onDisconnected.bind(this))
-    this.#room.on(RoomEvent.Reconnecting, this.#onReconnecting.bind(this))
-    this.#room.on(RoomEvent.Reconnected, this.#onReconnected.bind(this))
-    this.#room.on(RoomEvent.ConnectionQualityChanged, this.#onConnectionQualityChanged.bind(this))
+    this.#bindRoomEvents(this.#room, { observer: false })
     
     // Handle connection event - subscribe to existing tracks and update button
-    this.#room.on(RoomEvent.Connected, () => {
-      // Reset reconnection state on successful connection
-      this.#reconnectionAttempts = 0
-      this.#isReconnecting = false
-      this.#clearReconnectionTimeout()
-      this.#updateConnectionState("connected")
-      
-      // Subscribe to all existing participants' tracks (including audio)
-      this.#room.remoteParticipants.forEach((participant) => {
-        participant.audioTrackPublications.forEach((publication) => {
-          if (publication.track && publication.isSubscribed) {
-            this.#onTrackSubscribed(publication.track, publication, participant)
-          }
-        })
-        participant.videoTrackPublications.forEach((publication) => {
-          if (publication.track && publication.isSubscribed) {
-            this.#onTrackSubscribed(publication.track, publication, participant)
-          }
-        })
-      })
-      
-      // Update UI based on room state
-      this.#updateJoinLeaveButton()
-      this.#updateSoloLayout()
-    })
-
     // Connect to room - adaptive streaming is handled automatically by LiveKit
     await this.#room.connect(url, token)
     
@@ -850,7 +857,7 @@ export default class extends Controller {
     </svg>`
   }
 
-  #onTrackSubscribed(track, publication, participant) {
+  #onTrackSubscribed(track, publication, participant, options = {}) {
     const Track = this.LiveKit?.Track
     
     if (track.kind === Track?.Kind?.Video || track.kind === "video") {
@@ -875,6 +882,9 @@ export default class extends Controller {
       const audioElement = this.#getOrCreateRemoteAudioElement(participant)
       if (audioElement) {
         track.attach(audioElement)
+        if (options.observer) {
+          audioElement.muted = true
+        }
         console.log("Audio track attached for participant:", participant.identity)
       }
     }
@@ -1311,6 +1321,10 @@ export default class extends Controller {
 
   #getOrCreateRemoteAudioElement(participant) {
     if (!this.hasRemoteVideosTarget) {
+      const sink = this.#audioSink()
+      if (sink) {
+        return this.#getOrCreateSinkAudio(participant, sink)
+      }
       return null
     }
     
@@ -1405,12 +1419,17 @@ export default class extends Controller {
     
     let audio = container.querySelector('[data-audio-track="true"]')
     if (!audio) {
-      audio = document.createElement("audio")
-      audio.autoplay = true
-      audio.playsInline = true
-      audio.dataset.audioTrack = "true"
-      audio.dataset.participantIdentity = participant.identity
-      container.appendChild(audio)
+      const sink = this.#audioSink()
+      if (sink) {
+        audio = this.#getOrCreateSinkAudio(participant, sink)
+      } else {
+        audio = document.createElement("audio")
+        audio.autoplay = true
+        audio.playsInline = true
+        audio.dataset.audioTrack = "true"
+        audio.dataset.participantIdentity = participant.identity
+        container.appendChild(audio)
+      }
     }
     
     // Update controls visibility
@@ -1439,6 +1458,15 @@ export default class extends Controller {
       const video = container.querySelector('[data-video-track="true"]')
       if (!video || !video.srcObject) {
         container.remove()
+      }
+    }
+    
+    const sink = this.#audioSink()
+    if (sink) {
+      const sinkAudio = sink.querySelector(`[data-audio-track="true"][data-participant-identity="${participant.identity}"]`)
+      if (sinkAudio) {
+        sinkAudio.srcObject = null
+        sinkAudio.remove()
       }
     }
   }
@@ -1516,6 +1544,10 @@ export default class extends Controller {
     this.#participantAvatarUrls.clear() // Clear avatar URL cache
     if (this.remoteVideosTarget) {
       this.remoteVideosTarget.innerHTML = ""
+    }
+    const sink = this.#audioSink()
+    if (sink) {
+      sink.innerHTML = ""
     }
     this.#updateSoloLayout()
   }
@@ -1749,6 +1781,324 @@ export default class extends Controller {
   #updateSoloLayout() {
     const hasRemotes = (this.#room?.remoteParticipants?.size || 0) > 0 || this.#remoteParticipants.size > 0
     this.element.classList.toggle("video-call--solo", !hasRemotes)
+  }
+
+  #voiceStore() {
+    if (!window.CampfireVoice) {
+      window.CampfireVoice = {}
+    }
+    return window.CampfireVoice
+  }
+
+  #getActiveCall() {
+    return this.#voiceStore().active || null
+  }
+
+  #setActiveCall(active) {
+    this.#voiceStore().active = active
+  }
+
+  #clearActiveCall() {
+    const active = this.#getActiveCall()
+    if (!active) return
+    if (active.roomId === this.roomIdValue) {
+      this.#voiceStore().active = null
+    }
+  }
+
+  async #adoptActiveCallIfPresent() {
+    const active = this.#getActiveCall()
+    if (!active || active.roomId !== this.roomIdValue) {
+      return
+    }
+
+    this.#room = active.room
+    this.#localVideoTrack = active.localVideoTrack
+    this.#localAudioTrack = active.localAudioTrack
+    this.#localScreenTrack = active.localScreenTrack
+    this.#connectionCredentials = active.connectionCredentials
+
+    await this.#loadLiveKit()
+    this.#bindRoomEvents(this.#room, { observer: false })
+    this.#clearRemoteUi()
+    this.#syncRemoteParticipants(this.#room)
+    this.#attachLocalTracksForActiveCall()
+    this.#updateJoinLeaveButton()
+    this.#updateLocalControlsVisibility()
+  }
+
+  async #ensureObserverIfNeeded() {
+    if (!this.#isLiveKitConfigured()) return
+
+    const active = this.#getActiveCall()
+    if (active && active.roomId === this.roomIdValue) {
+      return
+    }
+    if (this.#observerRoom) return
+
+    try {
+      const { token, url } = await this.#fetchToken({ mode: "observe" })
+      await this.#connectObserver(url, token)
+    } catch (error) {
+      console.warn("Observer connection failed:", error)
+    }
+  }
+
+  async #connectObserver(url, token) {
+    const LiveKit = await this.#loadLiveKit()
+    const { Room } = LiveKit
+
+    this.LiveKit = LiveKit
+    this.#observerRoom = new Room()
+    this.#bindRoomEvents(this.#observerRoom, { observer: true })
+    await this.#observerRoom.connect(url, token)
+    this.#syncRemoteParticipants(this.#observerRoom, { observer: true })
+    this.#updateSoloLayout()
+  }
+
+  #disconnectObserver(alreadyDisconnected = false) {
+    if (!this.#observerRoom) return
+    this.#unbindRoomEvents(this.#observerRoom)
+    if (!alreadyDisconnected) {
+      this.#observerRoom.disconnect()
+    }
+    this.#observerRoom = null
+    this.#cleanupRemoteTracks()
+  }
+
+  async #endActiveCallIfNeeded() {
+    const active = this.#getActiveCall()
+    if (!active || active.roomId === this.roomIdValue) return
+
+    this.#stopActiveTracks(active)
+    active.room.disconnect()
+    this.#voiceStore().active = null
+  }
+
+  #stopActiveTracks(active) {
+    try {
+      active.localVideoTrack?.stop()
+    } catch (e) {}
+    try {
+      active.localAudioTrack?.stop()
+    } catch (e) {}
+    if (active.localScreenTrack) {
+      try {
+        active.localScreenTrack.video?.stop()
+      } catch (e) {}
+      try {
+        active.localScreenTrack.audio?.stop()
+      } catch (e) {}
+    }
+  }
+
+  #persistActiveCall() {
+    this.#unbindRoomEvents(this.#room)
+    this.#detachTracksFromDom()
+    this.#detachRemoteVideoTracks(this.#room)
+    this.#clearRemoteUi()
+    this.#setActiveCall({
+      roomId: this.roomIdValue,
+      room: this.#room,
+      localVideoTrack: this.#localVideoTrack,
+      localAudioTrack: this.#localAudioTrack,
+      localScreenTrack: this.#localScreenTrack,
+      connectionCredentials: this.#connectionCredentials
+    })
+    this.#room = null
+  }
+
+  #detachTracksFromDom() {
+    try {
+      this.#localVideoTrack?.detach()
+    } catch (e) {}
+    try {
+      this.#localAudioTrack?.detach()
+    } catch (e) {}
+  }
+
+  #detachRemoteVideoTracks(room) {
+    if (!room) return
+    room.remoteParticipants.forEach((participant) => {
+      participant.videoTrackPublications.forEach((publication) => {
+        if (publication.track) {
+          publication.track.detach()
+        }
+      })
+    })
+  }
+
+  #clearRemoteUi() {
+    if (this.remoteVideosTarget) {
+      this.remoteVideosTarget.innerHTML = ""
+    }
+    this.#participantAvatarUrls.clear()
+  }
+
+  #audioSink() {
+    return document.getElementById("voice-call-sink")
+  }
+
+  #getOrCreateSinkAudio(participant, sink) {
+    let audio = sink.querySelector(`[data-audio-track="true"][data-participant-identity="${participant.identity}"]`)
+    if (!audio) {
+      audio = document.createElement("audio")
+      audio.autoplay = true
+      audio.playsInline = true
+      audio.dataset.audioTrack = "true"
+      audio.dataset.participantIdentity = participant.identity
+      sink.appendChild(audio)
+    }
+    return audio
+  }
+
+  #bindTurboHandlers() {
+    if (this.#turboLoadHandler) return
+    this.#turboLoadHandler = () => {
+      this.#updateRoomContextFromMeta()
+      this.#updateJoinLeaveButton()
+      void this.#adoptActiveCallIfPresent()
+      void this.#ensureObserverIfNeeded()
+    }
+    document.addEventListener("turbo:load", this.#turboLoadHandler)
+  }
+
+  #unbindTurboHandlers() {
+    if (!this.#turboLoadHandler) return
+    document.removeEventListener("turbo:load", this.#turboLoadHandler)
+    this.#turboLoadHandler = null
+  }
+
+  #updateRoomContextFromMeta() {
+    const meta = document.querySelector('meta[name="current-room-id"]')
+    const roomId = meta ? Number(meta.content) : this.roomIdValue
+    if (!Number.isNaN(roomId) && roomId) {
+      this.roomIdValue = roomId
+    }
+  }
+
+  #attachLocalTracksForActiveCall() {
+    if (this.#localScreenTrack && this.hasLocalVideoTarget) {
+      const streams = [this.#localScreenTrack.video]
+      if (this.#localScreenTrack.audio) {
+        streams.push(this.#localScreenTrack.audio)
+      }
+      this.localVideoTarget.srcObject = new MediaStream(streams)
+      this.localVideoTarget.style.display = "block"
+      this.localVideoTarget.style.transform = "none"
+      this.localVideoTarget.classList.add("video-call__video--screen-share")
+      if (this.hasLocalPlaceholderTarget) {
+        this.localPlaceholderTarget.style.display = "none"
+      }
+      return
+    }
+
+    if (this.#localVideoTrack && this.hasLocalVideoTarget) {
+      this.#attachVideoTrack(this.#localVideoTrack, this.localVideoTarget)
+      this.localVideoTarget.style.transform = "scaleX(-1)"
+      this.localVideoTarget.classList.remove("video-call__video--screen-share")
+      if (this.hasLocalPlaceholderTarget) {
+        this.localPlaceholderTarget.style.display = "none"
+      }
+    } else if (this.hasLocalPlaceholderTarget) {
+      this.localPlaceholderTarget.style.display = "block"
+    }
+  }
+
+  #bindRoomEvents(room, { observer }) {
+    const { RoomEvent } = this.LiveKit
+    const handlers = {
+      trackSubscribed: (track, publication, participant) => {
+        this.#onTrackSubscribed(track, publication, participant, { observer })
+      },
+      trackUnsubscribed: this.#onTrackUnsubscribed.bind(this),
+      participantConnected: this.#onParticipantConnected.bind(this),
+      participantDisconnected: this.#onParticipantDisconnected.bind(this),
+      connected: () => {
+        if (observer) {
+          this.#syncRemoteParticipants(room, { observer: true })
+          this.#updateSoloLayout()
+          return
+        }
+        this.#reconnectionAttempts = 0
+        this.#isReconnecting = false
+        this.#clearReconnectionTimeout()
+        this.#updateConnectionState("connected")
+        this.#syncRemoteParticipants(room)
+        this.#updateJoinLeaveButton()
+        this.#updateSoloLayout()
+      }
+    }
+
+    room.on(RoomEvent.TrackSubscribed, handlers.trackSubscribed)
+    room.on(RoomEvent.TrackUnsubscribed, handlers.trackUnsubscribed)
+    room.on(RoomEvent.ParticipantConnected, handlers.participantConnected)
+    room.on(RoomEvent.ParticipantDisconnected, handlers.participantDisconnected)
+    room.on(RoomEvent.Connected, handlers.connected)
+
+    if (observer) {
+      handlers.disconnected = () => {
+        this.#onObserverDisconnected(room)
+      }
+      room.on(RoomEvent.Disconnected, handlers.disconnected)
+    } else {
+      handlers.disconnected = this.#onDisconnected.bind(this)
+      handlers.reconnecting = this.#onReconnecting.bind(this)
+      handlers.reconnected = this.#onReconnected.bind(this)
+      handlers.qualityChanged = this.#onConnectionQualityChanged.bind(this)
+      room.on(RoomEvent.Disconnected, handlers.disconnected)
+      room.on(RoomEvent.Reconnecting, handlers.reconnecting)
+      room.on(RoomEvent.Reconnected, handlers.reconnected)
+      room.on(RoomEvent.ConnectionQualityChanged, handlers.qualityChanged)
+    }
+
+    this.#roomEventHandlers.set(room, handlers)
+  }
+
+  #unbindRoomEvents(room) {
+    const handlers = this.#roomEventHandlers.get(room)
+    if (!handlers || !this.LiveKit) return
+    const { RoomEvent } = this.LiveKit
+
+    room.off(RoomEvent.TrackSubscribed, handlers.trackSubscribed)
+    room.off(RoomEvent.TrackUnsubscribed, handlers.trackUnsubscribed)
+    room.off(RoomEvent.ParticipantConnected, handlers.participantConnected)
+    room.off(RoomEvent.ParticipantDisconnected, handlers.participantDisconnected)
+    room.off(RoomEvent.Connected, handlers.connected)
+    if (handlers.disconnected) {
+      room.off(RoomEvent.Disconnected, handlers.disconnected)
+    }
+    if (handlers.reconnecting) {
+      room.off(RoomEvent.Reconnecting, handlers.reconnecting)
+    }
+    if (handlers.reconnected) {
+      room.off(RoomEvent.Reconnected, handlers.reconnected)
+    }
+    if (handlers.qualityChanged) {
+      room.off(RoomEvent.ConnectionQualityChanged, handlers.qualityChanged)
+    }
+    this.#roomEventHandlers.delete(room)
+  }
+
+  #syncRemoteParticipants(room, options = {}) {
+    if (!room) return
+    room.remoteParticipants.forEach((participant) => {
+      participant.audioTrackPublications.forEach((publication) => {
+        if (publication.track && publication.isSubscribed) {
+          this.#onTrackSubscribed(publication.track, publication, participant, options)
+        }
+      })
+      participant.videoTrackPublications.forEach((publication) => {
+        if (publication.track && publication.isSubscribed) {
+          this.#onTrackSubscribed(publication.track, publication, participant, options)
+        }
+      })
+    })
+  }
+
+  #onObserverDisconnected(room) {
+    if (!room || room !== this.#observerRoom) return
+    this.#disconnectObserver(true)
   }
 
   #isLiveKitConfigured() {
