@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import MentionsAutocompleteHandler from "lib/autocomplete/mentions_autocomplete_handler"
+import EmojiAutocompleteHandler from "lib/autocomplete/emoji_autocomplete_handler"
 import { debounce } from "helpers/timing_helpers"
 
 export default class extends Controller {
@@ -32,7 +33,10 @@ export default class extends Controller {
 
   #installHandlers() {
     this.#uninstallHandlers()
-    this.handlers = [ new MentionsAutocompleteHandler(this.element, this.urlValue) ]
+    this.handlers = [
+      new MentionsAutocompleteHandler(this.element, this.urlValue),
+      new EmojiAutocompleteHandler(this.element)
+    ]
   }
 
   #uninstallHandlers() {

@@ -25,6 +25,15 @@ export class Renderer {
   }
 
   renderAutocompletable(autocompletable) {
+    if (autocompletable.emoji) {
+      return `
+        <button class="autocomplete__btn btn btn--borderless btn--transparent min-width flex-item-grow justify-start" data-value="${autocompletable.value}">
+          <span class="autocomplete__emoji" aria-hidden="true">${autocompletable.emoji}</span>
+          <span class="autocompletable__name">${autocompletable.label || autocompletable.name}</span>
+        </button>
+      `
+    }
+
     const html = `
       <button class="autocomplete__btn btn btn--borderless btn--transparent min-width flex-item-grow justify-start" data-value="${autocompletable.value}">
         <span class="avatar">
