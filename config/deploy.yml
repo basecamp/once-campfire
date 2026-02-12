@@ -1,0 +1,71 @@
+# Kamal deployment configuration for Campfire
+service: campfire
+image: campfire
+
+# Target server
+servers:
+  web:
+    - 192.168.1.101
+
+# SSH configuration
+ssh:
+  user: root
+
+# Proxy configuration
+proxy:
+  ssl: false
+  hosts:
+    - chat.vandelden.family
+  forward_headers: true
+  app_port: 80  # Thruster listens on port 80
+  healthcheck:
+    path: /up
+    interval: 10
+    timeout: 10
+    max_attempts: 7
+
+# Environment variables
+env:
+  secret:
+    - RAILS_MASTER_KEY
+    - SECRET_KEY_BASE
+    - VAPID_PUBLIC_KEY
+    - VAPID_PRIVATE_KEY
+  clear:
+    RAILS_ENV: production
+    RAILS_LOG_LEVEL: info
+    DISABLE_SSL: "true"  # Local network deployment
+
+# Docker registry
+registry:
+  server: registry.vandelden.family
+  username: root
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# Persistent storage
+volumes:
+  - "/home/app_storage/campfire/storage:/rails/storage"
+
+# Asset bridging for Propshaft
+asset_path: /rails/public/assets
+
+# Remote builder
+builder:
+  arch: amd64
+  remote: ssh://root@192.168.1.102
+  local: false
+  context: "."
+  args:
+    RUBY_VERSION: <%= File.read('.ruby-version').strip %>
+
+# Handy aliases
+aliases:
+  console: app exec --interactive --reuse "bin/rails console"
+  shell: app exec --interactive --reuse "bash"
+  logs: app logs -f
+  dbc: app exec --interactive --reuse "bin/rails dbconsole"
+  apps: server exec docker exec kamal-proxy kamal-proxy list
+
+# Deployment timeout
+deploy_timeout: 20

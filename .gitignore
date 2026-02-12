@@ -42,3 +42,7 @@ app/assets/builds/*
 
 # Ignore our exported zipfiles
 /*.zip
+
+# Kamal secrets
+/.kamal/secrets
+/.kamal/secrets-*
