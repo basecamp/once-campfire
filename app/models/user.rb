@@ -70,9 +70,12 @@ class User < ApplicationRecord
     def broadcast_profile_update
       # Broadcast to all direct rooms this user is a member of
       # This will update the avatar/name in the sidebar for other users
-      rooms.directs.find_each do |room|
+      # OPTIMIZED: Preload associations to avoid N+1 queries
+      rooms.directs.includes(:users, :memberships).find_each do |room|
+        memberships_by_user = room.memberships.index_by(&:user_id)
+
         room.users.without(self).find_each do |other_user|
-          membership = room.memberships.find_by(user: other_user)
+          membership = memberships_by_user[other_user.id]
           if membership
             html = ApplicationController.render(
               partial: "users/sidebars/rooms/direct",

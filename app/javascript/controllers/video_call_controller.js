@@ -43,6 +43,7 @@ export default class extends Controller {
   #joinLeaveDisabled = false
   #roomEventHandlers = new Map()
   #turboLoadHandler = null
+  #screenShareEndHandlers = new Map() // Track screen share end handlers for cleanup
 
   async connect() {
     this.#setupEventListeners()
@@ -66,14 +67,22 @@ export default class extends Controller {
     }
     // Update controls visibility immediately
     this.#updateLocalControlsVisibility()
-    await this.#adoptActiveCallIfPresent()
-    await this.#ensureObserverIfNeeded()
+
+    // FIXED: Coordinate active call adoption and observer mode
+    const activeCall = this.#getActiveCall()
+    if (activeCall && activeCall.roomId === this.roomIdValue) {
+      await this.#adoptActiveCallIfPresent()
+    } else {
+      await this.#ensureObserverIfNeeded()
+    }
   }
 
   disconnect() {
+    // ALWAYS unbind Turbo handlers first (prevents memory leak)
+    this.#unbindTurboHandlers()
+
     // Clear any pending reconnection attempts
     this.#clearReconnectionTimeout()
-    this.#unbindTurboHandlers()
 
     if (this.#room && !this.#isUserDisconnect) {
       this.#persistActiveCall()
@@ -717,13 +726,17 @@ export default class extends Controller {
       if (!videoTrack) {
         throw new Error("No video track in screen share stream")
       }
-      videoTrack.addEventListener("ended", () => {
-        void this.#stopScreenShare()
-      }, { once: true })
-      
+
+      // Store listener reference for cleanup
+      const endHandler = () => { void this.#stopScreenShare() }
+      videoTrack.addEventListener("ended", endHandler, { once: true })
+
+      // Track for manual cleanup if needed
+      this.#screenShareEndHandlers.set(videoTrack, endHandler)
+
       // Get the audio track if available (not all screen sharing includes audio)
       const audioTrack = stream.getAudioTracks()[0]
-      
+
       // Return both tracks
       return {
         video: videoTrack,
@@ -808,22 +821,30 @@ export default class extends Controller {
     if (this.#participantAvatarUrls.has(participant.identity)) {
       return this.#participantAvatarUrls.get(participant.identity)
     }
-    
+
     // Fetch avatar URL from API
     const roomId = this.roomIdValue || Current?.room?.id
     if (!roomId) {
-      // Fallback to initials if no room ID
-      const initialsSvg = this.#generateInitialsSvg(participant)
-      return `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
+      return this.#getFallbackAvatarUrl(participant)
     }
-    
+
     try {
-      const response = await fetch(`/api/livekit/participant_avatar?room_id=${roomId}&user_id=${participant.identity}`, {
-        headers: {
-          "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || ""
+      // ADDED: 5 second timeout to prevent hanging
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+
+      const response = await fetch(
+        `/api/livekit/participant_avatar?room_id=${roomId}&user_id=${participant.identity}`,
+        {
+          headers: {
+            "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || ""
+          },
+          signal: controller.signal
         }
-      })
-      
+      )
+
+      clearTimeout(timeoutId)
+
       if (response.ok) {
         const data = await response.json()
         const url = data.avatar_url
@@ -833,10 +854,17 @@ export default class extends Controller {
         }
       }
     } catch (error) {
-      console.warn("Failed to fetch avatar URL:", error)
+      if (error.name === 'AbortError') {
+        console.warn(`Avatar fetch timeout for ${participant.identity}`)
+      } else {
+        console.warn(`Failed to fetch avatar for ${participant.identity}:`, error)
+      }
     }
-    
-    // Fallback to initials SVG
+
+    return this.#getFallbackAvatarUrl(participant)
+  }
+
+  #getFallbackAvatarUrl(participant) {
     const initialsSvg = this.#generateInitialsSvg(participant)
     const url = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
     this.#participantAvatarUrls.set(participant.identity, url)
@@ -850,11 +878,73 @@ export default class extends Controller {
     const colors = ['#AF2E1B', '#CC6324', '#3B4B59', '#BFA07A', '#ED8008', '#ED3F1C', '#BF1B1B', '#736B1E', '#D07B53']
     const colorIndex = (name.charCodeAt(0) || 0) % colors.length
     const bgColor = colors[colorIndex]
-    
+
     return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
       <rect width="512" height="512" fill="${bgColor}"/>
       <text x="256" y="320" font-family="Arial, sans-serif" font-size="200" font-weight="600" fill="white" text-anchor="middle" dominant-baseline="middle">${initials}</text>
     </svg>`
+  }
+
+  #createPlaceholderElement(participant) {
+    const placeholder = document.createElement("img")
+    placeholder.className = "video-call__placeholder video-call__placeholder--remote"
+    placeholder.dataset.participantIdentity = participant.identity
+    placeholder.alt = participant.name || participant.identity
+    placeholder.style.display = "block"
+    // Set up error handler for fallback to initials
+    placeholder.onerror = () => {
+      const initialsSvg = this.#generateInitialsSvg(participant)
+      placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
+    }
+    return placeholder
+  }
+
+  #createLabelElement(participant) {
+    const label = document.createElement("div")
+    label.className = "video-call__participant-name"
+    label.textContent = participant.name || participant.identity
+    return label
+  }
+
+  #createControlsElement(participant) {
+    const controls = document.createElement("div")
+    controls.className = "video-call__remote-controls"
+    controls.innerHTML = `
+      <button type="button"
+              class="video-call__remote-control-button"
+              data-participant-identity="${participant.identity}"
+              data-action="click->video-call#toggleRemoteMute"
+              aria-label="Mute participant">
+        <span class="video-call__remote-control-icon">
+          <img src="${this.iconMessagesValue}" class="colorize--white" width="16" height="16" aria-hidden="true" />
+        </span>
+      </button>
+      <button type="button"
+              class="video-call__remote-control-button"
+              data-participant-identity="${participant.identity}"
+              data-action="click->video-call#toggleFullscreen"
+              aria-label="Fullscreen">
+        <span class="video-call__remote-control-icon">
+          <img src="${this.iconDisclosureValue}" class="colorize--white" width="16" height="16" aria-hidden="true" />
+        </span>
+      </button>
+    `
+    return controls
+  }
+
+  async #loadAvatarForPlaceholder(participant, placeholder) {
+    try {
+      const url = await this.#getAvatarUrl(participant)
+      if (url && placeholder.isConnected) {
+        placeholder.src = url
+      }
+    } catch (error) {
+      console.warn(`Failed to load avatar for ${participant.identity}:`, error)
+      const initialsSvg = this.#generateInitialsSvg(participant)
+      if (placeholder.isConnected) {
+        placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
+      }
+    }
   }
 
   #onTrackSubscribed(track, publication, participant, options = {}) {
@@ -1119,98 +1209,51 @@ export default class extends Controller {
       console.warn("No remoteVideosTarget available")
       return null
     }
-    
+
     // Check if container already exists
     let container = this.remoteVideosTarget.querySelector(
       `[data-participant-identity="${participant.identity}"]`
     )
-    
+
     if (!container) {
-      // Create new container
+      // OPTIMIZED: Create new container using DocumentFragment for batch DOM operations
       container = document.createElement("div")
       container.className = "video-call__remote-video"
       container.dataset.participantIdentity = participant.identity
 
+      // Create all elements first
       const video = document.createElement("video")
       video.autoplay = true
       video.playsInline = true
-      video.muted = false // Make sure audio can play
+      video.muted = false
       video.dataset.videoTrack = "true"
-      container.appendChild(video)
 
-      // Create audio element for remote audio
       const audio = document.createElement("audio")
       audio.autoplay = true
       audio.playsInline = true
       audio.dataset.audioTrack = "true"
       audio.dataset.participantIdentity = participant.identity
+
+      const placeholder = this.#createPlaceholderElement(participant)
+      const label = this.#createLabelElement(participant)
+      const controls = this.#createControlsElement(participant)
+
+      // Add all to container at once
+      container.appendChild(video)
       container.appendChild(audio)
-
-      // Create placeholder image for when no video
-      const placeholder = document.createElement("img")
-      placeholder.className = "video-call__placeholder video-call__placeholder--remote"
-      placeholder.dataset.participantIdentity = participant.identity
-      placeholder.alt = participant.name || participant.identity
-      placeholder.style.display = "block" // Show by default until video arrives
-      
-      // Set up error handler first, before setting src
-      placeholder.onerror = () => {
-        const initialsSvg = this.#generateInitialsSvg(participant)
-        placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-      }
-      
-      // Try to get avatar URL from API
-      this.#getAvatarUrl(participant).then(url => {
-        if (url) {
-          placeholder.src = url
-        } else {
-          // If no URL, use initials
-          const initialsSvg = this.#generateInitialsSvg(participant)
-          placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-        }
-      }).catch(() => {
-        // Fallback to initials SVG if fetch fails
-        const initialsSvg = this.#generateInitialsSvg(participant)
-        placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-      })
-      
       container.appendChild(placeholder)
-
-      const label = document.createElement("div")
-      label.className = "video-call__participant-name"
-      label.textContent = participant.name || participant.identity
       container.appendChild(label)
-
-      // Create controls container
-      const controls = document.createElement("div")
-      controls.className = "video-call__remote-controls"
-      
-      // Mute/unmute button for this participant's audio
-      const muteButton = document.createElement("button")
-      muteButton.type = "button"
-      muteButton.className = "video-call__remote-control-button"
-      muteButton.dataset.participantIdentity = participant.identity
-      muteButton.dataset.action = "click->video-call#toggleRemoteMute"
-      muteButton.setAttribute("aria-label", "Mute participant")
-      muteButton.innerHTML = `<span class="video-call__remote-control-icon"><img src="${this.iconMessagesValue}" class="colorize--white" width="16" height="16" aria-hidden="true" /></span>`
-      controls.appendChild(muteButton)
-      
-      // Fullscreen button
-      const fullscreenButton = document.createElement("button")
-      fullscreenButton.type = "button"
-      fullscreenButton.className = "video-call__remote-control-button"
-      fullscreenButton.dataset.participantIdentity = participant.identity
-      fullscreenButton.dataset.action = "click->video-call#toggleFullscreen"
-      fullscreenButton.setAttribute("aria-label", "Fullscreen")
-      fullscreenButton.innerHTML = `<span class="video-call__remote-control-icon"><img src="${this.iconDisclosureValue}" class="colorize--white" width="16" height="16" aria-hidden="true" /></span>`
-      controls.appendChild(fullscreenButton)
-      
       container.appendChild(controls)
-      
+
       // Store mute state in dataset
       container.dataset.audioMuted = "false"
 
+      // Single DOM insertion
       this.remoteVideosTarget.appendChild(container)
+
+      // Load avatar URL asynchronously
+      this.#loadAvatarForPlaceholder(participant, placeholder)
+
       console.log("Created remote video container for participant:", participant.identity)
     } else {
       // Container exists (maybe created by audio track), find or create video element
@@ -1230,74 +1273,32 @@ export default class extends Controller {
         videoElement.style.display = "block"
       }
       
-      // Ensure placeholder exists and is initially visible if no video stream
+      // OPTIMIZED: Ensure placeholder exists using helper method
       let placeholder = container.querySelector('.video-call__placeholder--remote')
       if (!placeholder) {
-        placeholder = document.createElement("img")
-        placeholder.className = "video-call__placeholder video-call__placeholder--remote"
-        placeholder.dataset.participantIdentity = participant.identity
-        placeholder.alt = participant.name || participant.identity
-        placeholder.style.display = "block"
-        placeholder.onerror = () => {
-          const initialsSvg = this.#generateInitialsSvg(participant)
-          placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-        }
-        this.#getAvatarUrl(participant).then(url => {
-          if (url) {
-            placeholder.src = url
-          } else {
-            // If no URL, use initials
-            const initialsSvg = this.#generateInitialsSvg(participant)
-            placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-          }
-        }).catch(() => {
-          // Fallback to initials SVG if fetch fails
-          const initialsSvg = this.#generateInitialsSvg(participant)
-          placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-        })
+        placeholder = this.#createPlaceholderElement(participant)
         container.insertBefore(placeholder, container.firstChild)
+        this.#loadAvatarForPlaceholder(participant, placeholder)
       }
       // Show placeholder if video element has no stream
       if (!videoElement.srcObject) {
         placeholder.style.display = "block"
         videoElement.style.display = "none"
       }
-      
+
       // Ensure label exists and is updated
       let label = container.querySelector('.video-call__participant-name')
       if (!label) {
-        label = document.createElement("div")
-        label.className = "video-call__participant-name"
+        label = this.#createLabelElement(participant)
         container.appendChild(label)
+      } else {
+        label.textContent = participant.name || participant.identity
       }
-      label.textContent = participant.name || participant.identity
-      
-      // Ensure controls exist (they might not if container was created by audio)
+
+      // OPTIMIZED: Ensure controls exist using helper method
       let controls = container.querySelector('.video-call__remote-controls')
       if (!controls) {
-        controls = document.createElement("div")
-        controls.className = "video-call__remote-controls"
-        
-        // Mute/unmute button
-        const muteButton = document.createElement("button")
-        muteButton.type = "button"
-        muteButton.className = "video-call__remote-control-button"
-        muteButton.dataset.participantIdentity = participant.identity
-        muteButton.dataset.action = "click->video-call#toggleRemoteMute"
-        muteButton.setAttribute("aria-label", "Mute participant")
-        muteButton.innerHTML = `<span class="video-call__remote-control-icon"><img src="${this.iconMessagesValue}" class="colorize--white" width="16" height="16" aria-hidden="true" /></span>`
-        controls.appendChild(muteButton)
-        
-        // Fullscreen button - only show if there's a video stream or placeholder
-        const fullscreenButton = document.createElement("button")
-        fullscreenButton.type = "button"
-        fullscreenButton.className = "video-call__remote-control-button"
-        fullscreenButton.dataset.participantIdentity = participant.identity
-        fullscreenButton.dataset.action = "click->video-call#toggleFullscreen"
-        fullscreenButton.setAttribute("aria-label", "Fullscreen")
-        fullscreenButton.innerHTML = `<span class="video-call__remote-control-icon"><img src="${this.iconDisclosureValue}" class="colorize--white" width="16" height="16" aria-hidden="true" /></span>`
-        controls.appendChild(fullscreenButton)
-        
+        controls = this.#createControlsElement(participant)
         container.appendChild(controls)
       }
       
@@ -1333,7 +1334,7 @@ export default class extends Controller {
     )
     
     if (!container) {
-      // Create container if it doesn't exist (audio before video)
+      // OPTIMIZED: Create container using helper methods to reduce duplication
       container = document.createElement("div")
       container.className = "video-call__remote-video"
       container.dataset.participantIdentity = participant.identity
@@ -1345,76 +1346,27 @@ export default class extends Controller {
       video.muted = false
       video.dataset.videoTrack = "true"
       video.style.display = "none" // Hide until video track arrives
+
+      const placeholder = this.#createPlaceholderElement(participant)
+      const label = this.#createLabelElement(participant)
+      const controls = this.#createControlsElement(participant)
+
+      // Add all to container
       container.appendChild(video)
-
-      // Create placeholder image for when no video
-      const placeholder = document.createElement("img")
-      placeholder.className = "video-call__placeholder video-call__placeholder--remote"
-      placeholder.dataset.participantIdentity = participant.identity
-      placeholder.alt = participant.name || participant.identity
-      placeholder.style.display = "block" // Show by default until video arrives
-      
-      // Set up error handler first, before setting src
-      placeholder.onerror = () => {
-        const initialsSvg = this.#generateInitialsSvg(participant)
-        placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-      }
-      
-      // Try to get avatar URL from API
-      this.#getAvatarUrl(participant).then(url => {
-        if (url) {
-          placeholder.src = url
-        } else {
-          // If no URL, use initials
-          const initialsSvg = this.#generateInitialsSvg(participant)
-          placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-        }
-      }).catch(() => {
-        // Fallback to initials SVG if fetch fails
-        const initialsSvg = this.#generateInitialsSvg(participant)
-        placeholder.src = `data:image/svg+xml,${encodeURIComponent(initialsSvg)}`
-      })
-      
       container.appendChild(placeholder)
-
-      const label = document.createElement("div")
-      label.className = "video-call__participant-name"
-      label.textContent = participant.name || participant.identity
       container.appendChild(label)
-      
-      // Create controls container with buttons
-      const controls = document.createElement("div")
-      controls.className = "video-call__remote-controls"
-      
-      // Mute/unmute button
-      const muteButton = document.createElement("button")
-      muteButton.type = "button"
-      muteButton.className = "video-call__remote-control-button"
-      muteButton.dataset.participantIdentity = participant.identity
-      muteButton.dataset.action = "click->video-call#toggleRemoteMute"
-      muteButton.setAttribute("aria-label", "Mute participant")
-      muteButton.innerHTML = `<span class="video-call__remote-control-icon"><img src="${this.iconMessagesValue}" class="colorize--white" width="16" height="16" aria-hidden="true" /></span>`
-      controls.appendChild(muteButton)
-      
-      // Fullscreen button (will be visible when video or placeholder is present)
-      const fullscreenButton = document.createElement("button")
-      fullscreenButton.type = "button"
-      fullscreenButton.className = "video-call__remote-control-button"
-      fullscreenButton.dataset.participantIdentity = participant.identity
-      fullscreenButton.dataset.action = "click->video-call#toggleFullscreen"
-      fullscreenButton.setAttribute("aria-label", "Fullscreen")
-      fullscreenButton.innerHTML = `<span class="video-call__remote-control-icon"><img src="${this.iconDisclosureValue}" class="colorize--white" width="16" height="16" aria-hidden="true" /></span>`
-      controls.appendChild(fullscreenButton)
-      
       container.appendChild(controls)
-      
+
       // Store mute state in dataset
       container.dataset.audioMuted = "false"
-      
+
       // Update controls visibility
       this.#updateRemoteControlsVisibility(container)
-      
+
       this.remoteVideosTarget.appendChild(container)
+
+      // Load avatar asynchronously
+      this.#loadAvatarForPlaceholder(participant, placeholder)
     }
     
     let audio = container.querySelector('[data-audio-track="true"]')
@@ -1618,39 +1570,48 @@ export default class extends Controller {
   }
 
   #handleError(error) {
-    console.error("Video call error:", error)
-    
+    // Log full error details for debugging
+    console.error("Video call error:", {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    })
+
     let userMessage = "An error occurred with the video call."
     let errorType = "unknown"
-    
-    // Determine error type and user-friendly message
-    if (error.name === "NotAllowedError" || error.message?.includes("permission") || error.message?.includes("denied")) {
-      userMessage = "Camera or microphone permission was denied. Please allow access in your browser settings."
+
+    // Browser-specific error detection
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+    const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1
+
+    // Determine error type with better detection
+    if (error.name === "NotAllowedError" || error.message?.toLowerCase().includes("permission")) {
+      userMessage = isSafari
+        ? "Camera or microphone permission was denied. Go to Safari > Settings for this Website to allow access."
+        : "Camera or microphone permission was denied. Please allow access in your browser settings."
       errorType = "permission"
-    } else if (error.name === "NotFoundError" || error.message?.includes("device not found")) {
-      userMessage = "No camera or microphone found. Please check your devices."
+    } else if (error.name === "NotFoundError" || error.message?.toLowerCase().includes("device not found")) {
+      userMessage = "No camera or microphone found. Please check your devices and try again."
       errorType = "device"
-    } else if (error.message?.includes("network") || error.message?.includes("connection") || error.message?.includes("Failed to fetch")) {
-      userMessage = "Network error. Please check your internet connection."
+    } else if (error.name === "NotReadableError") {
+      userMessage = "Camera or microphone is already in use by another application. Please close other apps and try again."
+      errorType = "device-busy"
+    } else if (error.message?.includes("network") || error.message?.includes("Failed to fetch")) {
+      userMessage = "Network error. Please check your internet connection and try again."
       errorType = "network"
+    } else if (error.message?.includes("timeout")) {
+      userMessage = "Connection timed out. Please check your network and try again."
+      errorType = "timeout"
     } else if (error.message?.includes("token") || error.message?.includes("authentication")) {
-      userMessage = "Authentication failed. Please try again."
+      userMessage = "Authentication failed. Please refresh the page and try again."
       errorType = "auth"
     } else if (error.message?.includes("not configured")) {
-      userMessage = "LiveKit is not configured for this deployment."
+      userMessage = "Video calling is not configured for this deployment."
       errorType = "config"
-    } else if (error.message?.includes("reconnect")) {
-      userMessage = "Connection lost. Attempting to reconnect..."
-      errorType = "reconnect"
-    } else if (error.message) {
-      // Use error message if available, but make it user-friendly
-      userMessage = error.message.charAt(0).toUpperCase() + error.message.slice(1)
     }
-    
-    // Show error message to user
+
     this.#showError(userMessage, errorType)
-    
-    // Dispatch error event for external listeners
     this.dispatch("error", { detail: { error, message: userMessage, type: errorType } })
   }
 
@@ -2115,6 +2076,13 @@ export default class extends Controller {
 
     const screenTrack = this.#localScreenTrack
     this.#localScreenTrack = null
+
+    // Clean up event listener if it exists (prevents memory leak)
+    if (screenTrack.video && this.#screenShareEndHandlers.has(screenTrack.video)) {
+      const handler = this.#screenShareEndHandlers.get(screenTrack.video)
+      screenTrack.video.removeEventListener("ended", handler)
+      this.#screenShareEndHandlers.delete(screenTrack.video)
+    }
 
     if (this.#room && screenTrack.video) {
       try {

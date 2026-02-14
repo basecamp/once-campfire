@@ -27,10 +27,13 @@ class Membership < ApplicationRecord
     def broadcast_membership_added
       # For direct rooms, update the direct rooms list for both users
       if room.direct?
+        # OPTIMIZED: Single query with caching to avoid N+1
+        memberships_by_user = room.memberships.index_by(&:user_id)
+
         room.users.find_each do |room_user|
-          membership = room.memberships.find_by(user: room_user)
+          membership = memberships_by_user[room_user.id]
           next unless membership
-          
+
           html = ApplicationController.render(
             partial: "users/sidebars/rooms/direct",
             locals: { membership: membership }
