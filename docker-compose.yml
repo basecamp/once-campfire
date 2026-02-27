@@ -3,7 +3,7 @@
 # Quick start:
 #   docker compose up --build
 #
-# The container will auto-generate SECRET_KEY_BASE on first boot, so no
+# The container will auto-generate SECRET_KEY_BASE at each container startup, so no
 # environment variables are required.  To persist your data across restarts the
 # named volume "campfire_storage" is mapped to /rails/storage inside the
 # container.  Run on plain HTTP (no SSL) by default; set SSL_DOMAIN to enable
