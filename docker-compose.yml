@@ -26,8 +26,10 @@ services:
       # VAPID_PUBLIC_KEY: ""
       # VAPID_PRIVATE_KEY: ""
 
-      # Uncomment to supply your own persistent secret (recommended for
-      # production); if omitted, one is generated automatically at startup:
+      # Uncomment to supply your own persistent secret (strongly recommended
+      # for production). If omitted, SECRET_KEY_BASE is auto-generated at each
+      # container startup, which will invalidate all user sessions and any
+      # ActionText attachments (such as @mentions) on every restart:
       # SECRET_KEY_BASE: ""
 
       # Serve over plain HTTP (no SSL certificate required):
