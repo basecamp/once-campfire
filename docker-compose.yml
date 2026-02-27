@@ -1,0 +1,37 @@
+# docker-compose.yml – easiest way to run Campfire locally (including on Windows).
+#
+# Quick start:
+#   docker compose up --build
+#
+# The container will auto-generate SECRET_KEY_BASE on first boot, so no
+# environment variables are required.  To persist your data across restarts the
+# named volume "campfire_storage" is mapped to /rails/storage inside the
+# container.  Run on plain HTTP (no SSL) by default; set SSL_DOMAIN to enable
+# automatic HTTPS via Let's Encrypt.
+
+services:
+  campfire:
+    build: .
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - campfire_storage:/rails/storage
+    restart: unless-stopped
+    environment:
+      # Uncomment and fill in to enable automatic HTTPS via Let's Encrypt:
+      # SSL_DOMAIN: chat.example.com
+
+      # Uncomment and fill in to enable Web Push notifications:
+      # VAPID_PUBLIC_KEY: ""
+      # VAPID_PRIVATE_KEY: ""
+
+      # Uncomment to supply your own persistent secret (recommended for
+      # production); if omitted, one is generated automatically at startup:
+      # SECRET_KEY_BASE: ""
+
+      # Serve over plain HTTP (no SSL certificate required):
+      DISABLE_SSL: "true"
+
+volumes:
+  campfire_storage:

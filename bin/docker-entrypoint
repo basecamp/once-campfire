@@ -1,0 +1,7 @@
+#!/bin/bash -e
+
+# Auto-generate SECRET_KEY_BASE if not already provided, so the container
+# can start without any environment variables set (useful on Windows/local dev).
+export SECRET_KEY_BASE="${SECRET_KEY_BASE:-$(ruby -e 'require "securerandom"; puts SecureRandom.hex(64)')}"
+
+exec "$@"

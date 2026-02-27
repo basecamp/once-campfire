@@ -75,5 +75,8 @@ ENV GIT_REVISION=$GIT_REVISION
 # Expose ports for HTTP and HTTPS
 EXPOSE 80 443
 
+# Entrypoint generates SECRET_KEY_BASE if not set, then runs the given command
+ENTRYPOINT ["bin/docker-entrypoint"]
+
 # Start the server by default, this can be overwritten at runtime
 CMD ["bin/boot"]
