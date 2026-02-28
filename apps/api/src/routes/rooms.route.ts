@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest, RouteHandlerMethod } from 'fastify';
 import { z } from 'zod';
 import { asObjectId } from '../lib/object-id.js';
+import { isApiPath } from '../lib/request-format.js';
 import { MembershipModel } from '../models/membership.model.js';
 import { MessageModel } from '../models/message.model.js';
 import { RoomModel } from '../models/room.model.js';
@@ -311,10 +312,10 @@ async function serializeMessages(messages: Array<{
     contentType: string;
     filename: string;
     byteSize: number;
-    width?: number;
-    height?: number;
-    previewable?: boolean;
-    variable?: boolean;
+    width?: number | null;
+    height?: number | null;
+    previewable?: boolean | null;
+    variable?: boolean | null;
   } | null;
   roomId: unknown;
   creatorId: unknown;
@@ -1461,8 +1462,14 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
       ).reverse();
     }
 
+    const serializedMessages = await serializeMessages(messages);
+
+    if (serializedMessages.length === 0 && !isApiPath(request)) {
+      return reply.code(204).send();
+    }
+
     return {
-      messages: await serializeMessages(messages)
+      messages: serializedMessages
     };
   });
 

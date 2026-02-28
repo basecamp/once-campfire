@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
+import { isApiPath } from '../lib/request-format.js';
 import { COOKIE_NAME } from '../plugins/auth.js';
 import { PushSubscriptionModel } from '../models/push-subscription.model.js';
 import { SessionModel } from '../models/session.model.js';
@@ -63,9 +64,57 @@ function consumeSessionAttempt(ipAddress: string) {
   return true;
 }
 
+function renderSessionHtml(message: string) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in</title>
+  </head>
+  <body>
+    <main>
+      <h1>Sign in</h1>
+      ${message ? `<p>${message}</p>` : ''}
+      <form action="/session" method="post">
+        <label>
+          Email address
+          <input type="email" name="email_address" required />
+        </label>
+        <label>
+          Password
+          <input type="password" name="password" required />
+        </label>
+        <button type="submit">Sign in</button>
+      </form>
+    </main>
+  </body>
+</html>`;
+}
+
+function sendSessionRejection(reply: import('fastify').FastifyReply, statusCode: 401 | 429, apiRequest: boolean) {
+  if (apiRequest) {
+    return reply.code(statusCode).send({ error: 'Too many requests or unauthorized.' });
+  }
+
+  reply.header('content-type', 'text/html; charset=utf-8');
+  return reply.code(statusCode).send(renderSessionHtml('Too many requests or unauthorized.'));
+}
+
 const sessionsRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/session/new', async () => {
+  app.get('/session/new', async (request, reply) => {
+    const apiRequest = isApiPath(request);
     const usersCount = await UserModel.countDocuments();
+
+    if (!apiRequest && usersCount === 0) {
+      return reply.redirect('/first_run');
+    }
+
+    if (!apiRequest) {
+      reply.header('content-type', 'text/html; charset=utf-8');
+      return reply.code(200).send(renderSessionHtml(''));
+    }
+
     return {
       firstRunRequired: usersCount === 0,
       first_run_required: usersCount === 0
@@ -73,24 +122,26 @@ const sessionsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post('/session', async (request, reply) => {
+    const apiRequest = isApiPath(request);
+
     if (!consumeSessionAttempt(request.ip)) {
-      return reply.code(429).send({ error: 'Too many requests or unauthorized.' });
+      return sendSessionRejection(reply, 429, apiRequest);
     }
 
     const payload = parseSessionPayload(request.body);
 
     const user = await UserModel.findOne({ emailAddress: payload.emailAddress.toLowerCase() });
     if (!user) {
-      return reply.code(401).send({ error: 'Unauthorized' });
+      return sendSessionRejection(reply, 401, apiRequest);
     }
 
     if (user.status !== 'active') {
-      return reply.code(403).send({ error: 'User is not active' });
+      return sendSessionRejection(reply, 401, apiRequest);
     }
 
     const valid = await bcrypt.compare(payload.password, user.passwordHash);
     if (!valid) {
-      return reply.code(401).send({ error: 'Unauthorized' });
+      return sendSessionRejection(reply, 401, apiRequest);
     }
 
     const session = await createSession({
@@ -109,6 +160,10 @@ const sessionsRoutes: FastifyPluginAsync = async (app) => {
       maxAge: 60 * 60 * 24 * 7
     });
 
+    if (!apiRequest) {
+      return reply.redirect('/');
+    }
+
     return {
       user: {
         id: String(user._id),
@@ -123,6 +178,7 @@ const sessionsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.delete('/session', { preHandler: app.authenticate }, async (request, reply) => {
+    const apiRequest = isApiPath(request);
     const endpoint =
       (request.body as { pushSubscriptionEndpoint?: string; push_subscription_endpoint?: string } | undefined)
         ?.pushSubscriptionEndpoint ??
@@ -137,6 +193,11 @@ const sessionsRoutes: FastifyPluginAsync = async (app) => {
     ]);
 
     reply.clearCookie(COOKIE_NAME, { path: '/' });
+
+    if (!apiRequest) {
+      return reply.redirect('/');
+    }
+
     return reply.code(204).send();
   });
 };

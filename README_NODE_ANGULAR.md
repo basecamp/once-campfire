@@ -42,6 +42,15 @@
 - PushMessage mention/involvement parity (`Room::PushMessageJob` equivalent)
 - Browser/platform middleware parity (`AllowBrowser` + `SetPlatform` + incompatible-browser HTML)
 - Avatar/logo ActiveStorage-like parity (signed avatar URL + binary storage + png/webp variants)
+- Autocomplete parity (`value` + signed `sgid` fields)
+- Message attachment parity expansion:
+  - preview/thumb endpoints: `GET /messages/:messageId/attachment/preview|thumb`
+  - attachment metadata parity (`width/height`, preview flags, download/preview/thumb paths)
+- Search parity expansion (`attachment.filename` matching + filename fallback body)
+- Ban parity hardening (public-IP only validation/filtering like Rails `Ban#ip_address_is_public`)
+- Strict signed avatar token parity (`GET /users/:userId/avatar` accepts signed id only)
+- Session HTML parity on Rails aliases (`/session*`, `/session/transfers/*`) with redirect/no-content behavior
+- ActionCable-compatible WebSocket endpoint `/cable` (welcome/ping + subscriptions for `Heartbeat`, `UnreadRooms`, `ReadRooms`, `Presence`, `TypingNotifications`)
 
 ## Быстрый запуск
 

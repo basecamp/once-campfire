@@ -12,8 +12,10 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.1.0",
+    "@fastify/formbody": "^8.0.2",
     "@fastify/jwt": "^10.0.0",
     "@fastify/multipart": "^9.4.0",
+    "@fastify/websocket": "^11.2.0",
     "@types/qrcode": "^1.5.6",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.70.1",

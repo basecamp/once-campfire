@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
+import websocket from '@fastify/websocket';
 import browserPlatformPlugin from './plugins/browser-platform.js';
 import banGuardPlugin from './plugins/ban-guard.js';
 import mongoosePlugin from './plugins/mongoose.js';
@@ -25,6 +27,7 @@ import sessionsRoutes from './routes/sessions.route.js';
 import qrCodeRoutes from './routes/qr-code.route.js';
 import pwaRoutes from './routes/pwa.route.js';
 import welcomeRoutes from './routes/welcome.route.js';
+import cableRoutes from './routes/cable.route.js';
 import { env } from './config/env.js';
 
 export function buildApp() {
@@ -50,6 +53,7 @@ export function buildApp() {
     origin: true,
     credentials: true
   });
+  app.register(formbody);
 
   app.register(multipart, {
     limits: {
@@ -57,6 +61,7 @@ export function buildApp() {
       files: 1
     }
   });
+  app.register(websocket);
 
   app.register(browserPlatformPlugin);
   app.register(mongoosePlugin);
@@ -84,6 +89,7 @@ export function buildApp() {
   app.register(qrCodeRoutes, { prefix: '/api/v1' });
   app.register(pwaRoutes, { prefix: '/api/v1' });
   app.register(welcomeRoutes);
+  app.register(cableRoutes);
 
   // Rails path compatibility aliases (without /api/v1 prefix)
   app.register(roomsRoutes, { prefix: '/rooms' });

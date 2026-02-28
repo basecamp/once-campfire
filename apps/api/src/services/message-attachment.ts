@@ -4,14 +4,17 @@ const THUMBNAIL_MAX_WIDTH = 1200;
 const THUMBNAIL_MAX_HEIGHT = 800;
 
 export type StoredMessageAttachment = {
-  data: Buffer;
   contentType: string;
   filename: string;
   byteSize: number;
-  width?: number;
-  height?: number;
-  previewable?: boolean;
-  variable?: boolean;
+  width?: number | null;
+  height?: number | null;
+  previewable?: boolean | null;
+  variable?: boolean | null;
+};
+
+export type StoredMessageAttachmentWithData = StoredMessageAttachment & {
+  data: Buffer;
 };
 
 export function normalizeAttachmentContentType(value: string | undefined) {
@@ -55,11 +58,70 @@ export function isAttachmentPreviewable(contentType: string) {
   return normalized.startsWith('video/') || normalized === 'application/pdf';
 }
 
+function asNumberOrNull(value: unknown) {
+  return typeof value === 'number' ? value : null;
+}
+
+function asBooleanOrNull(value: unknown) {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function asBuffer(value: unknown) {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+
+  if (value && typeof value === 'object') {
+    const binaryLike = value as { buffer?: unknown; value?: () => unknown };
+    if (binaryLike.buffer instanceof Uint8Array) {
+      return Buffer.from(binaryLike.buffer);
+    }
+
+    if (typeof binaryLike.value === 'function') {
+      const resolved = binaryLike.value();
+      if (Buffer.isBuffer(resolved)) {
+        return resolved;
+      }
+      if (resolved instanceof Uint8Array) {
+        return Buffer.from(resolved);
+      }
+    }
+  }
+
+  return null;
+}
+
+export function coerceAttachmentWithData(attachment: (StoredMessageAttachment & { data: unknown }) | null | undefined) {
+  if (!attachment) {
+    return null;
+  }
+
+  const data = asBuffer(attachment.data);
+  if (!data) {
+    return null;
+  }
+
+  return {
+    data,
+    contentType: attachment.contentType,
+    filename: attachment.filename,
+    byteSize: attachment.byteSize,
+    width: asNumberOrNull(attachment.width),
+    height: asNumberOrNull(attachment.height),
+    previewable: asBooleanOrNull(attachment.previewable),
+    variable: asBooleanOrNull(attachment.variable)
+  } satisfies StoredMessageAttachmentWithData;
+}
+
 export async function buildMessageAttachmentFromBuffer(
   buffer: Buffer,
   contentType?: string,
   filename?: string
-): Promise<StoredMessageAttachment> {
+): Promise<StoredMessageAttachmentWithData> {
   const normalizedContentType = normalizeAttachmentContentType(contentType);
   const safeFilename =
     (filename?.trim() ? filename.trim() : `attachment.${extensionForAttachmentContentType(normalizedContentType)}`).replace(/"/g, '');
@@ -95,8 +157,9 @@ export async function buildMessageAttachmentFromBuffer(
 
 export function serializeMessageAttachment(messageId: string, attachment: StoredMessageAttachment) {
   const path = `/api/v1/messages/${messageId}/attachment`;
-  const previewable = attachment.previewable ?? isAttachmentPreviewable(attachment.contentType);
-  const variable = attachment.variable ?? isAttachmentVariable(attachment.contentType);
+  const previewable =
+    typeof attachment.previewable === 'boolean' ? attachment.previewable : isAttachmentPreviewable(attachment.contentType);
+  const variable = typeof attachment.variable === 'boolean' ? attachment.variable : isAttachmentVariable(attachment.contentType);
 
   return {
     contentType: attachment.contentType,
@@ -118,13 +181,19 @@ export function serializeMessageAttachment(messageId: string, attachment: Stored
   };
 }
 
-export async function buildAttachmentImageVariant(attachment: StoredMessageAttachment) {
-  if (!(attachment.variable ?? isAttachmentVariable(attachment.contentType))) {
+export async function buildAttachmentImageVariant(attachment: StoredMessageAttachment & { data: unknown }) {
+  const normalized = coerceAttachmentWithData(attachment);
+  if (!normalized) {
+    return null;
+  }
+
+  const variable = typeof normalized.variable === 'boolean' ? normalized.variable : isAttachmentVariable(normalized.contentType);
+  if (!variable) {
     return null;
   }
 
   try {
-    const data = await sharp(attachment.data)
+    const data = await sharp(normalized.data)
       .resize({
         width: THUMBNAIL_MAX_WIDTH,
         height: THUMBNAIL_MAX_HEIGHT,
@@ -134,7 +203,7 @@ export async function buildAttachmentImageVariant(attachment: StoredMessageAttac
       .webp()
       .toBuffer();
 
-    const safeName = attachment.filename.replace(/"/g, '').replace(/\.[^.]+$/, '') || 'attachment';
+    const safeName = normalized.filename.replace(/"/g, '').replace(/\.[^.]+$/, '') || 'attachment';
     return {
       data,
       contentType: 'image/webp',

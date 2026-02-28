@@ -272,6 +272,44 @@
     - `POST /first_run` (`user[avatar]`)
     - `POST|PATCH /account/bots/:id` (`user[avatar]`)
 
+### Последние закрытые parity-расхождения
+
+- `account/custom_styles`:
+  - `GET /account/custom_styles` и `GET /account/custom_styles/edit` переведены на admin-only preHandler (как `ensure_can_administer` в Rails `Accounts::CustomStylesController`).
+- Push test notification icon parity:
+  - `POST /users/:userId/push_subscriptions/:push_subscription_id/test_notifications` использует icon `/account/logo` (вместо `favicon.ico`).
+- Autocomplete parity:
+  - `GET /autocompletable/users` дополнен полями `value` и signed `sgid` (с сохранением текущих `id/avatarUrl` для обратной совместимости).
+- Message attachment parity expansion:
+  - attachment schema дополнена полями `width/height`, `previewable/variable`;
+  - добавлены endpoints:
+    - `GET /messages/:messageId/attachment?disposition=inline|attachment`
+    - `GET /messages/:messageId/attachment/thumb`
+    - `GET /messages/:messageId/attachment/preview`
+  - в message payload добавлены attachment paths и snake_case алиасы (`download_path`, `preview_path`, `thumb_path`).
+- Search parity refinement:
+  - поиск включает `attachment.filename` и использует filename fallback в `results[*].body` (аналог `plain_text_body`).
+- Ban parity hardening:
+  - модель `Ban` валидирует только публичные IP (private/loopback/link-local reject);
+  - ban-flow фильтрует IP из session-логов до public-only;
+  - global ban-guard учитывает только валидные public IP.
+- Avatar signed-token strictness:
+  - `GET /users/:userId/avatar` принимает только signed avatar token (удален fallback по raw ObjectId).
+- HTML/redirect parity (`sessions`/`transfers`/`messages`):
+  - non-API aliases (`/session*`, `/session/transfers/*`) отдают HTML/redirect behavior;
+  - `GET /session/new` при `User.none?` делает redirect на `/first_run`;
+  - `PATCH|PUT /session/transfers/:id` для non-API возвращает redirect `/`, invalid -> `400` without JSON body;
+  - `GET /rooms/:roomId/messages` на non-API alias возвращает `204 No Content` при пустой выборке.
+- ActionCable/WebSocket compatibility:
+  - добавлен endpoint `GET /cable` с ActionCable-подобным protocol (`welcome`, `ping`, `confirm_subscription`, `reject_subscription`, `message`);
+  - поддержаны каналы:
+    - `HeartbeatChannel`
+    - `UnreadRoomsChannel`
+    - `ReadRoomsChannel`
+    - `PresenceChannel` (`present/absent/refresh`)
+    - `TypingNotificationsChannel` (`start/stop`)
+  - подключен forced disconnect через existing realtime connection manager.
+
 ### Rails path compatibility aliases (без `/api/v1`)
 
 - Добавлены alias-регистрации маршрутов для Rails-путей:

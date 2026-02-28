@@ -24,8 +24,8 @@ type MessageResponse = {
     filename: string;
     byteSize: number;
     byte_size: number;
-    width?: number;
-    height?: number;
+    width?: number | null;
+    height?: number | null;
     previewable: boolean;
     variable: boolean;
     path: string;

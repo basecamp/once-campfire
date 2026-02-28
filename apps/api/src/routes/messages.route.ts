@@ -7,10 +7,89 @@ import { MessageModel } from '../models/message.model.js';
 import { UserModel } from '../models/user.model.js';
 import { enqueueWebhookDispatch } from '../queues/webhook.queue.js';
 import { publishRealtimeEvent } from '../realtime/redis-realtime.js';
+import {
+  buildAttachmentImageVariant,
+  coerceAttachmentWithData,
+  isAttachmentPreviewable,
+  type StoredMessageAttachmentWithData
+} from '../services/message-attachment.js';
 
 const createBoostSchema = z.object({
   content: z.string().trim().min(1).max(16)
 });
+
+type AttachmentLoadResult =
+  | { error: 'invalid_message_id' | 'message_not_found' | 'forbidden' | 'attachment_not_found' }
+  | {
+      message: {
+        roomId: unknown;
+      };
+      attachment: StoredMessageAttachmentWithData;
+    };
+
+async function loadAttachmentForUser(messageId: string, userId: string): Promise<AttachmentLoadResult> {
+  const messageObjectId = asObjectId(messageId);
+  if (!messageObjectId) {
+    return { error: 'invalid_message_id' as const };
+  }
+
+  const message = await MessageModel.findById(messageObjectId).lean();
+  if (!message) {
+    return { error: 'message_not_found' as const };
+  }
+
+  const membership = await MembershipModel.findOne({ roomId: message.roomId, userId }).lean();
+  if (!membership) {
+    return { error: 'forbidden' as const };
+  }
+
+  if (!message.attachment) {
+    return { error: 'attachment_not_found' as const };
+  }
+
+  const attachment = coerceAttachmentWithData(message.attachment as { data: unknown; contentType: string; filename: string; byteSize: number });
+  if (!attachment) {
+    return { error: 'attachment_not_found' as const };
+  }
+
+  return {
+    message,
+    attachment
+  };
+}
+
+function sendAttachmentLoadError(reply: import('fastify').FastifyReply, loaded: AttachmentLoadResult) {
+  if (!('error' in loaded)) {
+    return false;
+  }
+
+  switch (loaded.error) {
+    case 'invalid_message_id':
+      void reply.code(400).send({ error: 'Invalid message id' });
+      return true;
+    case 'message_not_found':
+      void reply.code(404).send({ error: 'Message not found' });
+      return true;
+    case 'forbidden':
+      void reply.code(403).send({ error: 'You are not a room member' });
+      return true;
+    case 'attachment_not_found':
+      void reply.code(404).send({ error: 'Attachment not found' });
+      return true;
+    default:
+      return false;
+  }
+}
+
+function setAttachmentHeaders(
+  reply: import('fastify').FastifyReply,
+  attachment: { contentType: string; filename: string },
+  disposition: 'inline' | 'attachment'
+) {
+  const safeFilename = attachment.filename.replace(/"/g, '');
+  reply.header('content-type', attachment.contentType);
+  reply.header('content-disposition', `${disposition}; filename="${safeFilename}"`);
+}
 
 const messagesRoutes: FastifyPluginAsync = async (app) => {
   app.get('/:messageId/attachment', { preHandler: app.authenticate }, async (request, reply) => {
@@ -20,32 +99,66 @@ const messagesRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const { messageId } = request.params as { messageId: string };
-    const messageObjectId = asObjectId(messageId);
-    if (!messageObjectId) {
-      return reply.code(400).send({ error: 'Invalid message id' });
+    const loaded = await loadAttachmentForUser(messageId, userId);
+    if ('error' in loaded) {
+      sendAttachmentLoadError(reply, loaded);
+      return;
     }
 
-    const message = await MessageModel.findById(messageObjectId).lean();
-    if (!message) {
-      return reply.code(404).send({ error: 'Message not found' });
+    const disposition = ((request.query as { disposition?: string } | undefined)?.disposition ?? '').toLowerCase();
+    const normalizedDisposition = disposition === 'attachment' ? 'attachment' : 'inline';
+    setAttachmentHeaders(reply, loaded.attachment, normalizedDisposition);
+
+    return reply.send(loaded.attachment.data);
+  });
+
+  app.get('/:messageId/attachment/thumb', { preHandler: app.authenticate }, async (request, reply) => {
+    const userId = request.authUserId;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Unauthorized' });
     }
 
-    const membership = await MembershipModel.findOne({ roomId: message.roomId, userId }).lean();
-    if (!membership) {
-      return reply.code(403).send({ error: 'You are not a room member' });
+    const { messageId } = request.params as { messageId: string };
+    const loaded = await loadAttachmentForUser(messageId, userId);
+    if ('error' in loaded) {
+      sendAttachmentLoadError(reply, loaded);
+      return;
     }
 
-    if (!message.attachment) {
-      return reply.code(404).send({ error: 'Attachment not found' });
+    const variant = await buildAttachmentImageVariant(loaded.attachment);
+    if (!variant) {
+      return reply.code(404).send({ error: 'Thumbnail not available' });
     }
 
-    reply.header('content-type', message.attachment.contentType);
-    reply.header(
-      'content-disposition',
-      `inline; filename="${message.attachment.filename.replace(/"/g, '')}"`
-    );
+    setAttachmentHeaders(reply, variant, 'inline');
+    return reply.send(variant.data);
+  });
 
-    return reply.send(message.attachment.data);
+  app.get('/:messageId/attachment/preview', { preHandler: app.authenticate }, async (request, reply) => {
+    const userId = request.authUserId;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Unauthorized' });
+    }
+
+    const { messageId } = request.params as { messageId: string };
+    const loaded = await loadAttachmentForUser(messageId, userId);
+    if ('error' in loaded) {
+      sendAttachmentLoadError(reply, loaded);
+      return;
+    }
+
+    const variant = await buildAttachmentImageVariant(loaded.attachment);
+    if (variant) {
+      setAttachmentHeaders(reply, variant, 'inline');
+      return reply.send(variant.data);
+    }
+
+    if (!isAttachmentPreviewable(loaded.attachment.contentType)) {
+      return reply.code(404).send({ error: 'Preview not available' });
+    }
+
+    setAttachmentHeaders(reply, loaded.attachment, 'inline');
+    return reply.send(loaded.attachment.data);
   });
 
   app.get('/:messageId/boosts', { preHandler: app.authenticate }, async (request, reply) => {
