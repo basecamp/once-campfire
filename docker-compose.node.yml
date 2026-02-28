@@ -1,0 +1,23 @@
+services:
+  mongodb:
+    image: mongo:8
+    container_name: campfire-mongodb
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    environment:
+      MONGO_INITDB_DATABASE: campfire
+    volumes:
+      - campfire_mongo_data:/data/db
+  redis:
+    image: redis:7-alpine
+    container_name: campfire-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - campfire_redis_data:/data
+
+volumes:
+  campfire_mongo_data:
+  campfire_redis_data:

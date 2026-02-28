@@ -6,6 +6,12 @@
 
 # Ignore bundler config.
 /.bundle
+/node_modules
+/apps/api/node_modules
+/apps/web/node_modules
+/apps/api/dist
+/apps/web/dist
+/.npm-cache
 
 # Ignore the default SQLite database.
 /db/*.sqlite3

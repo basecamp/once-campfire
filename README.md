@@ -59,3 +59,12 @@ so that people who forget their password know who to contact for help.
 Campfire is single-tenant: any rooms designated "public" will be accessible by
 all users in the system. To support entirely distinct groups of customers, you
 would deploy multiple instances of the application.
+
+## Node + Angular migration
+
+In addition to the Rails app, this repository now includes a migration workspace:
+
+- `apps/api` (`Node.js + Fastify + Mongoose + MongoDB`)
+- `apps/web` (`Angular 20+`)
+
+See `MIGRATION_NODE_ANGULAR.md` for current scope and run instructions.

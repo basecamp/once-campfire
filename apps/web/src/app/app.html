@@ -1,0 +1,170 @@
+<main class="page">
+  <section class="panel" *ngIf="loading(); else contentBlock">
+    <p>Загрузка...</p>
+  </section>
+
+  <ng-template #contentBlock>
+    <section class="panel auth" *ngIf="!authService.user(); else chatBlock">
+      <header>
+        <h1>Campfire Next</h1>
+        <p>Node.js + Fastify + MongoDB + Angular 20+ </p>
+      </header>
+
+      <div class="mode-switch">
+        <button type="button" [class.active]="authMode() === 'login'" (click)="switchMode('login')">Вход</button>
+        <button type="button" [class.active]="authMode() === 'register'" (click)="switchMode('register')">Регистрация</button>
+      </div>
+
+      <form [formGroup]="authForm" (ngSubmit)="submitAuth()">
+        <label *ngIf="authMode() === 'register'">
+          Имя
+          <input type="text" formControlName="name" placeholder="Ваше имя" />
+        </label>
+
+        <label>
+          Email
+          <input type="email" formControlName="emailAddress" placeholder="you@example.com" />
+        </label>
+
+        <label>
+          Пароль
+          <input type="password" formControlName="password" placeholder="Минимум 8 символов" />
+        </label>
+
+        <button class="primary" type="submit">
+          {{ authMode() === 'login' ? 'Войти' : 'Создать аккаунт' }}
+        </button>
+      </form>
+
+      <p class="error" *ngIf="authError()">{{ authError() }}</p>
+    </section>
+
+    <ng-template #chatBlock>
+      <section class="chat-layout">
+        <aside class="sidebar">
+          <div class="sidebar-head">
+            <div>
+              <h2>{{ authService.user()?.name }}</h2>
+              <small>{{ authService.user()?.emailAddress }}</small>
+            </div>
+            <button type="button" (click)="logout()">Выйти</button>
+          </div>
+
+          <form class="room-create" [formGroup]="roomForm" (ngSubmit)="createRoom()">
+            <input type="text" formControlName="name" placeholder="Новая комната" />
+            <select formControlName="type">
+              <option value="open">Открытая</option>
+              <option value="closed">Закрытая</option>
+            </select>
+            <button class="primary" type="submit">Создать</button>
+          </form>
+
+          <form class="direct-create" [formGroup]="directForm" (ngSubmit)="findDirectCandidates()">
+            <input type="text" formControlName="query" placeholder="Direct: имя пользователя" />
+            <button type="submit">Найти</button>
+          </form>
+
+          <div class="direct-users" *ngIf="directCandidates().length > 0">
+            <button type="button" *ngFor="let user of directCandidates()" (click)="createDirectRoomWith(user.id)">
+              <span>{{ user.name }}</span>
+              <small>{{ user.emailAddress }}</small>
+            </button>
+          </div>
+
+          <div class="rooms">
+            <button
+              type="button"
+              *ngFor="let room of rooms()"
+              [class.active]="room.id === selectedRoomId()"
+              (click)="selectRoom(room.id)"
+            >
+              <span>{{ room.type === 'direct' ? 'DM' : '#' }} {{ room.name }}</span>
+              <small>{{ room.type }}</small>
+            </button>
+          </div>
+
+          <section class="webhooks">
+            <h4>Webhooks</h4>
+            <form [formGroup]="webhookForm" (ngSubmit)="createWebhook()">
+              <input type="text" formControlName="url" placeholder="https://example.com/hook" />
+              <button type="submit">Добавить</button>
+            </form>
+
+            <div class="webhook-list" *ngIf="webhooks().length > 0">
+              <article *ngFor="let webhook of webhooks()">
+                <p>{{ webhook.url }}</p>
+                <div class="webhook-actions">
+                  <button type="button" (click)="testWebhook(webhook.id)">Test</button>
+                  <button type="button" (click)="deleteWebhook(webhook.id)">Delete</button>
+                </div>
+              </article>
+            </div>
+          </section>
+        </aside>
+
+        <section class="chat">
+          <header>
+            <h3 *ngIf="selectedRoom(); else noRoomHead">{{ selectedRoom()?.type === 'direct' ? 'DM' : '#' }} {{ selectedRoom()?.name }}</h3>
+            <ng-template #noRoomHead>
+              <h3>Выберите комнату</h3>
+            </ng-template>
+          </header>
+
+          <form class="search" [formGroup]="searchForm" (ngSubmit)="runSearch()">
+            <input type="text" formControlName="query" placeholder="Поиск по сообщениям" />
+            <select formControlName="scope">
+              <option value="current">Текущая комната</option>
+              <option value="all">Все комнаты</option>
+            </select>
+            <button type="submit">Найти</button>
+            <button type="button" (click)="clearSearchHistory()">Очистить историю</button>
+          </form>
+
+          <div class="search-results" *ngIf="searchResults().length > 0">
+            <article *ngFor="let result of searchResults()">
+              <strong>{{ result.creatorName }}</strong>
+              <time>{{ result.createdAt | date: 'short' }}</time>
+              <p>{{ result.body }}</p>
+            </article>
+          </div>
+
+          <div class="search-history" *ngIf="searchHistory().length > 0">
+            <small>История поиска:</small>
+            <span *ngFor="let item of searchHistory()">{{ item.query }}</span>
+          </div>
+
+          <div class="messages" *ngIf="selectedRoom(); else noRoomBody">
+            <article *ngFor="let message of messages()">
+              <div class="message-head">
+                <strong>{{ message.creator?.name || message.creatorId }}</strong>
+                <time>{{ message.createdAt | date: 'short' }}</time>
+              </div>
+              <p>{{ message.body }}</p>
+
+              <div class="boosts" *ngIf="message.boostSummary as summary">
+                <span *ngFor="let pair of summary | keyvalue">{{ pair.key }} {{ pair.value }}</span>
+              </div>
+
+              <div class="message-actions">
+                <button type="button" (click)="boostMessage(message.id, '👍')">👍</button>
+                <button type="button" (click)="boostMessage(message.id, '🔥')">🔥</button>
+                <button type="button" (click)="boostMessage(message.id, '🚀')">🚀</button>
+              </div>
+            </article>
+          </div>
+
+          <ng-template #noRoomBody>
+            <div class="empty">Комнат пока нет. Создайте первую слева.</div>
+          </ng-template>
+
+          <form class="composer" [formGroup]="messageForm" (ngSubmit)="sendMessage()" *ngIf="selectedRoom()">
+            <input type="text" formControlName="body" placeholder="Напишите сообщение" />
+            <button class="primary" type="submit">Отправить</button>
+          </form>
+
+          <p class="error" *ngIf="chatError()">{{ chatError() }}</p>
+        </section>
+      </section>
+    </ng-template>
+  </ng-template>
+</main>
