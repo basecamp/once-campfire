@@ -1,11 +1,10 @@
-import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { environment } from '../../environments/environment';
 import {
   type Boost,
   type Message,
-  type RealtimeEventPayloadMap,
   type Room,
   type SearchHistoryItem,
   type SearchResult,
@@ -13,266 +12,123 @@ import {
   type Webhook
 } from './api.types';
 
-interface RoomsResponse {
-  rooms: Room[];
-}
-
-interface MessagesResponse {
-  messages: Message[];
-}
-
-interface RoomResponse {
-  room: Room;
-}
-
-interface MessageResponse {
-  message: Message;
-}
-
-interface BoostResponse {
-  boost: Boost;
-}
-
-interface SearchHistoryResponse {
-  searches: SearchHistoryItem[];
-}
-
-interface SearchRunResponse {
-  query: string;
-  results: SearchResult[];
-}
-
-interface UsersResponse {
-  users: UserCandidate[];
-}
-
-interface WebhooksResponse {
-  webhooks: Webhook[];
-}
-
-interface WebhookResponse {
-  webhook: Webhook;
-}
-
-type RealtimeEventName = keyof RealtimeEventPayloadMap;
+interface RoomsResponse { rooms: Room[] }
+interface RoomResponse { room: Room }
+interface MessagesResponse { messages: Message[] }
+interface MessageResponse { message: Message }
+interface BoostResponse { boost: Boost }
+interface SearchRunResponse { query: string; results: SearchResult[] }
+interface SearchHistoryResponse { searches: SearchHistoryItem[] }
+interface UsersResponse { users: UserCandidate[] }
+interface WebhooksResponse { webhooks: Webhook[] }
+interface WebhookResponse { webhook: Webhook }
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
-  constructor(private readonly http: HttpClient) {}
+  private readonly http = inject(HttpClient);
+  private readonly base = environment.apiBaseUrl;
 
   async listRooms(): Promise<Room[]> {
-    const response = await firstValueFrom(
-      this.http.get<RoomsResponse>(`${environment.apiBaseUrl}/rooms`, {
-        withCredentials: true
-      })
+    const { rooms } = await firstValueFrom(
+      this.http.get<RoomsResponse>(`${this.base}/rooms`)
     );
-
-    return response.rooms;
+    return rooms;
   }
 
   async createRoom(name: string, type: 'open' | 'closed' = 'open'): Promise<Room> {
-    const response = await firstValueFrom(
-      this.http.post<RoomResponse>(
-        `${environment.apiBaseUrl}/rooms`,
-        {
-          name,
-          type,
-          userIds: []
-        },
-        {
-          withCredentials: true
-        }
-      )
+    const { room } = await firstValueFrom(
+      this.http.post<RoomResponse>(`${this.base}/rooms`, { name, type, userIds: [] })
     );
-
-    return response.room;
+    return room;
   }
 
   async createDirectRoom(userId: string): Promise<Room> {
-    const response = await firstValueFrom(
-      this.http.post<RoomResponse>(
-        `${environment.apiBaseUrl}/rooms/directs`,
-        { userId },
-        {
-          withCredentials: true
-        }
-      )
+    const { room } = await firstValueFrom(
+      this.http.post<RoomResponse>(`${this.base}/rooms/directs`, { userId })
     );
-
-    return response.room;
+    return room;
   }
 
   async listMessages(roomId: string): Promise<Message[]> {
-    const response = await firstValueFrom(
-      this.http.get<MessagesResponse>(`${environment.apiBaseUrl}/rooms/${roomId}/messages`, {
-        withCredentials: true
-      })
+    const { messages } = await firstValueFrom(
+      this.http.get<MessagesResponse>(`${this.base}/rooms/${roomId}/messages`)
     );
-
-    return response.messages;
+    return messages;
   }
 
   async sendMessage(roomId: string, body: string): Promise<Message> {
-    const response = await firstValueFrom(
-      this.http.post<MessageResponse>(
-        `${environment.apiBaseUrl}/rooms/${roomId}/messages`,
-        {
-          body
-        },
-        {
-          withCredentials: true
-        }
-      )
+    const { message } = await firstValueFrom(
+      this.http.post<MessageResponse>(`${this.base}/rooms/${roomId}/messages`, { body })
     );
-
-    return response.message;
+    return message;
   }
 
   async addBoost(messageId: string, content: string): Promise<Boost> {
-    const response = await firstValueFrom(
-      this.http.post<BoostResponse>(
-        `${environment.apiBaseUrl}/messages/${messageId}/boosts`,
-        { content },
-        { withCredentials: true }
-      )
+    const { boost } = await firstValueFrom(
+      this.http.post<BoostResponse>(`${this.base}/messages/${messageId}/boosts`, { content })
     );
-
-    return response.boost;
+    return boost;
   }
 
   async removeBoost(messageId: string, boostId: string): Promise<void> {
     await firstValueFrom(
-      this.http.delete(`${environment.apiBaseUrl}/messages/${messageId}/boosts/${boostId}`, {
-        withCredentials: true
-      })
+      this.http.delete(`${this.base}/messages/${messageId}/boosts/${boostId}`)
     );
   }
 
   async searchUsers(query: string): Promise<UserCandidate[]> {
-    const response = await firstValueFrom(
-      this.http.get<UsersResponse>(`${environment.apiBaseUrl}/users`, {
-        withCredentials: true,
-        params: {
-          query
-        }
-      })
+    const { users } = await firstValueFrom(
+      this.http.get<UsersResponse>(`${this.base}/users`, { params: { query } })
     );
-
-    return response.users;
+    return users;
   }
 
   async runSearch(query: string, roomId?: string): Promise<SearchResult[]> {
-    const response = await firstValueFrom(
-      this.http.post<SearchRunResponse>(
-        `${environment.apiBaseUrl}/searches`,
-        {
-          query,
-          ...(roomId ? { roomId } : {})
-        },
-        {
-          withCredentials: true
-        }
-      )
+    const { results } = await firstValueFrom(
+      this.http.post<SearchRunResponse>(`${this.base}/searches`, {
+        query,
+        ...(roomId ? { roomId } : {})
+      })
     );
-
-    return response.results;
+    return results;
   }
 
   async listSearchHistory(): Promise<SearchHistoryItem[]> {
-    const response = await firstValueFrom(
-      this.http.get<SearchHistoryResponse>(`${environment.apiBaseUrl}/searches`, {
-        withCredentials: true
-      })
+    const { searches } = await firstValueFrom(
+      this.http.get<SearchHistoryResponse>(`${this.base}/searches`)
     );
-
-    return response.searches;
+    return searches;
   }
 
   async clearSearchHistory(): Promise<void> {
-    await firstValueFrom(
-      this.http.delete(`${environment.apiBaseUrl}/searches/clear`, {
-        withCredentials: true
-      })
-    );
+    await firstValueFrom(this.http.delete(`${this.base}/searches/clear`));
   }
 
   async listWebhooks(): Promise<Webhook[]> {
-    const response = await firstValueFrom(
-      this.http.get<WebhooksResponse>(`${environment.apiBaseUrl}/webhooks`, {
-        withCredentials: true
-      })
+    const { webhooks } = await firstValueFrom(
+      this.http.get<WebhooksResponse>(`${this.base}/webhooks`)
     );
-
-    return response.webhooks;
+    return webhooks;
   }
 
   async createWebhook(url: string): Promise<Webhook> {
-    const response = await firstValueFrom(
-      this.http.post<WebhookResponse>(
-        `${environment.apiBaseUrl}/webhooks`,
-        {
-          url,
-          events: ['message.created', 'message.boosted'],
-          roomIds: []
-        },
-        {
-          withCredentials: true
-        }
-      )
+    const { webhook } = await firstValueFrom(
+      this.http.post<WebhookResponse>(`${this.base}/webhooks`, {
+        url,
+        events: ['message.created', 'message.boosted'],
+        roomIds: []
+      })
     );
-
-    return response.webhook;
+    return webhook;
   }
 
   async deleteWebhook(webhookId: string): Promise<void> {
-    await firstValueFrom(
-      this.http.delete(`${environment.apiBaseUrl}/webhooks/${webhookId}`, {
-        withCredentials: true
-      })
-    );
+    await firstValueFrom(this.http.delete(`${this.base}/webhooks/${webhookId}`));
   }
 
   async testWebhook(webhookId: string): Promise<void> {
     await firstValueFrom(
-      this.http.post(
-        `${environment.apiBaseUrl}/webhooks/${webhookId}/test`,
-        {},
-        {
-          withCredentials: true
-        }
-      )
+      this.http.post(`${this.base}/webhooks/${webhookId}/test`, {})
     );
-  }
-
-  openRoomStream(
-    roomId: string,
-    handlers: {
-      onEvent: <T extends RealtimeEventName>(event: T, payload: RealtimeEventPayloadMap[T]) => void;
-      onError?: () => void;
-    }
-  ): () => void {
-    const streamUrl = `${environment.apiBaseUrl}/realtime/stream?roomId=${encodeURIComponent(roomId)}`;
-    const source = new EventSource(streamUrl, { withCredentials: true });
-
-    const listen = <T extends RealtimeEventName>(event: T) => {
-      source.addEventListener(event, (rawEvent) => {
-        const payload = JSON.parse((rawEvent as MessageEvent<string>).data) as RealtimeEventPayloadMap[T];
-        handlers.onEvent(event, payload);
-      });
-    };
-
-    listen('connected');
-    listen('heartbeat');
-    listen('room.created');
-    listen('message.created');
-    listen('message.boosted');
-
-    source.onerror = () => {
-      handlers.onError?.();
-    };
-
-    return () => {
-      source.close();
-    };
   }
 }

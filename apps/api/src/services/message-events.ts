@@ -5,6 +5,7 @@ import { enqueuePushMessageJob } from '../queues/push-message.queue.js';
 import { enqueueWebhookDispatch } from '../queues/webhook.queue.js';
 import { publishRealtimeEvent } from '../realtime/redis-realtime.js';
 import { disconnectedMembershipFilter } from './membership-connection.js';
+import { serializeMessageAttachment } from './message-attachment.js';
 
 type MessageResponse = {
   id: string;
@@ -17,7 +18,26 @@ type MessageResponse = {
   };
   boosts: unknown[];
   boostSummary: Record<string, number>;
+  attachment?: {
+    contentType: string;
+    content_type: string;
+    filename: string;
+    byteSize: number;
+    byte_size: number;
+    width?: number;
+    height?: number;
+    previewable: boolean;
+    variable: boolean;
+    path: string;
+    downloadPath: string;
+    download_path: string;
+    previewPath: string;
+    preview_path: string;
+    thumbPath: string;
+    thumb_path: string;
+  };
   createdAt: Date;
+  updatedAt: Date;
 };
 
 export async function buildMessageResponse(messageId: string): Promise<MessageResponse | null> {
@@ -41,7 +61,9 @@ export async function buildMessageResponse(messageId: string): Promise<MessageRe
       : undefined,
     boosts: [],
     boostSummary: {},
-    createdAt: message.createdAt
+    attachment: message.attachment ? serializeMessageAttachment(String(message._id), message.attachment) : undefined,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt
   };
 }
 

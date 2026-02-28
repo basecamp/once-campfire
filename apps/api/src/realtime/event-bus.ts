@@ -3,8 +3,11 @@ import { EventEmitter } from 'node:events';
 export type RealtimeEvent = {
   type:
     | 'room.created'
+    | 'room.removed'
     | 'message.created'
+    | 'message.updated'
     | 'message.boosted'
+    | 'message.boost_removed'
     | 'message.removed'
     | 'room.unread'
     | 'room.read'

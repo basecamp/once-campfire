@@ -19,12 +19,11 @@ async function authPlugin(app: import('fastify').FastifyInstance) {
     }
   });
 
-  app.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
+  async function resolveAuthContext(request: FastifyRequest) {
     try {
       const payload = await request.jwtVerify<{ sub: string; sid: string }>();
       if (!payload.sid) {
-        await reply.code(401).send({ error: 'Unauthorized' });
-        return;
+        return null;
       }
 
       const session = await refreshSessionIfNeeded(
@@ -34,21 +33,44 @@ async function authPlugin(app: import('fastify').FastifyInstance) {
       );
 
       if (!session || String(session.userId) !== payload.sub) {
-        await reply.code(401).send({ error: 'Unauthorized' });
-        return;
+        return null;
       }
 
       const user = await UserModel.findById(payload.sub, { status: 1 }).lean();
       if (!user || user.status !== 'active') {
-        await reply.code(401).send({ error: 'Unauthorized' });
-        return;
+        return null;
       }
 
-      request.authUserId = payload.sub;
-      request.authSessionId = payload.sid;
+      return {
+        userId: payload.sub,
+        sessionId: payload.sid
+      };
     } catch {
-      await reply.code(401).send({ error: 'Unauthorized' });
+      return null;
     }
+  }
+
+  app.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await resolveAuthContext(request);
+    if (!auth) {
+      await reply.code(401).send({ error: 'Unauthorized' });
+      return;
+    }
+
+    request.authUserId = auth.userId;
+    request.authSessionId = auth.sessionId;
+  });
+
+  app.decorate('tryAuthenticate', async (request: FastifyRequest) => {
+    const auth = await resolveAuthContext(request);
+    if (!auth) {
+      return null;
+    }
+
+    request.authUserId = auth.userId;
+    request.authSessionId = auth.sessionId;
+
+    return auth;
   });
 }
 

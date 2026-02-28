@@ -13,14 +13,35 @@
 ## Перенесенные серверные блоки
 
 - Direct rooms
+- Room settings/involvement/refresh parity
+- Message lifecycle parity (`index/show/create/update/destroy`, `before/after`)
 - Boosts
 - Search
 - Webhooks
 - Presence / Read / Unread / Typing
 - Push subscriptions + Web Push dispatch
 - Bot webhook jobs
+- Bot webhook attachment replies
 - Remove banned content job
 - Moderation ban/unban
+- First run endpoint
+- Unfurl link endpoint
+- Account API block (`account/*`)
+- Users API block (`users/*`, `join`, `autocompletable`, `session/transfers`)
+- Rails path compatibility aliases (маршруты также доступны без `/api/v1`)
+- Multipart/binary attachment ingest parity for room/bot message create
+- Signed transfer tokens (TTL 4h) + `transfer_id` in user show (admin)
+- Realtime forced disconnect on ban/deactivate/membership revoke
+- Welcome redirect + `last_room` cookie tracking
+- Session create rate-limit parity (10 / 3min)
+- `X-Version` / `X-Rev` response headers
+- PWA manifest/service-worker parity expansion
+- Search history parity (sanitize + dedupe + top10)
+- Unfurl SSRF-safe guards (public IP + redirect/body limits)
+- Realtime boost-remove event parity
+- PushMessage mention/involvement parity (`Room::PushMessageJob` equivalent)
+- Browser/platform middleware parity (`AllowBrowser` + `SetPlatform` + incompatible-browser HTML)
+- Avatar/logo ActiveStorage-like parity (signed avatar URL + binary storage + png/webp variants)
 
 ## Быстрый запуск
 
@@ -54,3 +75,7 @@ npm run start
 ## Полная детализация
 
 См. `MIGRATION_NODE_ANGULAR.md`.
+
+## Route parity таблица
+
+См. `ROUTE_PARITY_TABLE_FULL.md`.

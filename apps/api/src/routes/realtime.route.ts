@@ -3,6 +3,7 @@ import { asObjectId } from '../lib/object-id.js';
 import { MembershipModel } from '../models/membership.model.js';
 import { UserModel } from '../models/user.model.js';
 import { realtimeBus } from '../realtime/event-bus.js';
+import { registerRealtimeConnection } from '../realtime/connection-manager.js';
 import { publishRealtimeEvent } from '../realtime/redis-realtime.js';
 import { absentMembership, presentMembership, refreshMembership } from '../services/membership-connection.js';
 
@@ -39,14 +40,19 @@ const realtimeRoutes: FastifyPluginAsync = async (app) => {
       Connection: 'keep-alive'
     });
 
+    let closed = false;
+
     const sendEvent = (eventName: string, payload: unknown) => {
+      if (closed || reply.raw.writableEnded) {
+        return;
+      }
       reply.raw.write(`event: ${eventName}\n`);
       reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
 
     sendEvent('connected', { ok: true, now: new Date().toISOString() });
 
-    const unsubscribe = realtimeBus.subscribe((event) => {
+    const unsubscribeBus = realtimeBus.subscribe((event) => {
       if (roomId && event.roomId !== roomId) {
         return;
       }
@@ -62,10 +68,54 @@ const realtimeRoutes: FastifyPluginAsync = async (app) => {
       sendEvent('heartbeat', { now: new Date().toISOString() });
     }, 25000);
 
-    request.raw.on('close', () => {
+    let unregisterConnection = () => {};
+
+    const closeStream = ({
+      reason,
+      reconnect,
+      notifyClient
+    }: {
+      reason: string;
+      reconnect: boolean;
+      notifyClient: boolean;
+    }) => {
+      if (closed) {
+        return;
+      }
+
+      if (notifyClient) {
+        sendEvent('disconnect', {
+          reason,
+          reconnect
+        });
+      }
+
+      closed = true;
+
       clearInterval(heartbeat);
-      unsubscribe();
+      unsubscribeBus();
+      unregisterConnection();
       reply.raw.end();
+    };
+
+    unregisterConnection = registerRealtimeConnection({
+      userId,
+      roomId,
+      close: ({ reason, reconnect }) => {
+        closeStream({
+          reason,
+          reconnect,
+          notifyClient: true
+        });
+      }
+    });
+
+    request.raw.on('close', () => {
+      closeStream({
+        reason: 'client_closed',
+        reconnect: false,
+        notifyClient: false
+      });
     });
   });
 

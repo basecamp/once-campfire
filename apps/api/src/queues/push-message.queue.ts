@@ -42,6 +42,20 @@ export async function enqueuePushMessageJob(data: PushMessageJobData) {
   await ensureQueue().add('push-message', data);
 }
 
+function plainTextBody(message: {
+  body?: string;
+  attachment?: {
+    filename?: string;
+  } | null;
+}) {
+  const body = message.body?.trim();
+  if (body) {
+    return body;
+  }
+
+  return message.attachment?.filename?.trim() ?? '';
+}
+
 async function processPushMessage(job: Job) {
   const data = job.data as PushMessageJobData;
 
@@ -72,18 +86,26 @@ async function processPushMessage(job: Job) {
 
   const allRoomMemberships = await MembershipModel.find({ roomId: room._id }, { userId: 1 }).lean();
   const roomUserIds = allRoomMemberships.map((membership) => String(membership.userId));
-  const mentioneeIds = await findMentionedUserIdsInRoom(roomUserIds, message.body);
+
+  const involvedInEverything = disconnectedMembers
+    .filter((membership) => membership.involvement === 'everything')
+    .map((membership) => String(membership.userId));
+
+  const involvedInMentions = disconnectedMembers
+    .filter((membership) => membership.involvement === 'mentions')
+    .map((membership) => String(membership.userId));
+
+  const mentioneeIds =
+    involvedInMentions.length > 0 ? await findMentionedUserIdsInRoom(roomUserIds, message.body) : [];
+  const mentioneeSet = new Set(mentioneeIds.map((id) => id.toLowerCase()));
 
   const recipients = new Set<string>();
-  for (const membership of disconnectedMembers) {
-    const userId = String(membership.userId);
+  for (const userId of involvedInEverything) {
+    recipients.add(userId);
+  }
 
-    if (membership.involvement === 'everything') {
-      recipients.add(userId);
-      continue;
-    }
-
-    if (membership.involvement === 'mentions' && mentioneeIds.includes(userId)) {
+  for (const userId of involvedInMentions) {
+    if (mentioneeSet.has(userId.toLowerCase())) {
       recipients.add(userId);
     }
   }
@@ -96,12 +118,12 @@ async function processPushMessage(job: Job) {
     room.type === 'direct'
       ? {
           title: creator.name,
-          body: message.body,
+          body: plainTextBody(message),
           path: `/rooms/${String(room._id)}`
         }
       : {
           title: room.name || 'Room',
-          body: `${creator.name}: ${message.body}`,
+          body: `${creator.name}: ${plainTextBody(message)}`,
           path: `/rooms/${String(room._id)}`
         };
 

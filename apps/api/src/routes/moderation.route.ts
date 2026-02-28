@@ -3,6 +3,8 @@ import { BanModel } from '../models/ban.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { UserModel } from '../models/user.model.js';
 import { enqueueRemoveBannedContentJob } from '../queues/moderation.queue.js';
+import { disconnectUser } from '../realtime/connection-manager.js';
+import { isPublicIpAddress, normalizeIpAddress } from '../services/ip-address.js';
 
 async function ensureAdmin(actorId: string) {
   const actor = await UserModel.findById(actorId, { role: 1 }).lean();
@@ -28,7 +30,13 @@ const moderationRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const sessions = await SessionModel.find({ userId }, { ipAddress: 1 }).lean();
-    const ips = Array.from(new Set(sessions.map((session) => session.ipAddress).filter(Boolean)));
+    const ips = Array.from(
+      new Set(
+        sessions
+          .map((session) => normalizeIpAddress(session.ipAddress))
+          .filter((ip): ip is string => Boolean(ip && isPublicIpAddress(ip)))
+      )
+    );
 
     if (ips.length > 0) {
       await BanModel.insertMany(
@@ -43,6 +51,11 @@ const moderationRoutes: FastifyPluginAsync = async (app) => {
       UserModel.updateOne({ _id: userId }, { $set: { status: 'banned' } }),
       SessionModel.deleteMany({ userId })
     ]);
+
+    disconnectUser(userId, {
+      reason: 'banned',
+      reconnect: false
+    });
 
     await enqueueRemoveBannedContentJob(userId);
 

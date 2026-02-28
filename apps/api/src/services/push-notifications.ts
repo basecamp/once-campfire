@@ -50,16 +50,16 @@ export async function deliverPushNotifications(userIds: string[], payload: PushP
 
   await Promise.all(
     subscriptions.map(async (subscription) => {
-      const message = JSON.stringify({
-        title: payload.title,
-        options: {
-          body: payload.body,
-          icon: `${env.APP_BASE_URL}/favicon.ico`,
-          data: {
-            path: payload.path,
-            badge: unreadByUserId.get(String(subscription.userId)) ?? 0
+        const message = JSON.stringify({
+          title: payload.title,
+          options: {
+            body: payload.body,
+            icon: `${env.APP_BASE_URL}/account/logo`,
+            data: {
+              path: payload.path,
+              badge: unreadByUserId.get(String(subscription.userId)) ?? 0
+            }
           }
-        }
       });
 
       try {

@@ -11,6 +11,8 @@ const envSchema = z.object({
   REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
   REDIS_PREFIX: z.string().default('campfire'),
   APP_BASE_URL: z.string().url().default('http://localhost:4000'),
+  APP_VERSION: z.string().default('dev'),
+  GIT_REVISION: z.string().default('dev'),
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().default('mailto:support@example.com'),

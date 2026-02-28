@@ -1,5 +1,5 @@
-import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Injectable, computed, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { environment } from '../../environments/environment';
 import { type User } from './api.types';
@@ -10,19 +10,19 @@ interface AuthResponse {
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  readonly user = signal<User | null>(null);
+  private readonly http = inject(HttpClient);
 
-  constructor(private readonly http: HttpClient) {}
+  readonly user = signal<User | null>(null);
+  readonly isAuthenticated = computed(() => this.user() !== null);
+  readonly isAdmin = computed(() => this.user()?.role === 'admin');
 
   async loadCurrentUser(): Promise<User | null> {
     try {
-      const response = await firstValueFrom(
-        this.http.get<AuthResponse>(`${environment.apiBaseUrl}/auth/me`, {
-          withCredentials: true
-        })
+      const { user } = await firstValueFrom(
+        this.http.get<AuthResponse>(`${environment.apiBaseUrl}/auth/me`)
       );
-      this.user.set(response.user);
-      return response.user;
+      this.user.set(user);
+      return user;
     } catch {
       this.user.set(null);
       return null;
@@ -30,45 +30,31 @@ export class AuthService {
   }
 
   async login(emailAddress: string, password: string): Promise<User> {
-    const response = await firstValueFrom(
-      this.http.post<AuthResponse>(
-        `${environment.apiBaseUrl}/auth/login`,
-        {
-          emailAddress,
-          password
-        },
-        {
-          withCredentials: true
-        }
-      )
+    const { user } = await firstValueFrom(
+      this.http.post<AuthResponse>(`${environment.apiBaseUrl}/auth/login`, {
+        emailAddress,
+        password
+      })
     );
-
-    this.user.set(response.user);
-    return response.user;
+    this.user.set(user);
+    return user;
   }
 
   async register(name: string, emailAddress: string, password: string): Promise<User> {
-    const response = await firstValueFrom(
-      this.http.post<AuthResponse>(
-        `${environment.apiBaseUrl}/auth/register`,
-        {
-          name,
-          emailAddress,
-          password
-        },
-        {
-          withCredentials: true
-        }
-      )
+    const { user } = await firstValueFrom(
+      this.http.post<AuthResponse>(`${environment.apiBaseUrl}/auth/register`, {
+        name,
+        emailAddress,
+        password
+      })
     );
-
-    this.user.set(response.user);
-    return response.user;
+    this.user.set(user);
+    return user;
   }
 
   async logout(): Promise<void> {
     await firstValueFrom(
-      this.http.post(`${environment.apiBaseUrl}/auth/logout`, {}, { withCredentials: true })
+      this.http.post(`${environment.apiBaseUrl}/auth/logout`, {})
     );
     this.user.set(null);
   }

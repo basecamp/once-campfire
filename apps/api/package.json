@@ -13,6 +13,8 @@
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.1.0",
     "@fastify/jwt": "^10.0.0",
+    "@fastify/multipart": "^9.4.0",
+    "@types/qrcode": "^1.5.6",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.70.1",
     "dotenv": "^16.6.1",
@@ -20,6 +22,8 @@
     "fastify-plugin": "^5.1.0",
     "ioredis": "^5.10.0",
     "mongoose": "^8.19.3",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.34.5",
     "web-push": "^3.6.7",
     "zod": "^4.1.5"
   },

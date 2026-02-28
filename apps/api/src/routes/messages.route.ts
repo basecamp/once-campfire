@@ -13,6 +13,41 @@ const createBoostSchema = z.object({
 });
 
 const messagesRoutes: FastifyPluginAsync = async (app) => {
+  app.get('/:messageId/attachment', { preHandler: app.authenticate }, async (request, reply) => {
+    const userId = request.authUserId;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Unauthorized' });
+    }
+
+    const { messageId } = request.params as { messageId: string };
+    const messageObjectId = asObjectId(messageId);
+    if (!messageObjectId) {
+      return reply.code(400).send({ error: 'Invalid message id' });
+    }
+
+    const message = await MessageModel.findById(messageObjectId).lean();
+    if (!message) {
+      return reply.code(404).send({ error: 'Message not found' });
+    }
+
+    const membership = await MembershipModel.findOne({ roomId: message.roomId, userId }).lean();
+    if (!membership) {
+      return reply.code(403).send({ error: 'You are not a room member' });
+    }
+
+    if (!message.attachment) {
+      return reply.code(404).send({ error: 'Attachment not found' });
+    }
+
+    reply.header('content-type', message.attachment.contentType);
+    reply.header(
+      'content-disposition',
+      `inline; filename="${message.attachment.filename.replace(/"/g, '')}"`
+    );
+
+    return reply.send(message.attachment.data);
+  });
+
   app.get('/:messageId/boosts', { preHandler: app.authenticate }, async (request, reply) => {
     const userId = request.authUserId;
     if (!userId) {
@@ -162,6 +197,15 @@ const messagesRoutes: FastifyPluginAsync = async (app) => {
     }
 
     await BoostModel.deleteOne({ _id: boostObjectId });
+
+    await publishRealtimeEvent({
+      type: 'message.boost_removed',
+      roomId: String(message.roomId),
+      payload: {
+        messageId: String(message._id),
+        boostId: String(boost._id)
+      }
+    });
 
     return reply.code(204).send();
   });
