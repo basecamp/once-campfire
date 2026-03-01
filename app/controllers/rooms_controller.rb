@@ -48,7 +48,7 @@ class RoomsController < ApplicationController
     end
 
     def room_params
-      params.require(:room).permit(:name)
+      params.require(:room).permit(:name, :encrypted)
     end
 
     def broadcast_remove_room

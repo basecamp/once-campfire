@@ -24,7 +24,7 @@ class Room::MessagePusher
     def build_direct_payload
       {
         title: message.creator.name,
-        body: message.plain_text_body,
+        body: message.encrypted? ? "Encrypted message" : message.plain_text_body,
         path: Rails.application.routes.url_helpers.room_path(room)
       }
     end
@@ -32,7 +32,7 @@ class Room::MessagePusher
     def build_shared_payload
       {
         title: room.name,
-        body: "#{message.creator.name}: #{message.plain_text_body}",
+        body: message.encrypted? ? "#{message.creator.name}: Encrypted message" : "#{message.creator.name}: #{message.plain_text_body}",
         path: Rails.application.routes.url_helpers.room_path(room)
       }
     end

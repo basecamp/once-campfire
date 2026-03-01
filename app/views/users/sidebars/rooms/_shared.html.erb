@@ -2,4 +2,7 @@
       id: dom_id(room, :list), data: { sorted_list_name: room.name },
       style: "--column-gap: 0.5em", class: [ "align-center gap room btn txt-nowrap", "unread": local_assigns[:unread] ] do %>
   <span class="overflow-ellipsis"><%= room.name %></span>
+  <% if room.encrypted? %>
+    <span class="encryption-badge" title="E2E Encrypted">🔒</span>
+  <% end %>
 <% end %>

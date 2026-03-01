@@ -8,6 +8,9 @@
       <% end %>
 
       <%= room_display_name(room) %>
+      <% if room.encrypted? %>
+        <span class="encryption-badge" title="E2E Encrypted">🔒</span>
+      <% end %>
     </h1>
   <% end %>
 

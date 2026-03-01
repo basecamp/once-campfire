@@ -1,0 +1,34 @@
+<% @page_title = "Import from Slack" %>
+
+<% content_for :nav do %>
+  <div class="flex-item-justify-start">
+    <%= link_back_to edit_account_path %>
+  </div>
+<% end %>
+
+<section class="panel panel--wide flex flex-column gap" style="view-transition-name: slack-import">
+  <h1 class="margin-none txt-align-center">Import from Slack</h1>
+  <p class="margin-none txt-align-center txt-subtle">
+    Upload a Slack export ZIP and optionally map Slack users to Campfire users.
+  </p>
+
+  <%= form_with url: account_slack_import_path, scope: :slack_import, class: "flex flex-column gap" do |form| %>
+    <label class="flex flex-column gap-half">
+      <span class="txt-small txt-subtle">Slack export ZIP</span>
+      <%= form.file_field :archive, class: "input", accept: ".zip,application/zip,application/x-zip-compressed", required: true %>
+    </label>
+
+    <label class="flex flex-column gap-half">
+      <span class="txt-small txt-subtle">User mappings (optional)</span>
+      <%= form.text_area :user_mappings, rows: 8, class: "input input--code", placeholder: "U123456=kevin@37signals.com\njane.doe=Kevin" %>
+      <span class="txt-small txt-subtle">
+        One mapping per line: <code>slack_identifier=campfire_user</code>. Campfire user can be email, name, or id.
+      </span>
+    </label>
+
+    <%= form.button class: "btn btn--reversed center align-center", type: :submit do %>
+      <%= image_tag "check.svg", aria: { hidden: "true" }, size: 20 %>
+      <span>Import</span>
+    <% end %>
+  <% end %>
+</section>

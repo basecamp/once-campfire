@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
+ActiveRecord::Schema[8.2].define(version: 2026_03_01_000001) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -83,7 +83,9 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
     t.datetime "connected_at"
     t.integer "connections", default: 0, null: false
     t.datetime "created_at", null: false
+    t.text "encrypted_room_key"
     t.string "involvement", default: "mentions"
+    t.string "room_key_nonce"
     t.integer "room_id", null: false
     t.datetime "unread_at"
     t.datetime "updated_at", null: false
@@ -98,7 +100,11 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
     t.string "client_message_id", null: false
     t.datetime "created_at", null: false
     t.integer "creator_id", null: false
+    t.boolean "encrypted", default: false, null: false
+    t.text "encrypted_body"
+    t.string "encryption_nonce"
     t.integer "room_id", null: false
+    t.string "sender_public_key"
     t.datetime "updated_at", null: false
     t.index ["creator_id"], name: "index_messages_on_creator_id"
     t.index ["room_id"], name: "index_messages_on_room_id"
@@ -119,6 +125,7 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
   create_table "rooms", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "creator_id", null: false
+    t.boolean "encrypted", default: false, null: false
     t.string "name"
     t.string "type", null: false
     t.datetime "updated_at", null: false
@@ -149,6 +156,7 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
     t.string "bot_token"
     t.datetime "created_at", null: false
     t.string "email_address"
+    t.text "identity_public_key"
     t.string "name", null: false
     t.string "password_digest"
     t.integer "role", default: 0, null: false

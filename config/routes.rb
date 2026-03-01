@@ -22,6 +22,7 @@ Rails.application.routes.draw do
       resource :join_code, only: :create
       resource :logo, only: %i[ show destroy ]
       resource :custom_styles, only: %i[ edit update ]
+      resource :slack_import, only: %i[ new create ]
     end
   end
 
@@ -38,10 +39,12 @@ Rails.application.routes.draw do
     scope module: "users" do
       resource :avatar, only: %i[ show destroy ]
       resource :ban, only: %i[ create destroy ]
+      resource :encryption_key, only: :show
 
       scope defaults: { user_id: "me" } do
         resource :sidebar, only: :show
         resource :profile
+        resource :encryption_key, only: :create
         resources :push_subscriptions do
           scope module: "push_subscriptions" do
             resources :test_notifications, only: :create
@@ -68,6 +71,7 @@ Rails.application.routes.draw do
       resource :refresh, only: :show
       resource :settings, only: :show
       resource :involvement, only: %i[ show update ]
+      resource :encryption, only: %i[ show create update ]
     end
 
     get "@:message_id", to: "rooms#show", as: :at_message

@@ -22,5 +22,25 @@
     <%= yield %>
   </section>
 
+  <% if Current.user.can_administer?(room) %>
+    <div class="margin-block pad-inline pad-block fill-shade border-radius">
+      <div class="flex align-center gap">
+        <span>🔒</span>
+        <span class="flex-item-grow txt-medium">E2E Encryption</span>
+        <label class="switch">
+          <%= form.check_box :encrypted, class: "switch__input", disabled: room.encrypted? %>
+          <span class="switch__btn round"></span>
+        </label>
+      </div>
+      <p class="txt-small txt-deemphasize margin-block-start">
+        <% if room.encrypted? %>
+          Encryption is enabled. Messages are encrypted end-to-end.
+        <% else %>
+          Enable end-to-end encryption. Once enabled, this cannot be undone.
+        <% end %>
+      </p>
+    </div>
+  <% end %>
+
   <%= submit_room_button_tag if Current.user.can_administer?(room) %>
 <% end %>

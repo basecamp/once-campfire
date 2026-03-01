@@ -15,7 +15,7 @@ class Messages::AttachmentPresentation
 
   private
     attr_reader :message, :context
-    delegate :tag, :link_to, :broadcast_image_tag, :rails_blob_path, :url_for, to: :context
+    delegate :tag, :link_to, :broadcast_image_tag, :rails_blob_path, :url_for, :image_tag, to: :context
 
     def render_preview
       if message.attachment.video?
@@ -40,16 +40,29 @@ class Messages::AttachmentPresentation
 
       inline_media_dimension_constraints(width, height) do
         lightbox_link do
-          broadcast_image_tag message.attachment.representation(:thumb), width: width, height: height, class: "message__attachment", loading: "lazy"
+          image_tag preview_image_src, width: width, height: height, class: "message__attachment", loading: "lazy"
         end
       end
+    end
+
+    def preview_image_src
+      attachment = message.attachment
+      return rails_blob_path(attachment) unless attachment.variable?
+
+      url_for(attachment.variant(:thumb).processed)
+    rescue LoadError, StandardError => e
+      Rails.logger.warn \
+        "Falling back to original attachment for message #{message.id}: #{e.class} #{e.message}"
+
+      rails_blob_path(attachment)
     end
 
     def inline_media_dimension_constraints(width, height, &)
       if width && height
         aspect_ratio = (width / height.to_f)
+        preview_width = [ width / 2.0, 420 ].min
 
-        tag.div class: "max-inline-size center flex overflow-clip", style: "width: #{width / 2}px; aspect-ratio: #{aspect_ratio};", &
+        tag.div class: "max-inline-size center flex overflow-clip", style: "width: #{preview_width}px; aspect-ratio: #{aspect_ratio};", &
       else
         tag.div class: "max-inline-size center overflow-clip", &
       end
@@ -74,9 +87,9 @@ class Messages::AttachmentPresentation
     end
 
     def render_link
-      tag.div class: "flex-inline align-center gap-half" do
+      tag.div class: "message__attachment-link flex-inline align-center gap-half" do
         broadcast_image_tag("common-file-text.svg", size: 22, class: "colorize--black", aria: { hidden: "true" }) +
-          tag.span(filename) + download_link + share_button
+          tag.span(filename, class: "message__attachment-filename", title: filename) + download_link + share_button
       end
     end
 

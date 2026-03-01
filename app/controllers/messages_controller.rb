@@ -21,6 +21,15 @@ class MessagesController < ApplicationController
     set_room
     @message = @room.messages.create_with_attachment!(message_params)
 
+    if encrypted_params[:encrypted] == "true"
+      @message.update!(
+        encrypted: true,
+        encrypted_body: encrypted_params[:encrypted_body],
+        encryption_nonce: encrypted_params[:encryption_nonce],
+        sender_public_key: encrypted_params[:sender_public_key]
+      )
+    end
+
     @message.broadcast_create
     deliver_webhooks_to_bots
   rescue ActiveRecord::RecordNotFound
@@ -69,6 +78,10 @@ class MessagesController < ApplicationController
 
     def message_params
       params.require(:message).permit(:body, :attachment, :client_message_id)
+    end
+
+    def encrypted_params
+      params.permit(:encrypted, :encrypted_body, :encryption_nonce, :sender_public_key)
     end
 
 

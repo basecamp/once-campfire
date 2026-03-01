@@ -107,6 +107,36 @@
 
   <%= render "users/profiles/transfer", user: @user %>
 
+  <div class="margin-block pad-inline pad-block fill-shade border-radius"
+       data-controller="encryption-setup"
+       data-encryption-setup-user-id-value="<%= @user.id %>">
+    <h3 class="txt-medium margin-block-end flex align-center gap">
+      <span>🔒</span>
+      E2E Encryption
+    </h3>
+
+    <p class="txt-small margin-block-end" data-encryption-setup-target="status">
+      Checking encryption status...
+    </p>
+
+    <p class="txt-small txt-deemphasize margin-block-end" data-encryption-setup-target="fingerprint"></p>
+
+    <div class="flex flex-column gap">
+      <button class="btn btn--reversed txt-small center" data-action="encryption-setup#generateKeys">
+        Generate Encryption Keys
+      </button>
+
+      <button class="btn txt-small center" data-action="encryption-setup#exportBackup">
+        Export Key Backup
+      </button>
+
+      <label class="btn txt-small center input--file">
+        Import Key Backup
+        <input type="file" accept=".json" data-action="encryption-setup#importBackup" class="for-screen-reader">
+      </label>
+    </div>
+  </div>
+
   <% if Rails.env.development? %>
     <fieldset>
       <legend>

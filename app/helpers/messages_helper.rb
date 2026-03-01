@@ -25,20 +25,30 @@ module MessagesHelper
   def message_tag(message, &)
     message_timestamp_milliseconds = message.created_at.to_fs(:epoch)
 
+    data_attrs = {
+      controller: "reply",
+      user_id: message.creator_id,
+      message_id: message.id,
+      message_timestamp: message_timestamp_milliseconds,
+      message_updated_at: message.updated_at.to_fs(:epoch),
+      sort_value: message_timestamp_milliseconds,
+      messages_target: "message",
+      search_results_target: "message",
+      refresh_room_target: "message",
+      reply_composer_outlet: "#composer"
+    }
+
+    if message.encrypted?
+      data_attrs[:encrypted] = true
+      data_attrs[:encrypted_body] = message.encrypted_body
+      data_attrs[:encryption_nonce] = message.encryption_nonce
+      data_attrs[:sender_id] = message.creator_id
+      data_attrs[:room_id] = message.room_id
+    end
+
     tag.div id: dom_id(message),
-      class: "message #{"message--emoji" if message.plain_text_body.all_emoji?}",
-      data: {
-        controller: "reply",
-        user_id: message.creator_id,
-        message_id: message.id,
-        message_timestamp: message_timestamp_milliseconds,
-        message_updated_at: message.updated_at.to_fs(:epoch),
-        sort_value: message_timestamp_milliseconds,
-        messages_target: "message",
-        search_results_target: "message",
-        refresh_room_target: "message",
-        reply_composer_outlet: "#composer"
-      }, &
+      class: "message #{"message--emoji" if !message.encrypted? && message.plain_text_body.all_emoji?} #{"message--encrypted" if message.encrypted?}",
+      data: data_attrs, &
   rescue Exception => e
     Sentry.capture_exception(e, extra: { message: message })
     Rails.logger.error "Exception while rendering message #{message.class.name}##{message.id}, failed with: #{e.class} `#{e.message}`"
@@ -51,13 +61,17 @@ module MessagesHelper
   end
 
   def message_presentation(message)
-    case message.content_type
-    when "attachment"
-      message_attachment_presentation(message)
-    when "sound"
-      message_sound_presentation(message)
+    if message.encrypted?
+      tag.span "🔒", class: "encrypted-placeholder", data: { encryption_target: "ciphertext" }
     else
-      auto_link h(ContentFilters::TextMessagePresentationFilters.apply(message.body.body)), html: { target: "_blank" }
+      case message.content_type
+      when "attachment"
+        message_attachment_presentation(message)
+      when "sound"
+        message_sound_presentation(message)
+      else
+        auto_link h(ContentFilters::TextMessagePresentationFilters.apply(message.body.body)), html: { target: "_blank" }
+      end
     end
   rescue Exception => e
     Sentry.capture_exception(e, extra: { message: message })

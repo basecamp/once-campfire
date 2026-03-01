@@ -2,11 +2,12 @@ import { Controller } from "@hotwired/stimulus"
 import FileUploader from "models/file_uploader"
 import { onNextEventLoopTick, nextFrame } from "helpers/timing_helpers"
 import { escapeHTML } from "helpers/dom_helpers"
+import encryptionManager from "lib/encryption/encryption_manager"
 
 export default class extends Controller {
   static classes = ["toolbar"]
-  static targets = [ "clientid", "fields", "fileList", "text" ]
-  static values = { roomId: Number }
+  static targets = [ "clientid", "fields", "fileList", "text", "encryptedBody", "encryptedNonce", "encryptedFlag", "senderPublicKey" ]
+  static values = { roomId: Number, encrypted: Boolean }
   static outlets = [ "messages" ]
 
   #files = []
@@ -120,8 +121,34 @@ export default class extends Controller {
       await nextFrame()
 
       this.clientidTarget.value = clientMessageId
+
+      // Encrypt message if room has encryption enabled
+      if (this.encryptedValue && encryptionManager.isInitialized) {
+        await this.#encryptBeforeSubmit()
+      }
+
       this.element.requestSubmit()
       this.#reset()
+    }
+  }
+
+  async #encryptBeforeSubmit() {
+    const plaintext = this.textTarget.textContent.trim()
+
+    try {
+      const { ciphertext, nonce } = await encryptionManager.encryptRoomMessage(this.roomIdValue, plaintext)
+      const publicKeyJwk = await encryptionManager.publicKeyJwk
+
+      if (this.hasEncryptedBodyTarget) this.encryptedBodyTarget.value = ciphertext
+      if (this.hasEncryptedNonceTarget) this.encryptedNonceTarget.value = nonce
+      if (this.hasEncryptedFlagTarget) this.encryptedFlagTarget.value = "true"
+      if (this.hasSenderPublicKeyTarget) this.senderPublicKeyTarget.value = JSON.stringify(publicKeyJwk)
+
+      // Replace body with placeholder for server-side storage
+      this.textTarget.value = "🔒 Encrypted message"
+    } catch (error) {
+      console.error("Message encryption failed:", error)
+      // Fall back to unencrypted
     }
   }
 
