@@ -37,5 +37,8 @@ module Message::Attachment
       when attachment.representable?
         attachment.representation(:thumb).processed
       end
+    rescue LoadError, StandardError => e
+      Rails.logger.warn \
+        "Skipping attachment thumbnail generation for message #{id || "new"}: #{e.class} #{e.message}"
     end
 end
