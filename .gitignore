@@ -9,8 +9,10 @@
 /node_modules
 /apps/api/node_modules
 /apps/web/node_modules
+/server/node_modules
 /apps/api/dist
 /apps/web/dist
+/server/dist
 /.npm-cache
 
 # Ignore the default SQLite database.
