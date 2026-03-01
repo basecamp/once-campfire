@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { COOKIE_NAME } from '../plugins/auth.js';
+import { clearAuthCookie, setAuthCookie } from '../plugins/auth.js';
 import { UserModel } from '../models/user.model.js';
 import { MembershipModel } from '../models/membership.model.js';
 import { RoomModel } from '../models/room.model.js';
@@ -75,14 +75,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       ipAddress: request.ip
     });
 
-    const token = await reply.jwtSign({ sub: String(user._id), sid: String(session._id) }, { expiresIn: '7d' });
-    reply.setCookie(COOKIE_NAME, token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7
-    });
+    setAuthCookie(reply, session.token);
 
     return reply.code(201).send({ user: sanitizeUser(user.toObject()) });
   });
@@ -110,15 +103,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       ipAddress: request.ip
     });
 
-    const token = await reply.jwtSign({ sub: String(user._id), sid: String(session._id) }, { expiresIn: '7d' });
-
-    reply.setCookie(COOKIE_NAME, token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7
-    });
+    setAuthCookie(reply, session.token);
 
     return { user: sanitizeUser(user.toObject()) };
   });
@@ -128,7 +113,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       await SessionModel.deleteOne({ _id: request.authSessionId });
     }
 
-    reply.clearCookie(COOKIE_NAME, { path: '/' });
+    clearAuthCookie(reply);
     return reply.code(204).send();
   });
 

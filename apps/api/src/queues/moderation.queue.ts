@@ -1,6 +1,8 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import { env } from '../config/env.js';
+import { BoostModel } from '../models/boost.model.js';
 import { MessageModel } from '../models/message.model.js';
+import { removeMessageSearchIndexes } from '../services/message-search-index.js';
 import { handleMessageRemoved } from '../services/message-events.js';
 
 type ModerationJobData = {
@@ -52,7 +54,13 @@ async function processModerationJob(job: Job) {
     return;
   }
 
-  await MessageModel.deleteMany({ creatorId: data.userId });
+  const messageIds = messages.map((message) => message._id);
+
+  await Promise.all([
+    MessageModel.deleteMany({ creatorId: data.userId }),
+    BoostModel.deleteMany({ messageId: { $in: messageIds } }),
+    removeMessageSearchIndexes(messageIds)
+  ]);
 
   await Promise.all(messages.map((message) => handleMessageRemoved(message)));
 }

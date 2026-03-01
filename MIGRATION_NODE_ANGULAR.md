@@ -274,6 +274,43 @@
 
 ### Последние закрытые parity-расхождения
 
+- Session/auth cookie parity:
+  - cookie auth переведён с JWT-cookie на Rails-style `session_token`;
+  - lookup авторизации теперь по `Session.token` (не по session id из JWT);
+  - cookie подписывается (`signed`) и выставляется как долгоживущая (`20 years`) с `httponly + same_site=lax`;
+  - применено для всех flows: `session#create`, `join#create`, `first_run#create`, `session/transfers#update`, `/auth/login|register`.
+- Direct rooms admin parity:
+  - `DELETE /rooms/directs/:id` и удаление direct-room через shared delete-flow теперь разрешено любому участнику direct-room (как в Rails `Rooms::DirectsController#ensure_can_administer`).
+- Remove banned content parity:
+  - `RemoveBannedContent` worker удаляет связанные `Boost` записи для удаляемых сообщений banned пользователя (исключены orphan boosts).
+- Bot route contract parity:
+  - `POST /rooms/:roomId/:botKey/messages` на Rails alias возвращает `201` + `Location` header без JSON body;
+  - API-prefixed path сохраняет JSON body и также возвращает `Location`.
+- Rails alias behavior parity:
+  - `GET /rooms` (non-API alias) теперь делает redirect на последнюю доступную комнату;
+  - `GET|POST /first_run` (non-API alias) при уже существующем account делает redirect на `/`;
+  - `GET|POST /join/:joinCode` (non-API alias) блокирует доступ для уже авторизованных и дублирует redirect-flow Rails (`/session/new?email_address=...` на duplicate email);
+  - `GET /` и `GET /welcome` (non-API alias) отдают HTML fallback when user has no rooms.
+- Turbo::StreamsChannel parity:
+  - `/cable` поддерживает `Turbo::StreamsChannel` подписки (`signed_stream_name`/`stream_name`);
+  - реализована доставка turbo-stream payload для `room.created|updated|removed`, `message.created|updated|removed`, `message.boosted|message.boost_removed`.
+  - `message.boosted` target выровнен с Rails: `boosts_message_<client_message_id>` (с fallback на `messageId`).
+- ActionText/RichText parity (server-side contract):
+  - `Message` расширен полями `bodyHtml`, `bodyPlain`, `mentioneeIds`;
+  - при create/update тело нормализуется в rich/plain формы;
+  - поддержан разбор `action-text-attachment` (`sgid`) с разрешением mentionees и plain-text `@name`;
+  - webhook payload (`message.body.html/plain`) теперь использует rich/plain message body.
+- Rails FTS parity:
+  - добавлена отдельная коллекция индекса `MessageSearchIndex` (аналог `message_search_index`);
+  - lifecycle синхронизация индекса: create/update/delete + bulk room/moderation removals;
+  - `POST /searches` переведён на индексный поиск (text + fallback regex в индексе).
+- Rails-format signed ids parity:
+  - `transfer_id` и `sgid` переведены с JWT на Rails-style signed envelope format (`base64(_rails payload)--hmac`);
+  - добавлена верификация/декодирование в формате `ActiveSupport::MessageVerifier`-совместимого envelope;
+  - добавлена поддержка обоих Rails payload вариантов (`_rails.message` и `_rails.data`) + URL-safe base64 decode;
+  - `transfer_id` проверяется строго по подписи/TTL (без unsafe bypass), `sgid` оставляет Rails-совместимый tolerant decode для mention-attachments;
+  - `sgid`/`transfer_id` теперь корректно обрабатывают payload вида `gid://.../User/:id` (Rails SGID/GlobalID формат).
+
 - `account/custom_styles`:
   - `GET /account/custom_styles` и `GET /account/custom_styles/edit` переведены на admin-only preHandler (как `ensure_can_administer` в Rails `Accounts::CustomStylesController`).
 - Push test notification icon parity:

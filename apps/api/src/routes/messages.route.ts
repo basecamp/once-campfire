@@ -260,6 +260,7 @@ const messagesRoutes: FastifyPluginAsync = async (app) => {
       roomId: String(message.roomId),
       payload: {
         messageId: String(message._id),
+        clientMessageId: message.clientMessageId,
         boost: responseBoost
       }
     });
@@ -269,6 +270,7 @@ const messagesRoutes: FastifyPluginAsync = async (app) => {
       roomId: String(message.roomId),
       payload: {
         messageId: String(message._id),
+        clientMessageId: message.clientMessageId,
         boost: responseBoost
       }
     });
@@ -316,6 +318,7 @@ const messagesRoutes: FastifyPluginAsync = async (app) => {
       roomId: String(message.roomId),
       payload: {
         messageId: String(message._id),
+        clientMessageId: message.clientMessageId,
         boostId: String(boost._id)
       }
     });

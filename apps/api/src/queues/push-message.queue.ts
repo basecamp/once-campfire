@@ -7,6 +7,7 @@ import { UserModel } from '../models/user.model.js';
 import { deliverPushNotifications } from '../services/push-notifications.js';
 import { disconnectedMembershipFilter } from '../services/membership-connection.js';
 import { findMentionedUserIdsInRoom } from '../services/mentions.js';
+import { plainTextForMessage } from '../services/rich-text.js';
 
 type PushMessageJobData = {
   roomId: string;
@@ -44,16 +45,12 @@ export async function enqueuePushMessageJob(data: PushMessageJobData) {
 
 function plainTextBody(message: {
   body?: string;
+  bodyPlain?: string;
   attachment?: {
     filename?: string;
   } | null;
 }) {
-  const body = message.body?.trim();
-  if (body) {
-    return body;
-  }
-
-  return message.attachment?.filename?.trim() ?? '';
+  return plainTextForMessage(message);
 }
 
 async function processPushMessage(job: Job) {
@@ -96,7 +93,11 @@ async function processPushMessage(job: Job) {
     .map((membership) => String(membership.userId));
 
   const mentioneeIds =
-    involvedInMentions.length > 0 ? await findMentionedUserIdsInRoom(roomUserIds, message.body) : [];
+    involvedInMentions.length > 0
+      ? Array.isArray(message.mentioneeIds) && message.mentioneeIds.length > 0
+        ? message.mentioneeIds.map((id) => String(id))
+        : await findMentionedUserIdsInRoom(roomUserIds, message.body)
+      : [];
   const mentioneeSet = new Set(mentioneeIds.map((id) => id.toLowerCase()));
 
   const recipients = new Set<string>();

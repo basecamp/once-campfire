@@ -4,6 +4,7 @@ import { MessageModel } from '../models/message.model.js';
 import { RoomModel } from '../models/room.model.js';
 import { UserModel } from '../models/user.model.js';
 import { handleMessageCreated } from '../services/message-events.js';
+import { htmlTextForMessage, normalizeRichTextBody, plainTextForMessage } from '../services/rich-text.js';
 
 type BotWebhookJobData = {
   botUserId: string;
@@ -45,6 +46,8 @@ function buildBotPayload(
   message: {
     _id: unknown;
     body: string;
+    bodyHtml?: string;
+    bodyPlain?: string;
     attachment?: {
       filename?: string;
     } | null;
@@ -52,7 +55,7 @@ function buildBotPayload(
   creator: { _id: unknown; name: string }
 ) {
   const plainMessageBody = withoutRecipientMentions(
-    message.body?.trim() || message.attachment?.filename?.trim() || '',
+    plainTextForMessage(message),
     bot.name
   );
 
@@ -63,13 +66,13 @@ function buildBotPayload(
       name: room.name ?? '',
       path: `/rooms/${String(room._id)}/${String(bot._id)}-${bot.botToken ?? ''}/messages`
     },
-    message: {
-      id: String(message._id),
-      body: {
-        html: null,
-        plain: plainMessageBody
-      },
-      path: `/rooms/${String(room._id)}/@${String(message._id)}`
+      message: {
+        id: String(message._id),
+        body: {
+          html: htmlTextForMessage(message) || null,
+          plain: plainMessageBody
+        },
+        path: `/rooms/${String(room._id)}/@${String(message._id)}`
     }
   };
 }
@@ -103,10 +106,15 @@ async function publishBotMessage({
     byteSize: number;
   };
 }) {
+  const richBody = await normalizeRichTextBody(body);
+
   const botMessage = await MessageModel.create({
     roomId,
     creatorId,
-    body,
+    body: richBody.plain,
+    bodyHtml: richBody.html,
+    bodyPlain: richBody.plain,
+    mentioneeIds: richBody.mentioneeIds,
     ...(attachment ? { attachment } : {})
   });
 

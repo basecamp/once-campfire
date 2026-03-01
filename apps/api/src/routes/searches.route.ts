@@ -5,6 +5,8 @@ import { MembershipModel } from '../models/membership.model.js';
 import { MessageModel } from '../models/message.model.js';
 import { SearchModel } from '../models/search.model.js';
 import { UserModel } from '../models/user.model.js';
+import { searchIndexedMessageIds, sanitizeSearchText } from '../services/message-search-index.js';
+import { plainTextForMessage } from '../services/rich-text.js';
 
 const runSearchSchema = z.object({
   query: z.string().trim().min(1).max(200),
@@ -12,7 +14,7 @@ const runSearchSchema = z.object({
 });
 
 function sanitizeQuery(input: string) {
-  return input.replace(/[^\w]/g, ' ').replace(/\s+/g, ' ').trim();
+  return sanitizeSearchText(input);
 }
 
 function parseSearchPayload(input: unknown) {
@@ -90,15 +92,21 @@ const searchesRoutes: FastifyPluginAsync = async (app) => {
       roomFilter = [roomObjectId];
     }
 
-    const regex = new RegExp(normalizedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const indexedMessageIds = await searchIndexedMessageIds({
+      query: normalizedQuery,
+      roomIds: roomFilter,
+      limit: 100
+    });
 
-    const messages = await MessageModel.find({
-      roomId: { $in: roomFilter },
-      $or: [{ body: regex }, { 'attachment.filename': regex }]
-    })
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .lean();
+    const rawMessages =
+      indexedMessageIds.length > 0
+        ? await MessageModel.find({ _id: { $in: indexedMessageIds } })
+            .select({ roomId: 1, creatorId: 1, body: 1, bodyPlain: 1, attachment: 1, createdAt: 1 })
+            .lean()
+        : [];
+
+    const messagesById = new Map(rawMessages.map((message) => [String(message._id), message]));
+    const messages = indexedMessageIds.map((id) => messagesById.get(id)).filter((item): item is NonNullable<typeof item> => Boolean(item));
 
     const creatorIds = Array.from(new Set(messages.map((message) => String(message.creatorId))));
     const creators = await UserModel.find({ _id: { $in: creatorIds } }, { name: 1 }).lean();
@@ -122,7 +130,7 @@ const searchesRoutes: FastifyPluginAsync = async (app) => {
         roomId: String(message.roomId),
         creatorId: String(message.creatorId),
         creatorName: creatorsById.get(String(message.creatorId))?.name ?? 'Unknown',
-        body: message.body?.trim() || message.attachment?.filename || '',
+        body: plainTextForMessage(message),
         attachment: message.attachment
           ? {
               contentType: message.attachment.contentType,

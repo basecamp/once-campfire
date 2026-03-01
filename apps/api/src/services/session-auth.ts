@@ -17,8 +17,8 @@ export async function createSession({ userId, userAgent, ipAddress }: SessionCre
   });
 }
 
-export async function refreshSessionIfNeeded(sessionId: string, userAgent: string, ipAddress: string) {
-  const session = await SessionModel.findById(sessionId).lean();
+export async function refreshSessionIfNeeded(sessionToken: string, userAgent: string, ipAddress: string) {
+  const session = await SessionModel.findOne({ token: sessionToken }).lean();
   if (!session) {
     return null;
   }

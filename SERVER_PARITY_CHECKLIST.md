@@ -72,6 +72,20 @@
 - [x] Полный паритет `account/logo` и `users/avatar` с ActiveStorage-подобным хранением/вариантами.
 - [x] Полная таблица route-to-route соответствия подготовлена: `ROUTE_PARITY_TABLE_FULL.md`.
 
+## Открытые строгие расхождения (обновлено)
+
+- [x] ActionCable/Turbo Streams parity:
+  - добавлен `Turbo::StreamsChannel` в `/cable` с `signed_stream_name`/`stream_name` подписками и turbo-stream delivery.
+  - `message.boosted` turbo target выровнен с Rails (`boosts_message_<client_message_id>`).
+- [x] RichText/ActionText parity:
+  - `Message` расширен `bodyHtml/bodyPlain/mentioneeIds`; add/update flow нормализует rich/plain; `action-text-attachment` (`sgid`) mentions поддержаны.
+- [x] Search engine parity:
+  - добавлен `MessageSearchIndex` (аналог `message_search_index`) и lifecycle sync на create/update/delete + bulk removals.
+- [x] Transfer/signature format parity:
+  - `transfer_id` и `attachable_sgid` переведены на Rails-style signed envelope format (не JWT).
+  - добавлена совместимость с Rails payload variants (`_rails.message` и `_rails.data`) и `gid://.../User/:id`.
+  - `transfer_id` верифицируется строго по подписи/TTL (без unsafe decode bypass).
+
 ## Route parity snapshot (в работе)
 
 | Rails route | Node route | Статус |

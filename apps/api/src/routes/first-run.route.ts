@@ -1,7 +1,8 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { COOKIE_NAME } from '../plugins/auth.js';
+import { isApiPath } from '../lib/request-format.js';
+import { setAuthCookie } from '../plugins/auth.js';
 import { AccountModel } from '../models/account.model.js';
 import { MembershipModel } from '../models/membership.model.js';
 import { RoomModel } from '../models/room.model.js';
@@ -131,14 +132,22 @@ function serializeRoom(room: {
 }
 
 const firstRunRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/first_run', async () => {
+  app.get('/first_run', async (request, reply) => {
     const accountsCount = await AccountModel.countDocuments();
+    if (accountsCount > 0 && !isApiPath(request)) {
+      return reply.redirect('/');
+    }
+
     return { allowed: accountsCount === 0 };
   });
 
   app.post('/first_run', async (request, reply) => {
     const accountsCount = await AccountModel.countDocuments();
     if (accountsCount > 0) {
+      if (!isApiPath(request)) {
+        return reply.redirect('/');
+      }
+
       return reply.code(409).send({ error: 'First run already completed' });
     }
 
@@ -184,14 +193,11 @@ const firstRunRoutes: FastifyPluginAsync = async (app) => {
       ipAddress: request.ip
     });
 
-    const token = await reply.jwtSign({ sub: String(user._id), sid: String(session._id) }, { expiresIn: '7d' });
-    reply.setCookie(COOKIE_NAME, token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7
-    });
+    setAuthCookie(reply, session.token);
+
+    if (!isApiPath(request)) {
+      return reply.redirect('/');
+    }
 
     return reply.code(201).send({
       user: await serializeUser(app, user.toObject()),

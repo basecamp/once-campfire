@@ -5,15 +5,23 @@ import { registerRealtimeConnection } from '../realtime/connection-manager.js';
 import { realtimeBus, type RealtimeEvent } from '../realtime/event-bus.js';
 import { publishRealtimeEvent } from '../realtime/redis-realtime.js';
 import { absentMembership, presentMembership, refreshMembership } from '../services/membership-connection.js';
+import {
+  extractRoomIdFromTurboStreamName,
+  resolveTurboStreamName,
+  turboStreamMessageForEvent
+} from '../services/turbo-stream.js';
 
 type CableIdentifier = {
   channel: string;
   roomId?: string;
+  streamName?: string;
+  signedStreamName?: string;
 };
 
 type CableSubscription = {
   channel: string;
   roomId?: string;
+  streamName?: string;
   unsubscribe?: () => void;
   onMessage?: (payload: Record<string, unknown>) => Promise<void>;
   onClose?: () => Promise<void>;
@@ -39,7 +47,13 @@ function readIdentifier(identifierRaw: string) {
     channel: payload.channel,
     roomId:
       (typeof payload.room_id === 'string' ? payload.room_id : undefined) ??
-      (typeof payload.roomId === 'string' ? payload.roomId : undefined)
+      (typeof payload.roomId === 'string' ? payload.roomId : undefined),
+    streamName:
+      (typeof payload.stream_name === 'string' ? payload.stream_name : undefined) ??
+      (typeof payload.streamName === 'string' ? payload.streamName : undefined),
+    signedStreamName:
+      (typeof payload.signed_stream_name === 'string' ? payload.signed_stream_name : undefined) ??
+      (typeof payload.signedStreamName === 'string' ? payload.signedStreamName : undefined)
   } satisfies CableIdentifier;
 }
 
@@ -316,6 +330,41 @@ const cableRoutes: FastifyPluginAsync = async (app) => {
                   }
                 });
               }
+            };
+          } else if (identifier.channel === 'Turbo::StreamsChannel') {
+            const streamName = resolveTurboStreamName(identifier.signedStreamName, identifier.streamName);
+            if (!streamName) {
+              rejectSubscription(frame.identifier);
+              return;
+            }
+
+            const roomIdFromStream = extractRoomIdFromTurboStreamName(streamName);
+            if (roomIdFromStream && streamName.includes('messages')) {
+              const membership = await MembershipModel.findOne({ roomId: roomIdFromStream, userId }).lean();
+              if (!membership) {
+                rejectSubscription(frame.identifier);
+                return;
+              }
+            }
+
+            const listener = (event: RealtimeEvent) => {
+              const message = turboStreamMessageForEvent(event, streamName, userId);
+              if (!message) {
+                return;
+              }
+
+              sendFrame(connection.socket, {
+                identifier: frame.identifier,
+                message
+              });
+            };
+
+            const unsubscribe = realtimeBus.subscribe(listener);
+            subscription = {
+              channel: identifier.channel,
+              roomId: roomIdFromStream ?? undefined,
+              streamName,
+              unsubscribe
             };
           }
 

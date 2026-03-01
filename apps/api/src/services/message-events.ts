@@ -5,12 +5,18 @@ import { enqueuePushMessageJob } from '../queues/push-message.queue.js';
 import { enqueueWebhookDispatch } from '../queues/webhook.queue.js';
 import { publishRealtimeEvent } from '../realtime/redis-realtime.js';
 import { disconnectedMembershipFilter } from './membership-connection.js';
+import { extractSearchBodyForMessage, upsertMessageSearchIndex } from './message-search-index.js';
 import { serializeMessageAttachment } from './message-attachment.js';
+import { htmlTextForMessage, plainTextForMessage } from './rich-text.js';
 
 type MessageResponse = {
   id: string;
   clientMessageId: string;
   body: string;
+  bodyHtml: string;
+  body_html: string;
+  bodyPlain: string;
+  body_plain: string;
   roomId: string;
   creatorId: string;
   creator?: {
@@ -51,7 +57,11 @@ export async function buildMessageResponse(messageId: string): Promise<MessageRe
   return {
     id: String(message._id),
     clientMessageId: message.clientMessageId,
-    body: message.body,
+    body: plainTextForMessage(message),
+    bodyHtml: htmlTextForMessage(message),
+    body_html: htmlTextForMessage(message),
+    bodyPlain: plainTextForMessage(message),
+    body_plain: plainTextForMessage(message),
     roomId: String(message.roomId),
     creatorId: String(message.creatorId),
     creator: creator
@@ -86,6 +96,12 @@ export async function handleMessageCreated({
   if (!responseMessage) {
     return null;
   }
+
+  await upsertMessageSearchIndex({
+    messageId,
+    roomId,
+    body: extractSearchBodyForMessage(responseMessage)
+  });
 
   const memberships = await MembershipModel.find({ roomId }, { userId: 1, involvement: 1, connectedAt: 1 }).lean();
 

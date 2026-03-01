@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { isApiPath } from '../lib/request-format.js';
-import { COOKIE_NAME } from '../plugins/auth.js';
+import { clearAuthCookie, setAuthCookie } from '../plugins/auth.js';
 import { PushSubscriptionModel } from '../models/push-subscription.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { UserModel } from '../models/user.model.js';
@@ -150,15 +150,7 @@ const sessionsRoutes: FastifyPluginAsync = async (app) => {
       ipAddress: request.ip
     });
 
-    const token = await reply.jwtSign({ sub: String(user._id), sid: String(session._id) }, { expiresIn: '7d' });
-
-    reply.setCookie(COOKIE_NAME, token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7
-    });
+    setAuthCookie(reply, session.token);
 
     if (!apiRequest) {
       return reply.redirect('/');
@@ -192,7 +184,7 @@ const sessionsRoutes: FastifyPluginAsync = async (app) => {
       endpoint && userId ? PushSubscriptionModel.deleteMany({ endpoint, userId }) : Promise.resolve()
     ]);
 
-    reply.clearCookie(COOKIE_NAME, { path: '/' });
+    clearAuthCookie(reply);
 
     if (!apiRequest) {
       return reply.redirect('/');

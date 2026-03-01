@@ -21,6 +21,9 @@ const messageSchema = new Schema(
     creatorId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     clientMessageId: { type: String, required: true, default: () => randomUUID() },
     body: { type: String, default: '', trim: true },
+    bodyHtml: { type: String, default: '' },
+    bodyPlain: { type: String, default: '', trim: true },
+    mentioneeIds: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     attachment: { type: attachmentSchema, required: false }
   },
   {

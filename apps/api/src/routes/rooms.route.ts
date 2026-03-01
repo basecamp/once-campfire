@@ -13,10 +13,16 @@ import { enqueueEligibleBotWebhooks } from '../services/bot-dispatch.js';
 import { getOrCreateAccount } from '../services/account-singleton.js';
 import { handleMessageCreated } from '../services/message-events.js';
 import {
+  extractSearchBodyForMessage,
+  removeMessageSearchIndexes,
+  upsertMessageSearchIndex
+} from '../services/message-search-index.js';
+import {
   buildMessageAttachmentFromBuffer,
   type StoredMessageAttachment,
   serializeMessageAttachment
 } from '../services/message-attachment.js';
+import { normalizeRichTextBody, plainTextForMessage, htmlTextForMessage } from '../services/rich-text.js';
 
 const MESSAGE_PAGE_SIZE = 40;
 const LAST_ROOM_COOKIE = 'last_room';
@@ -50,7 +56,7 @@ const createDirectSchema = z
   );
 
 const messagePayloadSchema = z.object({
-  body: z.string().trim().max(4000).optional(),
+  body: z.union([z.string().max(50000), z.object({ html: z.string().max(50000).optional(), plain: z.string().max(50000).optional() })]).optional(),
   clientMessageId: z.string().trim().min(1).max(128).optional()
 });
 
@@ -76,6 +82,24 @@ function normalizeUserIds(userIds: string[]) {
 }
 
 function parseMessagePayload(input: unknown) {
+  const extractBody = (value: unknown) => {
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    if (value && typeof value === 'object') {
+      const candidate = value as { html?: unknown; plain?: unknown };
+      if (typeof candidate.html === 'string') {
+        return candidate.html;
+      }
+      if (typeof candidate.plain === 'string') {
+        return candidate.plain;
+      }
+    }
+
+    return undefined;
+  };
+
   let parsed: z.infer<typeof messagePayloadSchema>;
 
   if (typeof input === 'string') {
@@ -97,9 +121,7 @@ function parseMessagePayload(input: unknown) {
     const message = payload.message;
 
     parsed = messagePayloadSchema.parse({
-      body:
-        (typeof message?.body === 'string' ? message.body : undefined) ??
-        (typeof payload.body === 'string' ? payload.body : undefined),
+      body: extractBody(message?.body) ?? extractBody(payload.body),
       clientMessageId:
         (typeof message?.clientMessageId === 'string' ? message.clientMessageId : undefined) ??
         (typeof message?.client_message_id === 'string' ? message.client_message_id : undefined) ??
@@ -108,12 +130,13 @@ function parseMessagePayload(input: unknown) {
     });
   }
 
-  if (!parsed.body?.trim()) {
+  const bodyValue = extractBody(parsed.body);
+  if (!bodyValue?.trim()) {
     throw new Error('body is required');
   }
 
   return {
-    body: parsed.body.trim(),
+    body: bodyValue.trim(),
     clientMessageId: parsed.clientMessageId
   };
 }
@@ -308,6 +331,9 @@ async function serializeMessages(messages: Array<{
   _id: unknown;
   clientMessageId: string;
   body: string;
+  bodyHtml?: string;
+  bodyPlain?: string;
+  mentioneeIds?: unknown[];
   attachment?: {
     contentType: string;
     filename: string;
@@ -347,10 +373,17 @@ async function serializeMessages(messages: Array<{
       return acc;
     }, {});
 
+    const plainBody = plainTextForMessage(message);
+    const richBodyHtml = htmlTextForMessage(message);
+
     return {
       id: String(message._id),
       clientMessageId: message.clientMessageId,
-      body: message.body,
+      body: plainBody,
+      bodyHtml: richBodyHtml,
+      body_html: richBodyHtml,
+      bodyPlain: plainBody,
+      body_plain: plainBody,
       roomId: String(message.roomId),
       creatorId: String(message.creatorId),
       creator: creatorsById.get(String(message.creatorId))
@@ -404,7 +437,7 @@ async function removeRoomForUser(userId: string, roomId: string) {
     return access;
   }
 
-  if (!(await canAdministerRecord(userId, access.room.creatorId))) {
+  if (access.room.type !== 'direct' && !(await canAdministerRecord(userId, access.room.creatorId))) {
     return { error: 'forbidden' as const };
   }
 
@@ -419,6 +452,7 @@ async function removeRoomForUser(userId: string, roomId: string) {
     MembershipModel.deleteMany({ roomId: access.roomObjectId }),
     MessageModel.deleteMany({ roomId: access.roomObjectId }),
     messageIds.length > 0 ? BoostModel.deleteMany({ messageId: { $in: messageIds } }) : Promise.resolve(),
+    messageIds.length > 0 ? removeMessageSearchIndexes(messageIds) : Promise.resolve(),
     RoomModel.deleteOne({ _id: access.roomObjectId })
   ]);
 
@@ -440,6 +474,15 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const memberships = await MembershipModel.find({ userId }).sort({ createdAt: -1 }).lean();
+    if (!isApiPath(request)) {
+      const lastRoomId = memberships[0] ? String(memberships[0].roomId) : '';
+      if (lastRoomId) {
+        return reply.redirect(`/rooms/${lastRoomId}`);
+      }
+
+      return reply.redirect('/');
+    }
+
     const roomIds = memberships.map((membership) => membership.roomId);
     const roomDocs = await RoomModel.find({ _id: { $in: roomIds } }).lean();
     const roomsById = new Map(roomDocs.map((room) => [String(room._id), room]));
@@ -1012,6 +1055,14 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
+    const currentMemberships = await MembershipModel.find({ roomId: room._id }, { userId: 1 }).lean();
+    await publishRealtimeEvent({
+      type: 'room.updated',
+      roomId: String(room._id),
+      payload: { room: serializeRoom(room.toObject() as Parameters<typeof serializeRoom>[0]) },
+      userIds: currentMemberships.map((item) => String(item.userId))
+    });
+
     return {
       room: serializeRoom(room.toObject() as Parameters<typeof serializeRoom>[0])
     };
@@ -1139,6 +1190,14 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
         });
       }
     }
+
+    const currentMemberships = await MembershipModel.find({ roomId: room._id }, { userId: 1 }).lean();
+    await publishRealtimeEvent({
+      type: 'room.updated',
+      roomId: String(room._id),
+      payload: { room: serializeRoom(room.toObject() as Parameters<typeof serializeRoom>[0]) },
+      userIds: currentMemberships.map((item) => String(item.userId))
+    });
 
     return {
       room: serializeRoom(room.toObject() as Parameters<typeof serializeRoom>[0])
@@ -1530,13 +1589,24 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const payload = parseMessagePayload(request.body);
+    const richBody = await normalizeRichTextBody(payload.body, app);
 
-    message.body = payload.body;
+    message.body = richBody.plain;
+    message.bodyHtml = richBody.html;
+    message.bodyPlain = richBody.plain;
+    message.mentioneeIds = richBody.mentioneeIds
+      .map((id) => asObjectId(id))
+      .filter((id): id is NonNullable<typeof id> => Boolean(id));
     if (payload.clientMessageId) {
       message.clientMessageId = payload.clientMessageId;
     }
 
     await message.save();
+    await upsertMessageSearchIndex({
+      messageId: message._id,
+      roomId: message.roomId,
+      body: extractSearchBodyForMessage(message.toObject())
+    });
 
     const [responseMessage] = await serializeMessages([
       message.toObject() as Parameters<typeof serializeMessages>[0][number]
@@ -1582,13 +1652,24 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const payload = parseMessagePayload(request.body);
+    const richBody = await normalizeRichTextBody(payload.body, app);
 
-    message.body = payload.body;
+    message.body = richBody.plain;
+    message.bodyHtml = richBody.html;
+    message.bodyPlain = richBody.plain;
+    message.mentioneeIds = richBody.mentioneeIds
+      .map((id) => asObjectId(id))
+      .filter((id): id is NonNullable<typeof id> => Boolean(id));
     if (payload.clientMessageId) {
       message.clientMessageId = payload.clientMessageId;
     }
 
     await message.save();
+    await upsertMessageSearchIndex({
+      messageId: message._id,
+      roomId: message.roomId,
+      body: extractSearchBodyForMessage(message.toObject())
+    });
 
     const [responseMessage] = await serializeMessages([
       message.toObject() as Parameters<typeof serializeMessages>[0][number]
@@ -1635,6 +1716,7 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
 
     await Promise.all([
       BoostModel.deleteMany({ messageId: messageObjectId }),
+      removeMessageSearchIndexes([messageObjectId]),
       MessageModel.deleteOne({ _id: messageObjectId })
     ]);
 
@@ -1686,10 +1768,15 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(422).send({ error: 'body or attachment is required' });
     }
 
+    const richBody = await normalizeRichTextBody(payload.body, app);
+
     const message = await MessageModel.create({
       roomId: roomObjectId,
       creatorId: bot._id,
-      body: payload.body,
+      body: richBody.plain,
+      bodyHtml: richBody.html,
+      bodyPlain: richBody.plain,
+      mentioneeIds: richBody.mentioneeIds,
       ...(payload.attachment ? { attachment: payload.attachment } : {}),
       ...(payload.clientMessageId ? { clientMessageId: payload.clientMessageId } : {})
     });
@@ -1711,10 +1798,18 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
       roomId: String(roomObjectId),
       messageId: String(message._id),
       creatorId: String(bot._id),
-      body: message.body
+      body: plainTextForMessage(message),
+      mentioneeIds: richBody.mentioneeIds
     });
 
-    return reply.code(201).send({ message: responseMessage });
+    const location = `/messages/${String(message._id)}`;
+    reply.header('location', location);
+
+    if (isApiPath(request)) {
+      return reply.code(201).send({ message: responseMessage, location });
+    }
+
+    return reply.code(201).send();
   });
 
   app.post('/:roomId/messages', { preHandler: app.authenticate }, async (request, reply) => {
@@ -1741,10 +1836,15 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(422).send({ error: 'body or attachment is required' });
     }
 
+    const richBody = await normalizeRichTextBody(payload.body, app);
+
     const message = await MessageModel.create({
       roomId: roomObjectId,
       creatorId: userId,
-      body: payload.body,
+      body: richBody.plain,
+      bodyHtml: richBody.html,
+      bodyPlain: richBody.plain,
+      mentioneeIds: richBody.mentioneeIds,
       ...(payload.attachment ? { attachment: payload.attachment } : {}),
       ...(payload.clientMessageId ? { clientMessageId: payload.clientMessageId } : {})
     });
@@ -1766,7 +1866,8 @@ const roomsRoutes: FastifyPluginAsync = async (app) => {
       roomId: String(message.roomId),
       messageId: String(message._id),
       creatorId: userId,
-      body: message.body
+      body: plainTextForMessage(message),
+      mentioneeIds: richBody.mentioneeIds
     });
 
     return reply.code(201).send({ message: responseMessage });

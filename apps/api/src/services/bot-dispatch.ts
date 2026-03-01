@@ -8,12 +8,14 @@ export async function enqueueEligibleBotWebhooks({
   roomId,
   messageId,
   creatorId,
-  body
+  body,
+  mentioneeIds
 }: {
   roomId: string;
   messageId: string;
   creatorId: string;
   body: string;
+  mentioneeIds?: string[];
 }) {
   const [room, memberships] = await Promise.all([
     RoomModel.findById(roomId).lean(),
@@ -31,7 +33,10 @@ export async function enqueueEligibleBotWebhooks({
   if (room.type === 'direct') {
     candidateUserIds = roomUserIds.filter((userId) => userId !== creatorId);
   } else {
-    candidateUserIds = await findMentionedUserIdsInRoom(roomUserIds, body);
+    candidateUserIds =
+      mentioneeIds && mentioneeIds.length > 0
+        ? mentioneeIds.filter((id) => roomUserIds.includes(id))
+        : await findMentionedUserIdsInRoom(roomUserIds, body);
   }
 
   if (candidateUserIds.length === 0) {

@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { isApiPath } from '../lib/request-format.js';
-import { COOKIE_NAME } from '../plugins/auth.js';
+import { setAuthCookie } from '../plugins/auth.js';
 import { UserModel } from '../models/user.model.js';
 import { createSession } from '../services/session-auth.js';
 import { verifyTransferId } from '../services/transfer-token.js';
@@ -92,14 +92,7 @@ const sessionTransfersRoutes: FastifyPluginAsync = async (app) => {
       ipAddress: request.ip
     });
 
-    const token = await reply.jwtSign({ sub: String(user._id), sid: String(session._id) }, { expiresIn: '7d' });
-    reply.setCookie(COOKIE_NAME, token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7
-    });
+    setAuthCookie(reply, session.token);
 
     if (!apiRequest) {
       return reply.redirect('/');

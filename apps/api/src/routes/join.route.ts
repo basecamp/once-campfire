@@ -1,7 +1,8 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { COOKIE_NAME } from '../plugins/auth.js';
+import { isApiPath } from '../lib/request-format.js';
+import { setAuthCookie } from '../plugins/auth.js';
 import { MembershipModel } from '../models/membership.model.js';
 import { RoomModel } from '../models/room.model.js';
 import { UserModel } from '../models/user.model.js';
@@ -120,6 +121,15 @@ async function sanitizeUser(
 
 const joinRoutes: FastifyPluginAsync = async (app) => {
   app.get('/join/:joinCode', async (request, reply) => {
+    const auth = await app.tryAuthenticate(request);
+    if (auth) {
+      if (isApiPath(request)) {
+        return reply.code(409).send({ error: 'Already signed in' });
+      }
+
+      return reply.redirect('/');
+    }
+
     const { joinCode } = request.params as { joinCode: string };
     const account = await getAccount();
 
@@ -131,6 +141,15 @@ const joinRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post('/join/:joinCode', async (request, reply) => {
+    const auth = await app.tryAuthenticate(request);
+    if (auth) {
+      if (isApiPath(request)) {
+        return reply.code(409).send({ error: 'Already signed in' });
+      }
+
+      return reply.redirect('/');
+    }
+
     const { joinCode } = request.params as { joinCode: string };
     const account = await getAccount();
 
@@ -142,6 +161,9 @@ const joinRoutes: FastifyPluginAsync = async (app) => {
 
     const existing = await UserModel.findOne({ emailAddress: payload.emailAddress.toLowerCase() }).lean();
     if (existing) {
+      if (!isApiPath(request)) {
+        return reply.redirect(`/session/new?email_address=${encodeURIComponent(payload.emailAddress.toLowerCase())}`);
+      }
       return reply.code(409).send({ error: 'Email already used' });
     }
 
@@ -175,14 +197,11 @@ const joinRoutes: FastifyPluginAsync = async (app) => {
       ipAddress: request.ip
     });
 
-    const token = await reply.jwtSign({ sub: String(user._id), sid: String(session._id) }, { expiresIn: '7d' });
-    reply.setCookie(COOKIE_NAME, token, {
-      path: '/',
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: false,
-      maxAge: 60 * 60 * 24 * 7
-    });
+    setAuthCookie(reply, session.token);
+
+    if (!isApiPath(request)) {
+      return reply.redirect('/');
+    }
 
     return reply.code(201).send({ user: await sanitizeUser(app, user.toObject()) });
   });
