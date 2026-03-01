@@ -424,3 +424,137 @@ module.exports = {
 ## Приоритет закрытия (строго по порядку)
 
 1. Сверить jobs/attachment edge-cases и финализировать parity матрицу.
+
+## 13. Журнал миграции (2026-03-01)
+
+### Что сделано в коде `server/src`
+
+- Перенесена логика контроллеров с уходом от пустых заглушек в:
+  - `modules/account/controllers/account.controller.ts`
+  - `modules/users/controllers/users.controller.ts`
+  - `modules/realtime/controllers/system.controller.ts`
+  - `modules/rooms/controllers/rooms.controller.ts`
+  - `modules/messages/controllers/messages.controller.ts`
+  - `modules/messages/controllers/boosts.controller.ts`
+  - `modules/push/controllers/push-subscriptions.controller.ts`
+  - `modules/searches/controllers/searches.controller.ts`
+  - `modules/moderation/controllers/moderation.controller.ts`
+  - `modules/unfurl/controllers/unfurl.controller.ts`
+  - `modules/realtime/controllers/realtime.controller.ts`
+- Добавлен общий JSON helper:
+  - `shared/utils/controller.ts` -> `sendData(...)` и `sendError(...)` с обязательным полем `accessToken`.
+- Добавлена типизация Fastify контекста:
+  - `shared/dto/fastify.d.ts` для `request.session`, `request.accessToken`, `request.authUserId`.
+- Удален legacy-файл вне текущей миграции:
+  - `modules/users/models/user.model.ts` (несовместимый старый код, не использовать в текущем server migration).
+- Проверка статической корректности:
+  - `cd server && npm run lint` -> `tsc --noEmit` проходит без ошибок.
+
+### Важное уточнение по parity статусу
+
+- Таблица в разделе `12` используется как целевая parity-матрица маршрутов.
+- Фактический статус текущего шага: реализована серверная логика контроллеров и JSON-контракт.
+- Следующий обязательный шаг для полного `DONE` по таблице: подключить все route-слои Fastify (`modules/*/routes`) к runtime app.
+
+## 14. Требования, чтобы `users/models/user.model.js` стала основной
+
+Текущий файл добавлен без изменений: `server/src/modules/users/models/user.model.js`.
+
+Чтобы использовать его как primary user model во всем `server/src`, нужно добавить/изменить:
+
+1. Единое подключение к Mongo:
+   - заменить локальный `createConnection(...)` на общий connection из приложения (через plugin), чтобы не поднимать отдельный коннект на модель.
+2. Исправить путь конфигурации:
+   - `../../config/mongodb.js` не существует из `modules/users/models`; нужен корректный путь или единый config adapter.
+3. Поля для текущего API-контракта:
+   - добавить совместимость с полями `emailAddress`, `role`, `status`, `bio`, `avatarUrl`, `botToken`, `botWebhookUrl`, `transferId`.
+   - либо добавить mappers/virtuals, чтобы существующие `email/password/roles/active/name.first/last` корректно трансформировались.
+4. Индексы parity:
+   - unique/sparse для bot key/token,
+   - индексы под auth/search/admin фильтры (`emailAddress`, `status`, `role`, `company`).
+5. Методы модели:
+   - `verifyPassword`, role/status helpers, bot-key helpers, transfer-id helpers.
+6. Типизация и экспорт:
+   - добавить TS declaration (`.d.ts`) или переписать в `.ts`, чтобы контроллеры работали типобезопасно.
+7. Миграция данных:
+   - подготовить преобразование старых user-документов в целевую схему (или обратный mapper в сервисном слое).
+8. Замена в контроллерах:
+   - перевести текущие контроллеры с raw `connection.collection('users')` на эту модель.
+
+## 15. Обновление user model (2026-03-01)
+
+Выполнено:
+
+- Модель переведена на общий Mongo connection:
+  - `server/src/modules/users/models/user.model.js` больше не использует `createConnection(...)`.
+  - добавлен shared connection файл `server/src/infra/storage/mongo-connection.js`.
+- Исправлен источник `Config`:
+  - подключение `config/mongodb.js` теперь централизовано через shared connection.
+- Поля приведены по требованиям:
+  - `email` используется как основной email.
+  - `avatarSource` используется как основной avatar.
+  - `roles` используется как основной role-контейнер.
+  - добавлены `status`, `bio`, `botToken`, `botWebhookUrl`, `transferId`.
+- Для совместимости добавлены virtual aliases:
+  - `emailAddress` -> `email`
+  - `avatarUrl` -> `avatarSource`
+  - `role` -> `roles[0]`
+- Добавлены индексы под auth/admin/search + bot token:
+  - `status + roles`
+  - `company + status + roles`
+  - text index для `email/telegram/phone/name.first/name.last`
+  - unique sparse для `botToken`
+  - unique sparse для `transferId`
+
+## 16. Приведение controllers `users/account/system` (2026-03-01)
+
+Выполнено:
+
+- Контроллеры переведены с raw `connection.collection(...)` на модели:
+  - `server/src/modules/users/controllers/users.controller.ts`
+  - `server/src/modules/account/controllers/account.controller.ts`
+  - `server/src/modules/realtime/controllers/system.controller.ts`
+- Добавлена модель account:
+  - `server/src/modules/account/models/account.model.ts`
+- Добавлен d.ts для JS-модели пользователя, чтобы TS-контроллеры импортировали `UserModel`:
+  - `server/src/modules/users/models/user.model.d.ts`
+- Поля в контроллерах приведены к целевой схеме пользователя:
+  - email через `email`
+  - avatar через `avatarSource`
+  - role через `roles`
+  - status/bio/botToken/botWebhookUrl/transferId используются как source of truth
+
+Проверка:
+
+- `cd server && npm run lint` проходит (`tsc --noEmit`).
+
+## 17. Route layer + runtime (2026-03-01)
+
+Выполнено:
+
+- Поднят runtime каркас сервера:
+  - `server/src/app.ts`
+  - `server/src/server.ts`
+  - `server/src/plugins/auth.ts`
+  - `server/src/config/env.ts`
+  - `server/src/config/mongo.ts`
+- Добавлены route-модули и подключены к Fastify:
+  - `modules/account/routes/index.ts`
+  - `modules/users/routes/index.ts`
+  - `modules/rooms/routes/index.ts`
+  - `modules/messages/routes/index.ts`
+  - `modules/searches/routes/index.ts`
+  - `modules/push/routes/index.ts`
+  - `modules/moderation/routes/index.ts`
+  - `modules/unfurl/routes/index.ts`
+  - `modules/realtime/routes/index.ts`
+- Добавлены типы для middleware:
+  - `server/src/shared/dto/auth-jwt.d.ts`
+  - расширен `server/src/shared/dto/fastify.d.ts` (декоратор `authenticate`).
+- Контракт `accessToken` соблюдается глобально:
+  - onSend hook в `app.ts` добавляет `accessToken` в JSON ответы, если его нет.
+
+Проверка:
+
+- `cd server && npm run lint` — OK.
+- `cd server && npm run build` — OK.
