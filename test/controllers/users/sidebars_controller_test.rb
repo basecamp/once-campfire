@@ -27,4 +27,17 @@ class Users::SidebarsControllerTest < ActionDispatch::IntegrationTest
     get user_sidebar_url
     assert_select ".unread", count: users(:david).memberships.reject { |m| m.room.direct? || !m.unread? }.count
   end
+
+  test "hides direct rooms with deactivated users" do
+    direct_room = Rooms::Direct.create!(creator: users(:david))
+    direct_room.memberships.grant_to([ users(:david), users(:bender) ])
+
+    get user_sidebar_url
+    assert_select "a[href='#{room_path(direct_room)}']", count: 1
+
+    users(:bender).deactivate
+
+    get user_sidebar_url
+    assert_select "a[href='#{room_path(direct_room)}']", count: 0
+  end
 end
