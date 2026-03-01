@@ -1,0 +1,39 @@
+/* E2E Encryption Styles */
+
+.message--encrypted .encrypted-placeholder {
+  color: var(--text-deemphasize, #888);
+  font-style: italic;
+}
+
+.message--encrypted .decrypt-failed {
+  color: var(--negative, #c00);
+  font-style: italic;
+}
+
+.message--encrypted .decrypted {
+  font-style: normal;
+}
+
+.encryption-badge {
+  font-size: 0.7em;
+  vertical-align: middle;
+  margin-inline-start: 0.25em;
+}
+
+[data-encryption-status="active"] {
+  color: var(--positive, #090);
+}
+
+[data-encryption-status="none"] {
+  color: var(--text-deemphasize, #888);
+}
+
+[data-encryption-status="error"] {
+  color: var(--negative, #c00);
+}
+
+/* Encryption indicator in composer */
+.composer__encryption-indicator {
+  font-size: 0.8em;
+  padding-inline: 0.5em;
+}

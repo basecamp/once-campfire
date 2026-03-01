@@ -12,6 +12,14 @@
 <%= message_area_tag(@room) do %>
   <%= render "messages/template" %>
 
+  <% if @room.encrypted? %>
+    <div data-controller="encryption"
+         data-room-encrypted="true"
+         data-room-id="<%= @room.id %>"
+         data-encryption-room-id-value="<%= @room.id %>">
+    </div>
+  <% end %>
+
   <%= messages_tag(@room) do %>
     <%= render "rooms/show/invitation", room: @room %>
     <%= render partial: "messages/message", collection: @messages, cached: true %>

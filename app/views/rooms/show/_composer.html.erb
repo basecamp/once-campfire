@@ -14,7 +14,11 @@
 
             <div class="flex composer__input input input--actor fill-white min-width" style="--input-border-radius: 1.3rem">
               <div class="flex align-end gap full-width">
-                <%= image_tag "messages-outlined.svg", size: 22, aria: { hidden: "true" }, class: "composer__input-hint colorize--black", style: "view-transition-name: input-btn;" %>
+                <% if room.encrypted? %>
+                  <span class="composer__encryption-indicator" title="End-to-end encrypted">🔒</span>
+                <% else %>
+                  <%= image_tag "messages-outlined.svg", size: 22, aria: { hidden: "true" }, class: "composer__input-hint colorize--black", style: "view-transition-name: input-btn;" %>
+                <% end %>
 
                 <div class="flex flex-column flex-item-grow min-width gap">
                   <%= form.rich_text_area :body,
@@ -56,6 +60,13 @@
         </div>
 
         <%= form.hidden_field :client_message_id, data: { composer_target: "clientid" } %>
+
+        <% if room.encrypted? %>
+          <input type="hidden" name="encrypted" value="false" data-composer-target="encryptedFlag">
+          <input type="hidden" name="encrypted_body" value="" data-composer-target="encryptedBody">
+          <input type="hidden" name="encryption_nonce" value="" data-composer-target="encryptedNonce">
+          <input type="hidden" name="sender_public_key" value="" data-composer-target="senderPublicKey">
+        <% end %>
       <% end %>
     </turbo-frame>
   </div>
