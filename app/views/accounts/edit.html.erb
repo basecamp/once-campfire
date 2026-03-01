@@ -12,6 +12,11 @@
         <span class="for-screen-reader">Set up chat bots</span>
       <% end %>
 
+      <%= link_to new_account_slack_import_path, class: "btn", style: "view-transition-name: slack-import" do %>
+        <%= image_tag "slack.svg", aria: { hidden: "true" }, size: 20 %>
+        <span class="for-screen-reader">Import from Slack</span>
+      <% end %>
+
       <%= link_to edit_account_custom_styles_path, class: "btn", style: "view-transition-name: custom-styles" do %>
         <%= image_tag "art.svg", size: 20, aria: { hidden: "true" } %>
         <span class="for-screen-reader">Custom styles</span>
