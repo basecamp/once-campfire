@@ -37,8 +37,6 @@ server/
       validation.ts
       rate-limit.ts
     modules/
-      account/
-      users/
       rooms/
       messages/
       searches/
