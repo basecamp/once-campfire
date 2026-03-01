@@ -328,7 +328,20 @@
 }
 
 img.message__attachment {
+  display: block;
+  max-inline-size: min(70vw, 28rem);
   cursor: zoom-in;
+}
+
+.message__attachment-link {
+  max-inline-size: min(75vw, 34rem);
+}
+
+.message__attachment-filename {
+  max-inline-size: min(42vw, 18rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message__actions {
