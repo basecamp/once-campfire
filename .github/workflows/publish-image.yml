@@ -13,11 +13,7 @@ concurrency:
   group: publish-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
-  attestations: write
+permissions: {}
 
 env:
   IMAGE_DESCRIPTION: Campfire is a web-based chat application with multiple rooms, direct messages, file attachments with previews, search, web push notifications, @mentions, and bot integrations. Single-tenant; production-ready image with web app, background jobs, caching, file serving, and SSL.
@@ -27,6 +23,11 @@ jobs:
   build:
     name: Build and push image (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -113,6 +114,10 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     timeout-minutes: 20
     env:
       REGISTRY: ghcr.io
