@@ -164,9 +164,11 @@ jobs:
 
       - name: Create multi-arch manifests
         shell: bash
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -eu
-          tags="${{ steps.meta.outputs.tags }}"
+          tags="$TAGS"
           echo "Creating manifests for tags:"
           printf '%s\n' "$tags"
           while IFS= read -r tag; do
@@ -196,9 +198,11 @@ jobs:
 
       - name: Cosign sign all tags (keyless OIDC)
         shell: bash
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -eu
-          tags="${{ steps.meta.outputs.tags }}"
+          tags="$TAGS"
           printf '%s\n' "$tags"
           while IFS= read -r tag; do
             [ -z "$tag" ] && continue
