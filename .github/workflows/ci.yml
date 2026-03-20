@@ -38,6 +38,23 @@ jobs:
       - name: Lint code for consistent style
         run: bin/rubocop
 
+  lint-actions:
+    name: GitHub Actions audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run actionlint
+        uses: rhysd/actionlint@v1.7.11
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@v0.5.2
+        with:
+          advanced-security: false
+
   test:
     runs-on: ubuntu-latest
     services:
