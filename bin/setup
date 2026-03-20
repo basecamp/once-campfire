@@ -100,6 +100,20 @@ if ! redis_running; then
   fi
 fi
 
+# Install GitHub Actions linting tools
+for tool in actionlint shellcheck zizmor; do
+  if ! command -v "$tool" &> /dev/null; then
+    if command -v brew &> /dev/null; then
+      step "Installing $tool" brew install "$tool"
+    elif command -v pacman &> /dev/null; then
+      step "Installing $tool" sudo pacman -S --noconfirm "$tool"
+    else
+      echo "Error: install $tool manually" >&2
+      exit 1
+    fi
+  fi
+done
+
 step "Cleaning up logs and tempfiles" rails log:clear tmp:clear
 
 step "Restarting services" rails restart
