@@ -5,6 +5,8 @@ class Messages::ByBotsController < MessagesController
     set_room
     @messages = find_paged_messages
     render json: messages_as_json(@messages)
+  rescue ActiveRecord::RecordNotFound
+    head :not_found
   end
 
   def create
