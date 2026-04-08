@@ -10,8 +10,13 @@ class Messages::ByBotsController < MessagesController
   end
 
   def create
-    super
+    set_room
+    @message = @room.messages.create_with_attachment!(message_params)
+    @message.broadcast_create
+    deliver_webhooks_to_bots
     head :created, location: message_url(@message)
+  rescue ActiveRecord::RecordNotFound
+    head :not_found
   end
 
   private

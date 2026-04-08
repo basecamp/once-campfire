@@ -93,7 +93,7 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
     assert_response :redirect  # Redirects to login
   end
 
-  test "index returns 404 for room bot is not a member of" do
+  test "index returns not_found for room bot is not a member of" do
     # bender bot is NOT a member of the designers room
     room_without_bot = rooms(:designers)
     get room_bot_messages_index_url(room_without_bot, users(:bender).bot_key)
@@ -105,6 +105,15 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
     room_with_bot = rooms(:watercooler)
     get room_bot_messages_index_url(room_with_bot, users(:bender).bot_key)
     assert_response :success
+  end
+
+  test "create returns not_found for room bot is not a member of" do
+    # bender bot is NOT a member of the designers room - verify create matches index behavior
+    room_without_bot = rooms(:designers)
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(room_without_bot, users(:bender).bot_key), params: +"Hello!"
+    end
+    assert_response :not_found
   end
 
   test "regular messages index still denied for bots" do
