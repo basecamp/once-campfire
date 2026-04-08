@@ -62,6 +62,8 @@ Rails.application.routes.draw do
   resources :rooms do
     resources :messages
 
+    # Bot API endpoints - authenticated via bot_key in URL
+    get ":bot_key/messages", to: "messages/by_bots#index", as: :bot_messages_index
     post ":bot_key/messages", to: "messages/by_bots#create", as: :bot_messages
 
     scope module: "rooms" do
