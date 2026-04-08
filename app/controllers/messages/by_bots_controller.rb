@@ -42,7 +42,7 @@ class Messages::ByBotsController < MessagesController
         creator: {
           id: message.creator.id,
           name: message.creator.name,
-          is_bot: message.creator.role == "bot"
+          is_bot: message.creator.bot?
         }
       }
     end
