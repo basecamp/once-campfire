@@ -79,12 +79,16 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
   end
 
   test "index supports pagination with before parameter" do
-    get room_bot_messages_index_url(@room, users(:bender).bot_key, before: Message.last.id)
+    # Use a message from the watercooler room (where bender is a member)
+    message_in_room = messages(:thirteenth)  # Latest message in watercooler
+    get room_bot_messages_index_url(@room, users(:bender).bot_key, before: message_in_room.id)
     assert_response :success
   end
 
   test "index supports pagination with after parameter" do
-    get room_bot_messages_index_url(@room, users(:bender).bot_key, after: Message.first.id)
+    # Use a message from the watercooler room (where bender is a member)
+    message_in_room = messages(:fourth)  # First message in watercooler
+    get room_bot_messages_index_url(@room, users(:bender).bot_key, after: message_in_room.id)
     assert_response :success
   end
 
