@@ -19,6 +19,23 @@ class Message::AttachmentTest < ActiveSupport::TestCase
     assert_equal message.plain_text_body, "moon.jpg"
   end
 
+  test "creating a blank message with attachment that exceeds max attachment limit" do
+    ApplicationController.helpers.expects(:is_attachment_size_valid).returns(false)
+
+    assert_raises(ActiveRecord::RecordInvalid) do
+      create_attachment_message("moon.jpg", "image/jpeg")
+    end
+  end
+
+  test "creating a blank message with attachment that doesn't exceed max attachment limit" do
+    ApplicationController.helpers.expects(:is_attachment_size_valid).returns(true)
+
+    assert_nothing_raised do
+      create_attachment_message("moon.jpg", "image/jpeg")
+    end
+  end
+
+
 
   private
     def create_attachment_message(file, content_type)
