@@ -1,0 +1,31 @@
+services:
+  campfire:
+    image: ghcr.io/basecamp/once-campfire:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: campfire
+    restart: unless-stopped
+    ports:
+      - "4267:80"
+      - "3473:443"
+    env_file:
+      - .env
+    volumes:
+      - campfire_storage:/rails/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/up || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    develop:
+      watch:
+        - action: rebuild
+          path: .
+
+volumes:
+  campfire_storage:
+    driver: local

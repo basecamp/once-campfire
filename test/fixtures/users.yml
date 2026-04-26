@@ -28,3 +28,9 @@ bender:
   name: Bender Bot
   bot_token: <%= User.generate_bot_token %>
   role: bot
+
+sso_user:
+  name: SSO User
+  email_address: sso@example.com
+  sso_provider: oidc
+  sso_uid: sso-fixture-uid-001
