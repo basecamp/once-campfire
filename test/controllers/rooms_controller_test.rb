@@ -15,6 +15,32 @@ class RoomsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "show grants membership with a valid invite token for signed-in users" do
+    sign_in :jz
+    room = rooms(:watercooler)
+
+    assert_no_difference -> { Session.count } do
+      assert_difference -> { room.memberships.count }, +1 do
+        get room_url(room, invite: room.sso_invite_token)
+      end
+    end
+
+    assert_response :success
+    assert room.users.exists?(id: users(:jz).id)
+  end
+
+  test "show does not grant membership with an invalid invite token for signed-in users" do
+    sign_in :jz
+    room = rooms(:watercooler)
+
+    assert_no_difference -> { room.memberships.count } do
+      get room_url(room, invite: "invalid-token")
+    end
+
+    assert_redirected_to root_url
+    assert_not room.users.exists?(id: users(:jz).id)
+  end
+
   test "shows records the last room visited in a cookie" do
     get room_url(users(:david).rooms.last)
     assert response.cookies[:last_room] = users(:david).rooms.last.id

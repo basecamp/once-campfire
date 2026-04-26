@@ -20,11 +20,31 @@ class RoomsController < ApplicationController
 
   private
     def set_room
-      if room = Current.user.rooms.find_by(id: params[:room_id] || params[:id])
+      if room = Current.user.rooms.find_by(id: requested_room_id) || invited_room_for_current_user
         @room = room
       else
         redirect_to root_url, alert: "Room not found or inaccessible"
       end
+    end
+
+    def requested_room_id
+      params[:room_id] || params[:id]
+    end
+
+    def invited_room_for_current_user
+      return unless action_name == "show"
+
+      invite_token = params[:invite].to_s.presence
+      return if invite_token.blank?
+
+      room = Room.find_by_sso_invite_token(invite_token)
+      return unless room&.id == requested_room_id.to_i
+
+      Membership.create_or_find_by!(room:, user: Current.user) do |membership|
+        membership.involvement = room.default_involvement
+      end
+
+      room
     end
 
     def ensure_can_administer
