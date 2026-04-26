@@ -10,6 +10,8 @@ require "turbo/broadcastable/test_helper"
 WebMock.enable!
 
 class ActiveSupport::TestCase
+  ENV_MUTEX = Mutex.new
+
   include ActiveJob::TestHelper
 
   parallelize(workers: :number_of_processors)
@@ -33,5 +35,21 @@ class ActiveSupport::TestCase
 
   teardown do
     WebMock.reset!
+  end
+
+  def with_env(overrides)
+    ENV_MUTEX.synchronize do
+      original_values = overrides.to_h { |key, _| [ key, ENV[key] ] }
+
+      overrides.each do |key, value|
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+
+      yield
+    ensure
+      original_values.each do |key, value|
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+    end
   end
 end

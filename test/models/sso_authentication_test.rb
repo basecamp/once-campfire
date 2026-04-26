@@ -89,10 +89,30 @@ class SsoAuthenticationTest < ActiveSupport::TestCase
 
   test "normalizes email to lowercase" do
     user = users(:jz)
-    @auth.info.email = user.email_address.upcase
+    user.update!(email_address: "JZ@37signals.com")
+    @auth.info.email = user.email_address.downcase
 
     result = SsoAuthentication.find_or_create_user_from(@auth)
     assert_equal user, result
+  end
+
+  test "rejects linking when the identity provider marks email as unverified" do
+    user = users(:jz)
+    @auth.info.email = user.email_address
+    @auth.extra = OmniAuth::AuthHash.new(raw_info: { "email_verified" => false })
+
+    assert_raises SsoAuthentication::Error, "Identity provider did not verify the email address" do
+      SsoAuthentication.find_or_create_user_from(@auth)
+    end
+  end
+
+  test "rejects linking by email when the existing account is already SSO-linked" do
+    user = users(:sso_user)
+    @auth.info.email = user.email_address
+
+    assert_raises SsoAuthentication::Error, "Email is already linked to another SSO account" do
+      SsoAuthentication.find_or_create_user_from(@auth)
+    end
   end
 
   test "uses uid as email fallback when uid is an email address" do

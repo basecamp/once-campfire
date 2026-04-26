@@ -28,67 +28,39 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "new in SSO-first mode does not render the secondary SSO panel" do
-    original_oidc_providers = ENV["OIDC_PROVIDERS"]
-    original_oidc_test_issuer = ENV["OIDC_TEST_ISSUER"]
-    original_oidc_test_client_id = ENV["OIDC_TEST_CLIENT_ID"]
-    original_oidc_test_client_secret = ENV["OIDC_TEST_CLIENT_SECRET"]
-    original_oidc_test_redirect_uri = ENV["OIDC_TEST_REDIRECT_URI"]
-    original_oidc_test_provider_name = ENV["OIDC_TEST_PROVIDER_NAME"]
-    original_disable_password_registration = ENV["DISABLE_PASSWORD_REGISTRATION"]
+    with_env(
+      "OIDC_PROVIDERS" => "test",
+      "OIDC_TEST_ISSUER" => "https://idp.example.test/realms/campfire",
+      "OIDC_TEST_CLIENT_ID" => "test-client-id",
+      "OIDC_TEST_CLIENT_SECRET" => "test-client-secret",
+      "OIDC_TEST_REDIRECT_URI" => "https://campfire.example.test/auth/oidc_test/callback",
+      "OIDC_TEST_PROVIDER_NAME" => "Test OIDC",
+      "DISABLE_PASSWORD_REGISTRATION" => "true"
+    ) do
+      get new_session_url
 
-    ENV["OIDC_PROVIDERS"] = "test"
-    ENV["OIDC_TEST_ISSUER"] = "https://idp.example.test/realms/campfire"
-    ENV["OIDC_TEST_CLIENT_ID"] = "test-client-id"
-    ENV["OIDC_TEST_CLIENT_SECRET"] = "test-client-secret"
-    ENV["OIDC_TEST_REDIRECT_URI"] = "https://campfire.example.test/auth/oidc_test/callback"
-    ENV["OIDC_TEST_PROVIDER_NAME"] = "Test OIDC"
-    ENV["DISABLE_PASSWORD_REGISTRATION"] = "true"
-
-    get new_session_url
-
-    assert_response :success
-    assert_select "summary", text: "Sign in with email and password"
-    assert_select "strong", text: "Or sign in with", count: 0
-  ensure
-    ENV["OIDC_PROVIDERS"] = original_oidc_providers
-    ENV["OIDC_TEST_ISSUER"] = original_oidc_test_issuer
-    ENV["OIDC_TEST_CLIENT_ID"] = original_oidc_test_client_id
-    ENV["OIDC_TEST_CLIENT_SECRET"] = original_oidc_test_client_secret
-    ENV["OIDC_TEST_REDIRECT_URI"] = original_oidc_test_redirect_uri
-    ENV["OIDC_TEST_PROVIDER_NAME"] = original_oidc_test_provider_name
-    ENV["DISABLE_PASSWORD_REGISTRATION"] = original_disable_password_registration
+      assert_response :success
+      assert_select "summary", text: "Sign in with email and password"
+      assert_select "strong", text: "Or sign in with", count: 0
+    end
   end
 
   test "new uses configured OIDC provider label and callback-derived strategy" do
-    original_oidc_providers = ENV["OIDC_PROVIDERS"]
-    original_oidc_keycloak_issuer = ENV["OIDC_KEYCLOAK_ISSUER"]
-    original_oidc_keycloak_client_id = ENV["OIDC_KEYCLOAK_CLIENT_ID"]
-    original_oidc_keycloak_client_secret = ENV["OIDC_KEYCLOAK_CLIENT_SECRET"]
-    original_oidc_keycloak_redirect_uri = ENV["OIDC_KEYCLOAK_REDIRECT_URI"]
-    original_oidc_keycloak_provider_name = ENV["OIDC_KEYCLOAK_PROVIDER_NAME"]
-    original_disable_password_registration = ENV["DISABLE_PASSWORD_REGISTRATION"]
+    with_env(
+      "OIDC_PROVIDERS" => "keycloak",
+      "OIDC_KEYCLOAK_ISSUER" => "https://idp.example.test/realms/campfire",
+      "OIDC_KEYCLOAK_CLIENT_ID" => "campfire",
+      "OIDC_KEYCLOAK_CLIENT_SECRET" => "secret",
+      "OIDC_KEYCLOAK_REDIRECT_URI" => "https://campfire.example.test/auth/oidc/callback",
+      "OIDC_KEYCLOAK_PROVIDER_NAME" => "BloxWeaver OIDC",
+      "DISABLE_PASSWORD_REGISTRATION" => "true"
+    ) do
+      get new_session_url
 
-    ENV["OIDC_PROVIDERS"] = "keycloak"
-    ENV["OIDC_KEYCLOAK_ISSUER"] = "https://idp.example.test/realms/campfire"
-    ENV["OIDC_KEYCLOAK_CLIENT_ID"] = "campfire"
-    ENV["OIDC_KEYCLOAK_CLIENT_SECRET"] = "secret"
-    ENV["OIDC_KEYCLOAK_REDIRECT_URI"] = "https://campfire.example.test/auth/oidc/callback"
-    ENV["OIDC_KEYCLOAK_PROVIDER_NAME"] = "BloxWeaver OIDC"
-    ENV["DISABLE_PASSWORD_REGISTRATION"] = "true"
-
-    get new_session_url
-
-    assert_response :success
-    assert_select "button", text: "Sign in with BloxWeaver OIDC"
-    assert_select "form[action='/auth/oidc']"
-  ensure
-    ENV["OIDC_PROVIDERS"] = original_oidc_providers
-    ENV["OIDC_KEYCLOAK_ISSUER"] = original_oidc_keycloak_issuer
-    ENV["OIDC_KEYCLOAK_CLIENT_ID"] = original_oidc_keycloak_client_id
-    ENV["OIDC_KEYCLOAK_CLIENT_SECRET"] = original_oidc_keycloak_client_secret
-    ENV["OIDC_KEYCLOAK_REDIRECT_URI"] = original_oidc_keycloak_redirect_uri
-    ENV["OIDC_KEYCLOAK_PROVIDER_NAME"] = original_oidc_keycloak_provider_name
-    ENV["DISABLE_PASSWORD_REGISTRATION"] = original_disable_password_registration
+      assert_response :success
+      assert_select "button", text: "Sign in with BloxWeaver OIDC"
+      assert_select "form[action='/auth/oidc']"
+    end
   end
 
   test "create with valid credentials" do

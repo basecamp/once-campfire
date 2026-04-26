@@ -1,6 +1,7 @@
 class SsoAuthentication
   class Error < StandardError; end
 
+  VERIFIED_EMAIL_ATTRIBUTE_KEYS = [ "email_verified", "verified_email" ].freeze
   EMAIL_ATTRIBUTE_KEYS = [
     "email",
     "mail",
@@ -14,19 +15,24 @@ class SsoAuthentication
   def self.find_or_create_user_from(auth)
     provider = auth.provider.to_s
     uid      = auth.uid.to_s
-    info     = auth.info || OmniAuth::AuthHash::InfoHash.new
-    email    = extract_email(auth:, info:, uid:)
 
-    raise Error, "No email provided by identity provider" if email.blank?
     raise Error, "No UID provided by identity provider" if uid.blank?
 
     # Find by SSO identity (returning user)
     user = User.find_by(sso_provider: provider, sso_uid: uid)
     return user if user
 
+    info     = auth.info || OmniAuth::AuthHash::InfoHash.new
+    email    = extract_email(auth:, info:, uid:)
+
+    raise Error, "No email provided by identity provider" if email.blank?
+    raise Error, "Identity provider did not verify the email address" unless email_verified?(auth:, info:)
+
     # Find by email (link existing user to SSO on first SSO login)
-    user = User.find_by(email_address: email)
+    user = User.where("LOWER(email_address) = ?", email).first
     if user
+      raise Error, "Email is already linked to another SSO account" if user.sso?
+
       user.update!(sso_provider: provider, sso_uid: uid)
       return user
     end
@@ -54,12 +60,30 @@ class SsoAuthentication
         normalize_email(uid) if uid.to_s.include?("@")
       end
 
+      def email_verified?(auth:, info:)
+        claim = fetch_first_claim(info, VERIFIED_EMAIL_ATTRIBUTE_KEYS)
+        claim = fetch_first_claim(auth.dig(:extra, :raw_info), VERIFIED_EMAIL_ATTRIBUTE_KEYS) if claim.nil?
+
+        normalize_boolean(claim).in?([ nil, true ])
+      end
+
       def fetch_first(container, keys)
         return if container.nil?
 
         keys.each do |key|
           value = fetch_value(container, key)
           return value if value.present?
+        end
+
+        nil
+      end
+
+      def fetch_first_claim(container, keys)
+        return if container.nil?
+
+        keys.each do |key|
+          value, found = fetch_claim_value(container, key)
+          return value if found
         end
 
         nil
@@ -73,6 +97,15 @@ class SsoAuthentication
         nil
       end
 
+      def fetch_claim_value(container, key)
+        return [ container[key], true ] if container.respond_to?(:key?) && container.key?(key)
+        return [ container[key], true ] if container.respond_to?(:[]) && !container[key].nil?
+
+        [ nil, false ]
+      rescue StandardError
+        [ nil, false ]
+      end
+
       def normalize_email(value)
         email = case value
         when Array
@@ -82,6 +115,19 @@ class SsoAuthentication
         end
 
         email.to_s.downcase.strip.presence
+      end
+
+      def normalize_boolean(value)
+        case value
+        when true, 1
+          true
+        when false, 0
+          false
+        when String
+          value.to_s.strip.downcase.in?(%w[ true 1 yes ])
+        else
+          nil
+        end
       end
   end
 end

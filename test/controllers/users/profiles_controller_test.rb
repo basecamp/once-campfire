@@ -38,6 +38,13 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='user[email_address]'][disabled]"
   end
 
+  test "show keeps password field for non-SSO users when password registration is disabled" do
+    with_env("DISABLE_PASSWORD_REGISTRATION" => "true") do
+      get user_profile_url
+      assert_select "input[name='user[password]']"
+    end
+  end
+
   test "update ignores SSO name and email changes" do
     sso_user = users(:sso_user)
     sso_user.update!(password: "secret123456")

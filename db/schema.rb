@@ -160,7 +160,8 @@ ActiveRecord::Schema[8.2].define(version: 2026_04_26_170000) do
     t.datetime "updated_at", null: false
     t.index ["bot_token"], name: "index_users_on_bot_token", unique: true
     t.index ["email_address"], name: "index_users_on_email_address", unique: true
-    t.index ["sso_provider", "sso_uid"], name: "index_users_on_sso_provider_and_sso_uid", unique: true, where: "sso_provider IS NOT NULL"
+    t.index ["sso_provider", "sso_uid"], name: "index_users_on_sso_provider_and_sso_uid", unique: true, where: "sso_provider IS NOT NULL AND sso_uid IS NOT NULL"
+    t.check_constraint "(sso_provider IS NULL) = (sso_uid IS NULL)", name: "users_sso_provider_uid_presence_match"
   end
 
   create_table "webhooks", force: :cascade do |t|

@@ -29,6 +29,19 @@ class OidcLogoutTest < ActiveSupport::TestCase
     assert_equal "https://chat.example.test/", params["post_logout_redirect_uri"]
   end
 
+  test "ignores non-https configured end-session endpoint" do
+    env = base_env.merge(
+      "OIDC_PROVIDERS" => "keycloak",
+      "OIDC_KEYCLOAK_END_SESSION_ENDPOINT" => "http://idp.example.test/logout"
+    )
+
+    assert_nil OidcLogout.logout_url_for(
+      strategy: "oidc",
+      post_logout_redirect_uri: "https://chat.example.test/",
+      env: env
+    )
+  end
+
   test "adds id_token_hint when provided" do
     env = base_env.merge(
       "OIDC_PROVIDERS" => "keycloak",
@@ -47,29 +60,77 @@ class OidcLogoutTest < ActiveSupport::TestCase
   end
 
   test "discovers end-session endpoint from issuer metadata when not configured" do
-    stub_request(:get, "https://idp.example.test/realms/campfire/.well-known/openid-configuration")
-      .to_return(
-        status: 200,
-        headers: { "Content-Type" => "application/json" },
-        body: { end_session_endpoint: "https://idp.example.test/discovered-logout?foo=bar" }.to_json
+    with_memory_cache do
+      stub_request(:get, "https://idp.example.test/realms/campfire/.well-known/openid-configuration")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { end_session_endpoint: "https://idp.example.test/discovered-logout?foo=bar" }.to_json
+        )
+
+      logout_url = OidcLogout.logout_url_for(
+        strategy: "oidc",
+        post_logout_redirect_uri: "https://chat.example.test/",
+        env: base_env.merge("OIDC_PROVIDERS" => "keycloak")
       )
 
-    logout_url = OidcLogout.logout_url_for(
-      strategy: "oidc",
-      post_logout_redirect_uri: "https://chat.example.test/",
-      env: base_env.merge("OIDC_PROVIDERS" => "keycloak")
-    )
+      uri = URI.parse(logout_url)
+      params = Rack::Utils.parse_nested_query(uri.query)
 
-    uri = URI.parse(logout_url)
-    params = Rack::Utils.parse_nested_query(uri.query)
+      assert_equal "https://idp.example.test/discovered-logout", "#{uri.scheme}://#{uri.host}#{uri.path}"
+      assert_equal "bar", params["foo"]
+      assert_equal "campfire", params["client_id"]
+      assert_equal "https://chat.example.test/", params["post_logout_redirect_uri"]
+    end
+  end
 
-    assert_equal "https://idp.example.test/discovered-logout", "#{uri.scheme}://#{uri.host}#{uri.path}"
-    assert_equal "bar", params["foo"]
-    assert_equal "campfire", params["client_id"]
-    assert_equal "https://chat.example.test/", params["post_logout_redirect_uri"]
+  test "ignores discovered end-session endpoint when host differs from issuer host" do
+    with_memory_cache do
+      stub_request(:get, "https://idp.example.test/realms/campfire/.well-known/openid-configuration")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { end_session_endpoint: "https://evil.example.test/discovered-logout" }.to_json
+        )
+
+      assert_nil OidcLogout.logout_url_for(
+        strategy: "oidc",
+        post_logout_redirect_uri: "https://chat.example.test/",
+        env: base_env.merge("OIDC_PROVIDERS" => "keycloak")
+      )
+    end
+  end
+
+  test "caches discovery metadata per issuer" do
+    with_memory_cache do
+      stub_request(:get, "https://idp.example.test/realms/campfire/.well-known/openid-configuration")
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { end_session_endpoint: "https://idp.example.test/discovered-logout" }.to_json
+        )
+
+      2.times do
+        OidcLogout.logout_url_for(
+          strategy: "oidc",
+          post_logout_redirect_uri: "https://chat.example.test/",
+          env: base_env.merge("OIDC_PROVIDERS" => "keycloak")
+        )
+      end
+
+      assert_requested :get, "https://idp.example.test/realms/campfire/.well-known/openid-configuration", times: 1
+    end
   end
 
   private
+    def with_memory_cache
+      original_cache = Rails.cache
+      Rails.cache = ActiveSupport::Cache::MemoryStore.new
+      yield
+    ensure
+      Rails.cache = original_cache
+    end
+
     def base_env
       {
         "OIDC_KEYCLOAK_ISSUER" => "https://idp.example.test/realms/campfire",

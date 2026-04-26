@@ -69,7 +69,7 @@
         </label>
       </div>
 
-      <% if password_registration_enabled? %>
+      <% if !@user.sso? || password_registration_enabled? %>
         <div class="flex align-center gap">
           <%= translation_button(:update_password) %>
 
