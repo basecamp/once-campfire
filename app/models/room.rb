@@ -1,4 +1,6 @@
 class Room < ApplicationRecord
+  SSO_INVITE_PURPOSE = :sso_room_invite
+
   has_many :memberships, dependent: :delete_all do
     def grant_to(users)
       room = proxy_association.owner
@@ -62,6 +64,16 @@ class Room < ApplicationRecord
 
   def default_involvement
     "mentions"
+  end
+
+  def sso_invite_token
+    signed_id(purpose: SSO_INVITE_PURPOSE)
+  end
+
+  def self.find_by_sso_invite_token(token)
+    find_signed(token, purpose: SSO_INVITE_PURPOSE)
+  rescue ActiveSupport::MessageVerifier::InvalidSignature
+    nil
   end
 
   private

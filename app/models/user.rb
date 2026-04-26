@@ -24,6 +24,10 @@ class User < ApplicationRecord
   scope :ordered, -> { order("LOWER(name)") }
   scope :filtered_by, ->(query) { where("name like ?", "%#{query}%") }
 
+  def sso?
+    sso_provider.present?
+  end
+
   def initials
     name.scan(/\b\w/).join
   end
