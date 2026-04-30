@@ -56,8 +56,13 @@ module Authentication
       redirect_to root_url if signed_in?
     end
 
-    def start_new_session_for(user)
-      user.sessions.start!(user_agent: request.user_agent, ip_address: request.remote_ip).tap do |session|
+    def start_new_session_for(user, sso_provider: nil, oidc_id_token: nil)
+      user.sessions.start!(
+        user_agent: request.user_agent,
+        ip_address: request.remote_ip,
+        sso_provider: sso_provider,
+        oidc_id_token: oidc_id_token
+      ).tap do |session|
         authenticated_as session
       end
     end

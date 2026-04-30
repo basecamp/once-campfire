@@ -9,6 +9,10 @@ Rails.application.routes.draw do
     end
   end
 
+  # OIDC callbacks (OmniAuth handles /auth/:provider request phase via middleware)
+  get  "auth/:provider/callback", to: "sso_sessions#create", as: :sso_callback
+  get  "auth/failure",            to: "sso_sessions#failure", as: :sso_failure
+
   resource :account do
     scope module: "accounts" do
       resources :users

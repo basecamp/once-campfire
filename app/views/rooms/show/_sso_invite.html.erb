@@ -1,0 +1,23 @@
+<% url = local_assigns[:room].present? ? room_url(local_assigns[:room], invite: local_assigns[:room].sso_invite_token) : root_url %>
+
+<div class="flex flex-column align-center gap">
+  <label class="flex flex-column gap full-width" style="--row-gap: 0.5em">
+    <strong id="invite_label" class="invite-label">Share to invite people</strong>
+    <span class="flex align-center gap input input--actor fill-white">
+      <%= image_tag "person-add.svg", aria: { hidden: "true" }, size: 20, class: "colorize--black" %>
+      <input type="text" class="input" id="invite_url" value="<%= url %>" aria-labelledby="invite_label" readonly>
+    </span>
+  </label>
+
+  <div class="flex align-center gap">
+    <%= button_to_copy_to_clipboard(url) do %>
+      <span class="for-screen-reader">Copy link</span>
+      <%= image_tag "copy-paste.svg", aria: { hidden: "true" }, size: 20, class: "colorize--black" %>
+    <% end %>
+
+    <%= web_share_session_button(url, "Join us on Campfire", "Sign in to join us on Campfire.") do %>
+      <span class="for-screen-reader">Share link</span>
+      <%= image_tag "share.svg", aria: { hidden: "true" }, size: 20, class: "colorize--black" %>
+    <% end %>
+  </div>
+</div>

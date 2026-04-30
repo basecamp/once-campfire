@@ -17,7 +17,13 @@ class Users::ProfilesController < ApplicationController
     end
 
     def user_params
-      params.require(:user).permit(:name, :avatar, :email_address, :password, :bio).compact
+      permitted = params.require(:user).permit(:name, :avatar, :email_address, :password, :bio).compact
+      if @user.sso?
+        permitted.delete(:password) unless helpers.password_registration_enabled?
+        permitted.delete(:name)
+        permitted.delete(:email_address)
+      end
+      permitted
     end
 
     def update_notice

@@ -9,10 +9,18 @@
           </div>
           <p>
             <strong>Welcome to Campfire</strong><br>
-            To invite people to chat, share the join link below.
+            <% if password_registration_enabled? %>
+              To invite people to chat, share the join link below.
+            <% else %>
+              To invite people to chat, share the link below. They can sign in with SSO.
+            <% end %>
           </p>
         </div>
-        <%= render "accounts/invite" %>
+        <% if password_registration_enabled? %>
+          <%= render "accounts/invite" %>
+        <% else %>
+          <%= render "rooms/show/sso_invite", room: @room %>
+        <% end %>
       </div>
     </div>
   </div>

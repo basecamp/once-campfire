@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
+ActiveRecord::Schema[8.2].define(version: 2026_04_26_170000) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -136,6 +136,8 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
     t.datetime "created_at", null: false
     t.string "ip_address"
     t.datetime "last_active_at", null: false
+    t.text "oidc_id_token"
+    t.string "sso_provider"
     t.string "token", null: false
     t.datetime "updated_at", null: false
     t.string "user_agent"
@@ -152,10 +154,14 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
     t.string "name", null: false
     t.string "password_digest"
     t.integer "role", default: 0, null: false
+    t.string "sso_provider"
+    t.string "sso_uid"
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
     t.index ["bot_token"], name: "index_users_on_bot_token", unique: true
     t.index ["email_address"], name: "index_users_on_email_address", unique: true
+    t.index ["sso_provider", "sso_uid"], name: "index_users_on_sso_provider_and_sso_uid", unique: true, where: "sso_provider IS NOT NULL AND sso_uid IS NOT NULL"
+    t.check_constraint "(sso_provider IS NULL) = (sso_uid IS NULL)", name: "users_sso_provider_uid_presence_match"
   end
 
   create_table "webhooks", force: :cascade do |t|

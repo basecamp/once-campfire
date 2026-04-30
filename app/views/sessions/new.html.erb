@@ -5,33 +5,96 @@
   <div class="panel <%= "shake" if flash[:alert] %>">
     <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
 
-    <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
-      <fieldset class="flex flex-column gap center-block upad">
-        <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
+    <% if flash[:alert] %>
+      <p class="txt-small txt-negative pad-inline" role="alert"><%= flash[:alert] %></p>
+    <% end %>
 
-        <div class="flex align-center gap">
-          <%= translation_button(:email_address) %>
-          <label class="flex align-center gap input input--actor txt-large">
-            <%= form.email_field :email_address, required: true, class: "input", autofocus: true, autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
-            <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
-          </label>
-        </div>
+    <% if sso_enabled? && !password_registration_enabled? %>
+      <%# SSO-first layout: SSO buttons prominent, password form collapsed %>
+      <div class="flex flex-column gap center-block upad">
+        <strong class="txt-large txt-align-center"><%= Current.account.name %></strong>
 
-        <div class="flex align-center gap">
-          <%= translation_button(:password) %>
-          <label class="flex align-center gap input input--actor txt-large">
-            <%= form.password_field :password, required: true, class: "input", autocomplete: "current-password", placeholder: "Enter your password", maxlength: 72 %>
-            <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
-          </label>
-        </div>
-
-        <%= form.button class: "btn btn--reversed center txt-large", type: "submit", name: "log_in" do %>
-          <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
-          <span class="for-screen-reader">Go</span>
+        <% oidc_providers.each do |provider| %>
+          <%= form_with url: "/auth/#{provider.fetch(:strategy)}", data: { turbo: false } do %>
+            <button type="submit" class="btn btn--reversed center txt-large">Sign in with <%= provider.fetch(:display_name) %></button>
+          <% end %>
         <% end %>
-      </fieldset>
+      </div>
+
+      <details class="margin-block-start">
+        <summary class="btn txt-small txt-subtle center">Sign in with email and password</summary>
+        <div class="margin-block-start">
+          <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
+            <fieldset class="flex flex-column gap center-block upad">
+              <div class="flex align-center gap">
+                <%= translation_button(:email_address) %>
+                <label class="flex align-center gap input input--actor txt-large">
+                  <%= form.email_field :email_address, required: true, class: "input", autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
+                  <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+                </label>
+              </div>
+
+              <div class="flex align-center gap">
+                <%= translation_button(:password) %>
+                <label class="flex align-center gap input input--actor txt-large">
+                  <%= form.password_field :password, required: true, class: "input", autocomplete: "current-password", placeholder: "Enter your password", maxlength: 72 %>
+                  <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+                </label>
+              </div>
+
+              <%= form.button class: "btn btn--reversed center txt-large", type: "submit", name: "log_in" do %>
+                <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
+                <span class="for-screen-reader">Go</span>
+              <% end %>
+            </fieldset>
+          <% end %>
+        </div>
+      </details>
+
+    <% else %>
+      <%# Default layout: password form first, SSO below %>
+      <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
+        <fieldset class="flex flex-column gap center-block upad">
+          <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
+
+          <div class="flex align-center gap">
+            <%= translation_button(:email_address) %>
+            <label class="flex align-center gap input input--actor txt-large">
+              <%= form.email_field :email_address, required: true, class: "input", autofocus: true, autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
+              <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+            </label>
+          </div>
+
+          <div class="flex align-center gap">
+            <%= translation_button(:password) %>
+            <label class="flex align-center gap input input--actor txt-large">
+              <%= form.password_field :password, required: true, class: "input", autocomplete: "current-password", placeholder: "Enter your password", maxlength: 72 %>
+              <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+            </label>
+          </div>
+
+          <%= form.button class: "btn btn--reversed center txt-large", type: "submit", name: "log_in" do %>
+            <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
+            <span class="for-screen-reader">Go</span>
+          <% end %>
+        </fieldset>
+      <% end %>
     <% end %>
   </div>
+
+  <% if sso_enabled? && password_registration_enabled? %>
+    <div class="panel margin-block">
+      <div class="flex flex-column gap center-block upad">
+        <strong class="txt-large txt-align-center">Or sign in with</strong>
+
+        <% oidc_providers.each do |provider| %>
+          <%= form_with url: "/auth/#{provider.fetch(:strategy)}", data: { turbo: false } do %>
+            <button type="submit" class="btn btn--reversed center txt-large"><%= provider.fetch(:display_name) %></button>
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
 
   <%= render "accounts/help_contact" %>
 </section>

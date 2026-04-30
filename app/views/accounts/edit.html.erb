@@ -94,9 +94,13 @@
   <% end %>
 
   <div class="margin-block pad-inline pad-block-start fill-shade border-radius">
-    <%= render "accounts/invite" %>
-
-    <hr class="margin-block separator full-width" style="--border-style: solid">
+    <% if password_registration_enabled? %>
+      <%= render "accounts/invite" %>
+      <hr class="margin-block separator full-width" style="--border-style: solid">
+    <% elsif sso_enabled? %>
+      <%= render "rooms/show/sso_invite" %>
+      <hr class="margin-block separator full-width" style="--border-style: solid">
+    <% end %>
 
     <menu class="flex flex-column gap margin-none pad">
       <turbo-frame id="account_users">

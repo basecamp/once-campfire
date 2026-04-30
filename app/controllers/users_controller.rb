@@ -2,6 +2,7 @@ class UsersController < ApplicationController
   require_unauthenticated_access only: %i[ new create ]
 
   before_action :set_user, only: :show
+  before_action :ensure_password_registration_enabled, only: %i[ new create ]
   before_action :verify_join_code, only: %i[ new create ]
 
   def new
@@ -22,6 +23,12 @@ class UsersController < ApplicationController
   private
     def set_user
       @user = User.find(params[:id])
+    end
+
+    def ensure_password_registration_enabled
+      unless helpers.password_registration_enabled?
+        redirect_to new_session_url, alert: "Sign in with your SSO provider to join."
+      end
     end
 
     def verify_join_code
