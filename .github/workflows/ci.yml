@@ -201,4 +201,4 @@ jobs:
           bundler-cache: true
 
       - name: Run tests
-        run: bin/rails db:setup test:system\n
+        run: bin/rails db:setup test:system
