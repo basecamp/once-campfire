@@ -31,15 +31,18 @@ class PresenceChannel < RoomChannel
     end
 
     def broadcast_direct_room_presence
-      direct_room_memberships_for_current_user.each do |direct_room_membership|
-        direct_room = direct_room_membership.room
+      direct_room_ids = direct_room_ids_for_current_user
+      return if direct_room_ids.empty?
 
-        direct_room.memberships.includes(:room, :user).find_each do |room_membership|
-          room_membership.broadcast_replace_to room_membership.user, :rooms,
-            target: [ direct_room, :list ],
-            partial: "users/sidebars/rooms/direct",
-            locals: { membership: room_membership }
-        end
+      direct_room_memberships = Membership.where(room_id: direct_room_ids).includes(:user, :room)
+      direct_user_ids = direct_room_memberships.map(&:user_id).uniq
+      online_user_lookup = Membership.online_user_lookup(direct_user_ids)
+
+      direct_room_memberships.each do |room_membership|
+        room_membership.broadcast_replace_to room_membership.user, :rooms,
+          target: [ room_membership.room, :list ],
+          partial: "users/sidebars/rooms/direct",
+          locals: { membership: room_membership, online_user_lookup: online_user_lookup }
       end
     end
 
@@ -51,10 +54,11 @@ class PresenceChannel < RoomChannel
       current_user.slice(:id, :name)
     end
 
-    def direct_room_memberships_for_current_user
+    def direct_room_ids_for_current_user
       current_user.memberships
         .joins(:room)
         .merge(Room.directs)
-        .includes(room: :memberships)
+        .distinct
+        .pluck(:room_id)
     end
 end

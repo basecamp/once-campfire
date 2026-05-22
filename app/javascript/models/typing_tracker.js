@@ -50,7 +50,7 @@ export default class TypingTracker {
     }
 
     const otherCount = names.length - 2
-    const otherLabel = otherCount === 1 ? 'other' : 'others'
+    const otherLabel = otherCount === 1 ? "other" : "others"
 
     return `${names[0]}, ${names[1]}, and ${otherCount} ${otherLabel} are typing...`
   }
