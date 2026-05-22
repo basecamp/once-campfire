@@ -48,4 +48,25 @@ class PresenceChannelTest < ActionCable::Channel::TestCase
       unsubscribe
     end
   end
+
+  test "subscribing to a direct room updates direct room entries for all room members" do
+    room = rooms(:david_and_jason)
+    jason_rooms_stream = Turbo::StreamsChannel.send(:stream_name_from, [ users(:jason), :rooms ])
+
+    assert_broadcasts jason_rooms_stream, 1 do
+      subscribe room_id: room.id
+    end
+  end
+
+  test "subscribing to any room updates direct room entries for direct chat members" do
+    room = rooms(:designers)
+    jason_rooms_stream = Turbo::StreamsChannel.send(:stream_name_from, [ users(:jason), :rooms ])
+    kevin_rooms_stream = Turbo::StreamsChannel.send(:stream_name_from, [ users(:kevin), :rooms ])
+
+    assert_broadcasts jason_rooms_stream, 1 do
+      assert_broadcasts kevin_rooms_stream, 1 do
+        subscribe room_id: room.id
+      end
+    end
+  end
 end

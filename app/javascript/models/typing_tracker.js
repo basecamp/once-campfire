@@ -27,7 +27,7 @@ export default class TypingTracker {
     const names = Object.keys(this.currentlyTyping).sort()
 
     if (names.length > 0) {
-      this.callback(`${names.join(", ")}`)
+      this.callback(this.#typingMessage(names))
     } else {
       this.callback(null)
     }
@@ -38,5 +38,17 @@ export default class TypingTracker {
     this.currentlyTyping = Object.fromEntries(
       Object.entries(this.currentlyTyping).filter(([_name, timestamp]) => timestamp > cutoff)
    )
+  }
+
+  #typingMessage(names) {
+    if (names.length === 1) {
+      return `${names[0]} is typing...`
+    }
+
+    if (names.length === 2) {
+      return `${names[0]} and ${names[1]} are typing...`
+    }
+
+    return `${names[0]}, ${names[1]}, and ${names.length - 2} others are typing...`
   }
 }

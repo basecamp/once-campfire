@@ -2,6 +2,12 @@ module SystemTestHelper
   def sign_in(email_address, password = "secret123456")
     visit root_url
 
+    unless page.has_field?("email_address", wait: 2)
+      if page.has_css?("summary", text: "Sign in with email and password", wait: 2)
+        find("summary", text: "Sign in with email and password").click
+      end
+    end
+
     fill_in "email_address", with: email_address
     fill_in "password", with: password
 
