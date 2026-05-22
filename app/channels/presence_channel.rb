@@ -34,8 +34,9 @@ class PresenceChannel < RoomChannel
       direct_room_ids = direct_room_ids_for_current_user
       return if direct_room_ids.empty?
 
-      direct_room_memberships = Membership.where(room_id: direct_room_ids).includes(:user, :room)
-      direct_user_ids = direct_room_memberships.map(&:user_id).uniq
+      direct_room_membership_scope = Membership.where(room_id: direct_room_ids)
+      direct_room_memberships = direct_room_membership_scope.includes(:user, :room)
+      direct_user_ids = direct_room_membership_scope.distinct.pluck(:user_id)
       online_user_lookup = Membership.online_user_lookup(direct_user_ids)
 
       direct_room_memberships.each do |room_membership|
