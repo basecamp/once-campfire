@@ -20,7 +20,8 @@
         <% end %>
 
         <div id="direct_rooms" contents data-controller="sorted-list" data-action="rooms-list:unread@window->sorted-list#updateItem">
-          <%= render partial: "users/sidebars/rooms/direct", collection: @direct_memberships, as: :membership, cached: true %>
+          <%= render partial: "users/sidebars/rooms/direct", collection: @direct_memberships, as: :membership, cached: true,
+            locals: { online_user_lookup: @direct_online_user_lookup } %>
         </div>
 
         <div contents>
