@@ -39,6 +39,32 @@
   }
 }
 
+.avatar--presence {
+  position: relative;
+}
+
+.avatar--presence::before {
+  --presence-size: max(0.72em, 8px);
+
+  aspect-ratio: 1;
+  border: 2px solid var(--color-bg);
+  border-radius: 999px;
+  content: "";
+  inline-size: var(--presence-size);
+  inset: auto 0 0 auto;
+  position: absolute;
+  transform: translate(10%, 10%);
+  z-index: 1;
+}
+
+.avatar--online::before {
+  background-color: var(--color-positive);
+}
+
+.avatar--offline::before {
+  background-color: var(--color-border-darker);
+}
+
 .avatar--icon {
   border: 1px solid var(--color-border-darker);
   background-color: var(--color-text-reversed);

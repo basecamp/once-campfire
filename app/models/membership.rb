@@ -14,6 +14,13 @@ class Membership < ApplicationRecord
   scope :visible, -> { where.not(involvement: :invisible) }
   scope :unread,  -> { where.not(unread_at: nil) }
 
+  def self.online_user_lookup(user_ids = nil)
+    relation = connected.distinct
+    relation = relation.where(user_id: user_ids) if user_ids
+
+    relation.pluck(:user_id).index_with(true)
+  end
+
   def read
     update!(unread_at: nil)
   end

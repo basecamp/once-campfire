@@ -24,8 +24,11 @@ class Rooms::DirectsController < RoomsController
     end
 
     def broadcast_create_room(room)
+      online_user_lookup = Membership.online_user_lookup(room.memberships.pluck(:user_id))
+
       room.memberships.each do |membership|
-        membership.broadcast_prepend_to membership.user, :rooms, target: :direct_rooms, partial: "users/sidebars/rooms/direct"
+        membership.broadcast_prepend_to membership.user, :rooms, target: :direct_rooms, partial: "users/sidebars/rooms/direct",
+          locals: { membership: membership, online_user_lookup: online_user_lookup }
       end
     end
 

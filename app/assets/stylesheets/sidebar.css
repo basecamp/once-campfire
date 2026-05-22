@@ -192,6 +192,13 @@
   }
 }
 
+.direct__presence {
+  color: var(--color-border-darker);
+  line-height: 1;
+  margin-block-start: 0.15rem;
+  text-transform: lowercase;
+}
+
 /* Rooms */
 .rooms {
   --column-gap: 0.5em;
