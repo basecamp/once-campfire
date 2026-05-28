@@ -42,3 +42,8 @@ app/assets/builds/*
 
 # Ignore our exported zipfiles
 /*.zip
+
+# Kamal — only `.kamal/secrets` (a reference-only file) is tracked. Anything
+# else under .kamal/ is transient deploy state (locks, bundles, host caches).
+/.kamal/*
+!/.kamal/secrets

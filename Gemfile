@@ -52,6 +52,11 @@ group :development, :test do
   gem "brakeman", require: false
 end
 
+group :development do
+  # Deploy this application anywhere as a SSL-enabled Docker container with Kamal.
+  gem "kamal", require: false
+end
+
 group :test do
   gem "capybara"
   gem "mocha"

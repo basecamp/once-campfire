@@ -1,0 +1,88 @@
+# Name of your application. Used to uniquely configure containers.
+service: campfire
+
+# Container image used by the app. Pre-built by .github/workflows/publish-image.yml
+# and pushed to GHCR. Change the registry/path if you fork to a different namespace.
+image: leegeng/once-campfire
+
+# Deploy to these servers. Replace with your host's public IP or DNS name.
+servers:
+  web:
+    - REPLACE_WITH_SERVER_IP
+
+# Kamal Proxy (kamal-proxy) terminates TLS and handles zero-downtime cutovers.
+# Set `host` to the domain that resolves to the server above. SSL provisioning
+# uses Let's Encrypt automatically once the DNS record is in place.
+#
+# Campfire's image ships with Thruster (the `thrust` wrapper around Puma), which
+# can also terminate SSL on its own. We disable that path here (DISABLE_SSL=1 in
+# env.clear below) and let kamal-proxy front the app on port 80 internally.
+proxy:
+  ssl: true
+  host: REPLACE_WITH_DOMAIN
+  app_port: 80
+  healthcheck:
+    path: /up
+    interval: 3
+    timeout: 30
+
+# Registry credentials. Using GitHub Container Registry (GHCR) so the prebuilt
+# image from publish-image.yml can be reused. To push from a local Kamal build,
+# the token needs `write:packages`; to only pull, `read:packages` is enough.
+registry:
+  server: ghcr.io
+  username: leegeng
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# Inject env vars into the running container.
+#   secret -> read from .kamal/secrets (or the host env), never committed
+#   clear  -> committed in this file, safe to share
+env:
+  secret:
+    - RAILS_MASTER_KEY
+    - SECRET_KEY_BASE
+    - VAPID_PUBLIC_KEY
+    - VAPID_PRIVATE_KEY
+    - SENTRY_DSN
+  clear:
+    # Let kamal-proxy handle SSL; Thruster speaks plain HTTP on :80.
+    DISABLE_SSL: "true"
+    # Stream Rails logs to STDOUT so `kamal app logs` works without extra setup.
+    RAILS_LOG_TO_STDOUT: "true"
+    # Production defaults — adjust if your server has more CPU/RAM.
+    WEB_CONCURRENCY: "2"
+    RAILS_MAX_THREADS: "5"
+
+# Persist SQLite database, uploads, and Let's Encrypt state across container
+# restarts and redeploys. The image expects everything writable under /rails/storage.
+volumes:
+  - "campfire_storage:/rails/storage"
+
+# Build configuration. Skip if you only want to deploy the prebuilt GHCR image
+# (run `kamal deploy --skip-push` in that case).
+builder:
+  arch: amd64
+  # Uncomment to also build arm64 (slower locally, useful for ARM servers):
+  # arch:
+  #   - amd64
+  #   - arm64
+
+# Use accessory containers (Postgres, Redis, ...) here if you ever split storage
+# out of the single Campfire container. Not needed for the default setup —
+# Campfire bundles SQLite + Redis + Resque + Puma + Thruster in one image.
+# accessories:
+#   db:
+#     image: postgres:16
+#     ...
+
+# Run kamal commands as a non-root user on the target server.
+# ssh:
+#   user: deploy
+
+# Aliases for common one-off commands.
+aliases:
+  console: app exec --interactive --reuse "bin/rails console"
+  shell: app exec --interactive --reuse "bash"
+  logs: app logs -f
+  dbc: app exec --interactive --reuse "bin/rails dbconsole"

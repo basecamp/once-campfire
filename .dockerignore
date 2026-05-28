@@ -35,6 +35,7 @@
 /bin/deploy
 /bin/deploy-*
 /bin/release
+/.kamal
 
 # Ignore master.key (should be set in environment)
 /config/master.key
