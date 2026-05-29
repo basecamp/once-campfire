@@ -1,0 +1,22 @@
+<turbo-frame id="<%= dom_id(@message, :edit) %>">
+  <div class="message__body position-relative" data-controller="scroll-into-view">
+    <div class="message__body-content message__body-content--editing poll-editor-message gap border">
+      <%= render "polls/editor",
+            title: "Edit poll",
+            poll: @poll,
+            room: @message.room,
+            url: message_poll_path(@message),
+            method: :patch,
+            submit_label: "Save poll",
+            cancel_link: link_to("Cancel", room_message_path(@message.room, @message), class: "btn", data: { turbo_frame: dom_id(@message, :edit) }),
+            inline: true %>
+    </div>
+
+    <div class="message__actions flex flex-wrap">
+      <%= link_to room_message_path(@message.room, @message), class: "message__action-btn message__edit-close-btn txt-small btn btn--borderless" do %>
+        <%= image_tag "remove.svg", class: "colorize--black", aria: { hidden: "true" } %>
+        <span class="for-screen-reader">Close editor and discard changes</span>
+      <% end %>
+    </div>
+  </div>
+</turbo-frame>

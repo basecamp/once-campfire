@@ -1,0 +1,74 @@
+<%= form_with model: poll, url: url, method: method, class: "poll-form flex flex-column gap", data: {
+      controller: "poll-form poll-options",
+      action: "submit->poll-form#validate submit->poll-options#normalizePositions",
+      poll_form_max_question_length_value: Poll::QUESTION_MAX_LENGTH,
+      poll_options_min_value: Poll::MIN_OPTIONS,
+      poll_options_max_value: Poll::MAX_OPTIONS
+    } do |form| %>
+  <%= fields_for :message do |message_fields| %>
+    <%= message_fields.hidden_field :client_message_id, value: client_message_id unless poll.persisted? %>
+  <% end %>
+
+  <% structure_editable = poll.structure_editable? %>
+  <% unless structure_editable %>
+    <p class="txt-small colorize--grey margin-none">Voting has started, so only the question can be edited.</p>
+  <% end %>
+
+  <div class="composer--edit composer--rich-text">
+    <label class="txt-small">Question</label>
+    <%= form.rich_text_area :question,
+          aria: { label: "Poll question" },
+          data: {
+            poll_form_target: "question",
+            controller: "rich-autocomplete",
+            action: rich_text_data_actions,
+            rich_autocomplete_url_value: autocompletable_users_path(room_id: room.id),
+            permitted_attachment_types: "application/vnd.actiontext.opengraph-embed" } %>
+    <p class="txt-small colorize--grey margin-none">Max <%= Poll::QUESTION_MAX_LENGTH %> characters.</p>
+    <p class="txt-small txt-negative margin-none" data-poll-form-target="error" role="alert" hidden></p>
+  </div>
+
+  <div data-poll-options-target="list" class="flex flex-column gap">
+    <% poll.options.each_with_index do |option, index| %>
+      <%= form.fields_for :options, option, child_index: index do |option_fields| %>
+        <div data-poll-options-target="row" class="flex align-center gap poll-form__option-row">
+          <%= option_fields.hidden_field :id if option.persisted? %>
+          <%= option_fields.hidden_field :_destroy, value: "0", data: { poll_options_destroy: true } if option.persisted? %>
+          <%= option_fields.hidden_field :position, value: index, data: { poll_options_position: true } %>
+          <%= option_fields.text_field :body, required: true, maxlength: Poll::OPTION_MAX_LENGTH, class: "input poll-form__option-input", placeholder: "Option #{index + 1}", disabled: !structure_editable %>
+          <% if structure_editable %>
+            <button type="button" class="btn poll-form__remove-option" data-poll-options-remove="true" data-action="poll-options#remove">Remove</button>
+          <% end %>
+        </div>
+      <% end %>
+    <% end %>
+  </div>
+
+  <template data-poll-options-target="template">
+    <div data-poll-options-target="row" class="flex align-center gap poll-form__option-row">
+      <input type="hidden" name="poll[options_attributes][__INDEX__][position]" value="0" data-poll-options-position="true">
+      <input type="text" name="poll[options_attributes][__INDEX__][body]" required maxlength="<%= Poll::OPTION_MAX_LENGTH %>" class="input poll-form__option-input" placeholder="Option">
+      <button type="button" class="btn poll-form__remove-option" data-poll-options-remove="true" data-action="poll-options#remove">Remove</button>
+    </div>
+  </template>
+
+  <% if structure_editable %>
+    <button type="button" class="btn" data-poll-options-target="addButton" data-action="poll-options#add">Add option</button>
+  <% else %>
+    <span data-poll-options-target="addButton" hidden></span>
+  <% end %>
+
+  <label class="flex align-center gap" for="poll_multi_select">
+    <span class="switch">
+      <%= form.hidden_field :multi_select, value: "0" %>
+      <%= form.check_box :multi_select, { class: "switch__input", include_hidden: false, disabled: !structure_editable }, "1", "0" %>
+      <span class="switch__btn round"></span>
+    </span>
+    <span>Allow multiple choices</span>
+  </label>
+
+  <div class="flex gap">
+    <%= form.submit submit_label, class: "btn btn--reversed" %>
+    <%= cancel_link %>
+  </div>
+<% end %>

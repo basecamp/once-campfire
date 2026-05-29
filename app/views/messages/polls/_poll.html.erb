@@ -1,0 +1,7 @@
+<div class="poll">
+  <div class="poll__question">
+    <%= auto_link h(ContentFilters::TextMessagePresentationFilters.apply(poll.question.body)), html: { target: "_blank" } %>
+  </div>
+  <%= render "messages/polls/results", poll: poll, voter: Current.user %>
+  <%= render "messages/polls/ballot", poll: poll, voter: Current.user %>
+</div>
