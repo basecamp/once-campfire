@@ -1,0 +1,5 @@
+<%= button_tag class: "btn btn--negative", type: "submit", form: dom_id(message, :delete_form),
+      data: { turbo_confirm: "Are you sure you want to delete this poll?" } do %>
+  <%= image_tag "trash.svg", aria: { hidden: "true" } %>
+  <span class="for-screen-reader">Delete poll</span>
+<% end %>

@@ -50,6 +50,38 @@ class Messages::PollsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Ready?", @poll.reload.question_plain_text
   end
 
+  test "edit renders delete-only management when closed" do
+    @poll.close!
+
+    get edit_message_poll_url(@message)
+
+    assert_response :success
+    assert_select "h2", text: "Manage poll"
+    assert_select "form[action='#{room_message_path(@message.room, @message)}']"
+    assert_select "button", text: /Delete poll|/
+  end
+
+  test "delete poll destroys message and poll" do
+    assert_difference -> { Message.count }, -1 do
+      assert_difference -> { Poll.count }, -1 do
+        delete room_message_url(@message.room, @message, format: :turbo_stream)
+        assert_response :success
+      end
+    end
+  end
+
+  test "delete closed poll with votes destroys message and poll" do
+    @poll.votes.create!(poll_option: @poll.options.first, voter: users(:david))
+    @poll.close!
+
+    assert_difference -> { Message.count }, -1 do
+      assert_difference -> { Poll.count }, -1 do
+        delete room_message_url(@message.room, @message, format: :turbo_stream)
+        assert_response :success
+      end
+    end
+  end
+
   test "close closes poll when user can administer" do
     patch close_message_poll_url(@message, format: :turbo_stream)
 

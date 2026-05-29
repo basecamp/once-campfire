@@ -66,8 +66,11 @@
     <span>Allow multiple choices</span>
   </label>
 
-  <div class="flex gap">
-    <%= form.submit submit_label, class: "btn btn--reversed" %>
-    <%= cancel_link %>
+  <div class="message__edit-btns flex align-center justify-space-between gap full-width pad-block-start-half">
+    <span class="flex gap">
+      <%= form.submit submit_label, class: "btn btn--reversed" %>
+      <%= cancel_link %>
+    </span>
+    <%= delete_button %>
   </div>
 <% end %>

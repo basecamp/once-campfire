@@ -51,9 +51,9 @@
           <%= image_tag "link.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
         <% end %>
 
-        <% if message.poll&.open? %>
+        <% if message.content_type.poll? %>
           <%= link_to edit_message_poll_path(message), class: "btn message__action-btn center full-width message__edit-btn",
-                data: { turbo_frame: dom_id(message, :edit), poll_actions_target: "adminAction" }, hidden: true, title: "Edit poll", aria: { label: "Edit poll" } do %>
+                data: { turbo_frame: dom_id(message, :edit), poll_actions_target: "adminAction" }, hidden: true, title: "Manage poll", aria: { label: "Manage poll" } do %>
             <%= image_tag "pencil.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
           <% end %>
         <% end %>

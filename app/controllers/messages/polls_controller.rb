@@ -6,7 +6,6 @@ class Messages::PollsController < ApplicationController
 
   def edit
     @poll = @message.poll
-    head :unprocessable_entity unless @poll.open?
   end
 
   def update

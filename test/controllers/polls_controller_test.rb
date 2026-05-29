@@ -113,7 +113,7 @@ class PollsControllerTest < ActionDispatch::IntegrationTest
 
     follow_redirect!
 
-    assert_select "a[aria-label='Edit poll'][hidden][data-poll-actions-target='adminAction']"
+    assert_select "a[aria-label='Manage poll'][hidden][data-poll-actions-target='adminAction']"
     assert_select "form[action='#{close_message_poll_path(Message.last)}'][hidden][data-poll-actions-target='adminAction']"
   end
 
