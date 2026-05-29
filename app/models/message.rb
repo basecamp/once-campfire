@@ -5,6 +5,8 @@ class Message < ApplicationRecord
   belongs_to :creator, class_name: "User", default: -> { Current.user }
 
   has_many :boosts, dependent: :destroy
+  has_one :poll, dependent: :destroy
+  validates_associated :poll
 
   has_rich_text :body
 
@@ -19,8 +21,10 @@ class Message < ApplicationRecord
       .includes(attachment_blob: :variant_records)
   }
   scope :with_boosts, -> { includes(boosts: :booster) }
+  scope :with_poll, -> { includes(poll: { options: { votes: :voter } }) }
 
   def plain_text_body
+    return poll.question_plain_text if poll.present?
     body.to_plain_text.presence || attachment&.filename&.to_s || ""
   end
 
@@ -31,6 +35,7 @@ class Message < ApplicationRecord
   def content_type
     case
     when attachment?    then "attachment"
+    when poll.present?  then "poll"
     when sound.present? then "sound"
     else                     "text"
     end.inquiry
