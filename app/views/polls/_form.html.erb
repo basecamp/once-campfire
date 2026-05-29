@@ -60,8 +60,7 @@
 
   <label class="flex align-center gap" for="poll_multi_select">
     <span class="switch">
-      <%= form.hidden_field :multi_select, value: "0" %>
-      <%= form.check_box :multi_select, { class: "switch__input", include_hidden: false, disabled: !structure_editable }, "1", "0" %>
+      <%= form.check_box :multi_select, { class: "switch__input", disabled: !structure_editable }, "1", "0" %>
       <span class="switch__btn round"></span>
     </span>
     <span>Allow multiple choices</span>

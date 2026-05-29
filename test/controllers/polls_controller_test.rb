@@ -30,6 +30,22 @@ class PollsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "poll-client-id", Message.last.client_message_id
   end
 
+  test "create multi-select poll" do
+    post room_polls_url(@room), params: {
+      poll: {
+        question: "Pick any?",
+        multi_select: "1",
+        options_attributes: {
+          "0" => { body: "A", position: 0 },
+          "1" => { body: "B", position: 1 }
+        }
+      }
+    }
+
+    assert_redirected_to room_url(@room)
+    assert_predicate Poll.last, :multi_select?
+  end
+
   test "new poll renders as a full page" do
     get new_room_poll_url(@room)
 
