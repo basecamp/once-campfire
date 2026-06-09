@@ -48,6 +48,7 @@ gem "thruster"
 group :development, :test do
   gem "debug"
   gem "rubocop-rails-omakase", require: false
+  gem "bundler-audit", require: false
   gem "faker", require: false
   gem "brakeman", require: false
 end
