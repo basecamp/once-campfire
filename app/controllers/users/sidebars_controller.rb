@@ -16,7 +16,7 @@ class Users::SidebarsController < ApplicationController
 
     def find_direct_placeholder_users
       exclude_user_ids = user_ids_already_in_direct_rooms_with_current_user.including(Current.user.id)
-      User.active.where.not(id: exclude_user_ids).order(:created_at).limit([DIRECT_PLACEHOLDERS - exclude_user_ids.count, 0].max)
+      User.active.where.not(id: exclude_user_ids).order(:created_at).limit([ DIRECT_PLACEHOLDERS - exclude_user_ids.count, 0 ].max)
     end
 
     def user_ids_already_in_direct_rooms_with_current_user
