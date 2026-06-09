@@ -60,7 +60,10 @@ echo
 if command -v brew &>/dev/null; then
   step "Installing packages" brew install sqlite ffmpeg mise
 elif command -v pacman &>/dev/null; then
-  step "Installing packages" sudo pacman -S --noconfirm --needed sqlite ffmpeg mise
+  packages=(sqlite ffmpeg mise)
+  if ! pacman -Q "${packages[@]}" >/dev/null 2>&1; then
+    step "Installing packages" sudo pacman -S --noconfirm --needed "${packages[@]}"
+  fi
 elif command -v apt &>/dev/null; then
   step "Installing packages" sudo apt-get install --no-install-recommends -y libsqlite3-0 ffmpeg
 fi
