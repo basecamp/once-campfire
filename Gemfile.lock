@@ -308,7 +308,7 @@ GEM
     resque-pool (0.7.1)
       rake (>= 10.0, < 14.0)
       resque (>= 1.22, < 3)
-    rexml (3.4.1)
+    rexml (3.4.4)
     rqrcode (3.2.0)
       chunky_png (~> 1.0)
       rqrcode_core (~> 2.0)
