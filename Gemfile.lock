@@ -259,7 +259,7 @@ GEM
       date
       stringio
     public_suffix (6.0.2)
-    puma (6.6.1)
+    puma (7.2.1)
       nio4r (~> 2.0)
     racc (1.8.1)
     rack (3.2.6)
@@ -429,7 +429,7 @@ DEPENDENCIES
   ostruct
   platform_agent
   propshaft!
-  puma (~> 6.6)
+  puma (~> 7.2, >= 7.2.1)
   rails!
   rails_autolink
   redis (~> 5.4)

@@ -12,7 +12,7 @@ gem "sqlite3"
 gem "redis", "~> 5.4"
 
 # Deployment
-gem "puma", "~> 6.6"
+gem "puma", "~> 7.2", ">= 7.2.1"
 
 # Jobs
 gem "resque", "~> 2.7.0"
