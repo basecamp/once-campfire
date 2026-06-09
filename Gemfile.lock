@@ -165,7 +165,10 @@ GEM
     erubi (1.13.1)
     faker (3.5.2)
       i18n (>= 1.8.11, < 2)
-    ffi (1.17.2)
+    ffi (1.17.2-aarch64-linux-gnu)
+    ffi (1.17.2-arm64-darwin)
+    ffi (1.17.2-x86_64-darwin)
+    ffi (1.17.2-x86_64-linux-gnu)
     geared_pagination (1.2.0)
       activesupport (>= 5.0)
       addressable (>= 2.5.0)
@@ -209,7 +212,6 @@ GEM
     mini_magick (5.3.1)
       logger
     mini_mime (1.1.5)
-    mini_portile2 (2.8.9)
     minitest (5.26.2)
     mocha (2.7.1)
       ruby2_keywords (>= 0.0.5)
@@ -229,8 +231,13 @@ GEM
     net-smtp (0.5.1)
       net-protocol
     nio4r (2.7.5)
-    nokogiri (1.18.10)
-      mini_portile2 (~> 2.8.2)
+    nokogiri (1.18.10-aarch64-linux-gnu)
+      racc (~> 1.4)
+    nokogiri (1.18.10-arm64-darwin)
+      racc (~> 1.4)
+    nokogiri (1.18.10-x86_64-darwin)
+      racc (~> 1.4)
+    nokogiri (1.18.10-x86_64-linux-gnu)
       racc (~> 1.4)
     openssl (3.3.0)
     ostruct (0.6.3)
@@ -357,8 +364,10 @@ GEM
       rack-protection (= 4.1.1)
       rack-session (>= 2.0.0, < 3)
       tilt (~> 2.0)
-    sqlite3 (2.7.3)
-      mini_portile2 (~> 2.8.0)
+    sqlite3 (2.7.3-aarch64-linux-gnu)
+    sqlite3 (2.7.3-arm64-darwin)
+    sqlite3 (2.7.3-x86_64-darwin)
+    sqlite3 (2.7.3-x86_64-linux-gnu)
     stimulus-rails (1.3.4)
       railties (>= 6.0.0)
     stringio (3.1.8)
@@ -435,4 +444,4 @@ DEPENDENCIES
   webmock
 
 BUNDLED WITH
-   2.5.9
+   4.0.13
