@@ -134,7 +134,7 @@ GEM
       public_suffix (>= 2.0.2, < 8.0)
     ast (2.4.3)
     base64 (0.3.0)
-    bcrypt (3.1.20)
+    bcrypt (3.1.22)
     benchmark (0.5.0)
     bigdecimal (3.3.1)
     brakeman (8.0.4)
