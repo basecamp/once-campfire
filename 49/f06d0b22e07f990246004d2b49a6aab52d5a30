@@ -1,0 +1,21 @@
+config/initializers/active_storage.rb
+  s_fc1e0d66b656e1::t_82754c83485d86 20-30
+test/controllers/active_storage/direct_uploads_controller_test.rb
+  s_fc1e0d66b656e1::t_7343d8cf5bbbee 30-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "49f06d0b22e07f990246004d2b49a6aab52d5a30",
+  "prompts": {},
+  "sessions": {
+    "s_fc1e0d66b656e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e1704c8-8803-4955-acc0-626b24fa8e6e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
