@@ -17,5 +17,15 @@ ActiveSupport.on_load(:active_storage_blob) do
 
   ActiveStorage::DiskController.include Rails.application.routes.url_helpers
   ActiveStorage::DiskController.include Authentication
-  ActiveStorage::DiskController.skip_before_action :require_authentication, :deny_bots, only: :show
+
+  # Blob serving (#show) stays public so signed-token attachment URLs keep
+  # resolving for unauthenticated and bot clients alike.
+  ActiveStorage::DiskController.allow_unauthenticated_access only: :show
+  ActiveStorage::DiskController.allow_bot_access only: :show
+
+  # Including Authentication re-adds protect_from_forgery, but Active Storage's
+  # direct-upload service PUT (#update) carries only signed service headers and
+  # no authenticity token. Re-exempt it from CSRF so authenticated uploads can
+  # still store bytes; the signed URL token and the session check remain.
+  ActiveStorage::DiskController.skip_forgery_protection only: :update
 end

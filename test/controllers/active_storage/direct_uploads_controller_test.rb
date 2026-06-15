@@ -26,9 +26,10 @@ class ActiveStorage::DirectUploadsControllerTest < ActionDispatch::IntegrationTe
   test "disk show stays reachable without authentication" do
     blob = ActiveStorage::Blob.create_and_upload! \
       io: StringIO.new("hello"), filename: "hello.txt", content_type: "text/plain"
-    ActiveStorage::Current.url_options = { host: "once.campfire.test", protocol: "http" }
 
-    get blob.url
+    ActiveStorage::Current.set(url_options: { host: "once.campfire.test", protocol: "http" }) do
+      get blob.url
+    end
 
     assert_response :success
   end
