@@ -1,0 +1,20 @@
+test/controllers/active_storage/direct_uploads_controller_test.rb
+  s_fc1e0d66b656e1::t_7e8ec65aaa52ce 38-40,47,56
+  s_fc1e0d66b656e1::t_09ea98f5eca322 70,73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "0141eae018ac0695d779026b6a6e7686f108949e",
+  "prompts": {},
+  "sessions": {
+    "s_fc1e0d66b656e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e1704c8-8803-4955-acc0-626b24fa8e6e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
