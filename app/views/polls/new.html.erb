@@ -1,0 +1,29 @@
+<% @page_title = "Create poll" %>
+<% @body_class = "sidebar" %>
+
+<%= render "rooms/show/nav", room: @room %>
+
+<% content_for :sidebar, sidebar_turbo_frame_tag(src: user_sidebar_path) %>
+
+<div id="message-area" class="message-area">
+  <div class="poll-create pad">
+    <%= render "polls/editor",
+          title: "Create poll",
+          poll: @poll,
+          room: @room,
+          url: room_polls_path(@room),
+          method: :post,
+          submit_label: "Create poll",
+          client_message_id: @client_message_id,
+          cancel_link: link_to("Cancel", room_path(@room), class: "btn") %>
+  </div>
+</div>
+
+<% content_for :footer do %>
+  <div class="composer flex align-end gap">
+    <%= link_to room_path(@room), class: "btn poll-create__back flex-item-no-shrink margin-block-end" do %>
+      <%= image_tag "arrow-left.svg", aria: { hidden: "true" } %>
+      <span>Back to room</span>
+    <% end %>
+  </div>
+<% end %>

@@ -7,10 +7,9 @@ module Message::Mentionee
 
   private
     def mentioned_users
-      if body.body
-        body.body.attachables.grep(User).uniq
-      else
-        []
-      end
+      attachments = []
+      attachments.concat(body.body.attachables) if body.body
+      attachments.concat(poll.question.body.attachables) if poll&.question&.body
+      attachments.grep(User).uniq
     end
 end

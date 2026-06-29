@@ -1,0 +1,29 @@
+<div id="<%= dom_id(poll, :results) %>" class="poll__results">
+  <% total = poll.options.sum { |option| option.votes.size } %>
+  <% poll.options.each do |option| %>
+    <% count = option.votes.size %>
+    <% percent = total.zero? ? 0 : ((count.to_f / total) * 100).round %>
+    <div class="poll__option-result">
+      <div class="poll__option-heading">
+        <span class="poll__option-label"><%= option.body %></span>
+        <span class="poll__option-meta"><%= count %> vote<%= "s" unless count == 1 %></span>
+      </div>
+
+      <div class="poll__bar-row">
+        <div class="poll__bar-track" aria-hidden="true">
+          <div class="poll__bar-fill" style="--poll-percent: <%= percent %>%"></div>
+        </div>
+        <span class="poll__option-meta"><%= percent %>%</span>
+      </div>
+
+      <% if option.votes.any? %>
+        <div class="poll__voters" aria-label="Voters for <%= option.body %>">
+          <% option.votes.each do |vote| %>
+            <span class="poll__voter-chip">@<%= vote.voter.name %></span>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+  <span class="poll__footer"><%= total %> total vote<%= "s" unless total == 1 %><%= " - closed" if poll.closed? %></span>
+</div>

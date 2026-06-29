@@ -1,6 +1,9 @@
 <%# Be sure to check/update messages/_template.html.erb when changing this file %>
 
-<div class="message__actions" data-controller="soft-keyboard">
+<% poll_message = message.content_type.poll? %>
+<div class="message__actions"
+    data-controller="soft-keyboard<%= " poll-actions" if poll_message %>"
+    <% if poll_message %>data-poll-actions-creator-id-value="<%= message.creator_id %>"<% end %>>
   <%= tag.details class: "position-relative",
       data: { controller: "popup", action: "keydown.esc->popup#close toggle->popup#toggle click@document->popup#closeOnClickOutside", popup_orientation_top_class: "popup-orientation-top" } do %>
     <summary class="btn message__action-btn message__options-btn">
@@ -48,9 +51,22 @@
           <%= image_tag "link.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
         <% end %>
 
-        <%= link_to edit_room_message_path(message.room, message), class: "btn message__action-btn center full-width message__edit-btn",
-              data: { turbo_frame: dom_id(message, :edit) }, title: "Edit", aria: { label: "Edit"} do %>
-          <%= image_tag "pencil.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+        <% if message.content_type.poll? %>
+          <%= link_to edit_message_poll_path(message), class: "btn message__action-btn center full-width message__edit-btn",
+                data: { turbo_frame: dom_id(message, :edit), poll_actions_target: "adminAction" }, hidden: true, title: "Manage poll", aria: { label: "Manage poll" } do %>
+            <%= image_tag "pencil.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+          <% end %>
+        <% end %>
+
+        <% if message.poll&.open? %>
+          <%= button_to "Close poll", close_message_poll_path(message), method: :patch, class: "btn message__action-btn center full-width", form: { hidden: true, data: { turbo: true, poll_actions_target: "adminAction" } } %>
+        <% end %>
+
+        <% unless message.content_type.poll? %>
+          <%= link_to edit_room_message_path(message.room, message), class: "btn message__action-btn center full-width message__edit-btn",
+                data: { turbo_frame: dom_id(message, :edit) }, title: "Edit", aria: { label: "Edit"} do %>
+            <%= image_tag "pencil.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+          <% end %>
         <% end %>
       </div>
     </div>
