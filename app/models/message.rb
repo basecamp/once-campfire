@@ -1,6 +1,8 @@
 class Message < ApplicationRecord
   include Attachment, Broadcasts, Mentionee, Pagination, Searchable
 
+  validate :attachment_size
+
   belongs_to :room, touch: true
   belongs_to :creator, class_name: "User", default: -> { Current.user }
 
@@ -41,4 +43,11 @@ class Message < ApplicationRecord
       Sound.find_by_name match[:name]
     end
   end
+
+  private
+    def attachment_size
+      if attachment? && !ApplicationController.helpers.is_attachment_size_valid(attachment.blob.byte_size)
+        errors.add(:attachment, "Attachment exceeds max size: #{ApplicationController.helpers.max_attachment_size_in_bytes}")
+      end
+    end
 end
