@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
+ActiveRecord::Schema[8.2].define(version: 2026_01_25_073335) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -119,9 +119,11 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
   create_table "rooms", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "creator_id", null: false
+    t.string "members_hash"
     t.string "name"
     t.string "type", null: false
     t.datetime "updated_at", null: false
+    t.index ["members_hash"], name: "index_rooms_on_members_hash"
   end
 
   create_table "searches", force: :cascade do |t|
