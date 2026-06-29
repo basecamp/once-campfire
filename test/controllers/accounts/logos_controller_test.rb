@@ -23,6 +23,15 @@ class Accounts::LogosControllerTest < ActionDispatch::IntegrationTest
     assert_valid_png_response size: 512
   end
 
+  test "show custom when active storage service has no path_for" do
+    with_pathless_active_storage_service do
+      accounts(:signal).update! logo: fixture_file_upload("moon.jpg", "image/jpeg")
+
+      get account_logo_url
+      assert_valid_png_response size: 512
+    end
+  end
+
   test "show custom small size" do
     accounts(:signal).update! logo: fixture_file_upload("moon.jpg", "image/jpeg")
 
