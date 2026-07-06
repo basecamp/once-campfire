@@ -127,6 +127,13 @@
     }
   }
 
+  &:has(input[type=checkbox][disabled]) {
+    cursor: not-allowed;
+    filter: grayscale(100%) contrast(0.5);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
   [disabled] &[type=submit],
   &[type=submit]:disabled {
     cursor: not-allowed;

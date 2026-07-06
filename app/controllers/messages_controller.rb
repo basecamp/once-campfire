@@ -42,7 +42,7 @@ class MessagesController < ApplicationController
 
   def destroy
     @message.destroy
-    @message.broadcast_remove_to @room, :messages
+    @message.broadcast_remove
   end
 
   private

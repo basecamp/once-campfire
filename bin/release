@@ -1,0 +1,109 @@
+#!/usr/bin/env ruby
+require "bundler/inline"
+require "yaml"
+
+gemfile do
+  source "https://rubygems.org"
+  gem "base64"
+  gem "bcrypt_pbkdf"
+  gem "ed25519"
+  gem "sshkit"
+end
+
+include SSHKit::DSL
+
+ARCH = "linux/amd64,linux/arm64"
+BUILDER_NAME = "campfire-builder"
+GIT_SHA = `git rev-parse HEAD`.strip
+VERSION = ARGV[0]
+
+DOCKER_IMAGE_NAME = "registry.once.com/campfire"
+DOCKER_LATEST_IMAGE_NAME = [ DOCKER_IMAGE_NAME, :latest ].join(":")
+DOCKER_TAGGED_IMAGE_NAME = [ DOCKER_IMAGE_NAME, GIT_SHA ].join(":")
+
+EXPORT_IMAGE_NAME = "campfire-export"
+EXPORT_DOCKERFILE = "Dockerfile-export"
+EXPORT_TARGET_NAME = "campfire.zip"
+EXPORT_REMOTE_USER = "app"
+EXPORT_DEPLOY_HOSTS = %w[ once-store-app-101 once-store-app-102 ]
+EXPORT_DEPLOY_LOCATION = "/local/app/product_releases/"
+
+abort "You must specify a version, e.g. `bin/release 1.0.0`" unless VERSION
+
+current_branch = `git rev-parse --abbrev-ref HEAD`.strip
+if current_branch != "main"
+  print "\e[1;33mWarning: You are on branch '#{current_branch}', not 'main'. Continue? [y/N] \e[0m"
+  abort "Release aborted." unless $stdin.gets.strip.downcase.chars.first == "y"
+end
+
+unless `git status --porcelain`.strip.empty?
+  print "\e[1;33mWarning: You have uncommitted changes. Continue? [y/N] \e[0m"
+  abort "Release aborted." unless $stdin.gets.strip.downcase.chars.first == "y"
+end
+
+def announcing(message)
+  puts "\n\e[1;36m#{message}\e[0m"
+  yield
+end
+
+on(:local) do
+  builder_found = test :docker, :buildx, :inspect, BUILDER_NAME
+
+  unless builder_found
+    announcing "Setting up builder..." do
+      execute :docker, :buildx, :create, "--name", BUILDER_NAME
+    end
+  end
+end
+
+announcing "Creating GitHub release v#{VERSION}..." do
+  notes_file = "tmp/release_notes.md"
+
+  on(:local) do
+    execute :mkdir, "-p", "tmp"
+
+    File.write(notes_file, "# What's Changed\n\n- \n")
+    system ENV["EDITOR"] || "vim", notes_file
+
+    unless system "gh", "release", "create", "v#{VERSION}", "--title", "v#{VERSION}", "--notes-file", notes_file
+      abort "Failed to create release; check that the version doesn't already exist"
+    end
+
+    execute :rm, notes_file
+  end
+end
+
+announcing "Building and pushing image..." do
+  versioning = "--build-arg APP_VERSION=#{VERSION} --build-arg GIT_REVISION=#{GIT_SHA}"
+
+  on(:local) do
+    execute :docker, :buildx, :build, "--builder", BUILDER_NAME, "--push", versioning, "-t", DOCKER_LATEST_IMAGE_NAME, "-t", DOCKER_TAGGED_IMAGE_NAME, "--platform", ARCH, "."
+  end
+end
+
+SSHKit::Backend::Netssh.configure do |ssh|
+  ssh.connection_timeout = 30
+  ssh.ssh_options = { user: EXPORT_REMOTE_USER }
+end
+
+announcing "Building source code ZIP image..." do
+  on(:local) do
+    execute :docker, :build, "-t", EXPORT_IMAGE_NAME, "-f", EXPORT_DOCKERFILE, "."
+  end
+end
+
+announcing "Exporting source code to ZIP..." do
+  on(:local) do
+    execute :docker, :run, "--name", EXPORT_IMAGE_NAME, EXPORT_IMAGE_NAME
+    execute :docker, :cp, "#{EXPORT_IMAGE_NAME}:/#{EXPORT_TARGET_NAME}", "tmp/#{EXPORT_TARGET_NAME}"
+    execute :docker, :rm, EXPORT_IMAGE_NAME
+  end
+end
+
+announcing "Uploading source code ZIP..." do
+  on(EXPORT_DEPLOY_HOSTS) do
+    within EXPORT_DEPLOY_LOCATION do
+      upload! "tmp/#{EXPORT_TARGET_NAME}", EXPORT_TARGET_NAME
+    end
+  end
+end

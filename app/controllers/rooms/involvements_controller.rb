@@ -1,8 +1,6 @@
 class Rooms::InvolvementsController < ApplicationController
   include RoomScoped
 
-  before_action :ensure_can_administer, only: %i[ update ]
-
   def show
     @involvement = @membership.involvement
   end

@@ -45,5 +45,8 @@
 # Ignore ignore
 .dockerignore
 
+# Don't include our README
+/README.md
+
 # Ignore test files
 /test/

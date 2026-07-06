@@ -1,5 +1,5 @@
 class User < ApplicationRecord
-  include Avatar, Bot, Mentionable, Role, Transferable
+  include Avatar, Bannable, Bot, Mentionable, Role, Transferable
 
   has_many :memberships, dependent: :delete_all
   has_many :rooms, through: :memberships
@@ -13,8 +13,9 @@ class User < ApplicationRecord
   has_many :searches, dependent: :delete_all
 
   has_many :sessions, dependent: :destroy
+  has_many :bans, dependent: :destroy
 
-  scope :active, -> { where(active: true) }
+  enum :status, %i[ active deactivated banned ], default: :active
 
   has_secure_password validations: false
 
@@ -40,12 +41,8 @@ class User < ApplicationRecord
       searches.delete_all
       sessions.delete_all
 
-      update! active: false, email_address: deactived_email_address
+      update! status: :deactivated, email_address: deactived_email_address
     end
-  end
-
-  def deactivated?
-    !active?
   end
 
   def reset_remote_connections

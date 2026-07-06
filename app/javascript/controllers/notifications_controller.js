@@ -60,7 +60,7 @@ export default class extends Controller {
   }
 
   get #serviceWorkerRegistration() {
-    return navigator.serviceWorker.getRegistration(window.location.host)
+    return navigator.serviceWorker.getRegistration(window.location.origin)
   }
 
   #registerServiceWorker() {

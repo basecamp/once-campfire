@@ -24,6 +24,15 @@ class Rooms::OpensControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to room_url(Room.last)
   end
 
+  test "create forbidden by non-admin when account restricts creation to admins" do
+    accounts(:signal).settings.restrict_room_creation_to_administrators = true
+    accounts(:signal).save!
+
+    sign_in :jz
+    post rooms_opens_url, params: { room: { name: "My New Room" } }
+    assert_response :forbidden
+  end
+
   test "only admins or creators can update" do
     sign_in :jz
 

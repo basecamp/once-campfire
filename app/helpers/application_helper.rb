@@ -23,7 +23,9 @@ module ApplicationHelper
   end
 
   def link_back
-    link_back_to request.referrer || root_path
+    back_url = request.referrer
+    back_url = root_path if back_url.nil? || back_url == request.url
+    link_back_to back_url
   end
 
   def link_back_to(destination)

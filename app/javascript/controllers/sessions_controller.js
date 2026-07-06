@@ -10,7 +10,7 @@ export default class extends Controller {
 
   async #unsubscribeFromWebPush() {
     if ("serviceWorker" in navigator) {
-      const registration = await navigator.serviceWorker.getRegistration(window.location.host)
+      const registration = await navigator.serviceWorker.getRegistration(window.location.origin)
 
       if (registration) {
         const subscription = await registration.pushManager.getSubscription()

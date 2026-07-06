@@ -30,4 +30,28 @@ class FirstRunsControllerTest < ActionDispatch::IntegrationTest
 
     assert parsed_cookies.signed[:session_token]
   end
+
+  test "create is not vulnerable to race conditions" do
+    num_attackers = 5
+    url = first_run_url
+    barrier = Concurrent::CyclicBarrier.new(num_attackers)
+
+    num_attackers.times.map do |i|
+      Thread.new do
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        barrier.wait  # All threads wait here, then fire simultaneously
+
+        session.post url, params: {
+          user: {
+            name: "Attacker#{i}",
+            email_address: "attacker#{i}@example.com",
+            password: "password123"
+          }
+        }
+      end
+    end.each(&:join)
+
+    assert_equal 1, Account.count, "Race condition allowed #{Account.count} accounts to be created!"
+    assert_equal 1, User.where(role: :administrator).count, "Race condition allowed multiple admin users!"
+  end
 end

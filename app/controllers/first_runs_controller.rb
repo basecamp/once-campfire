@@ -12,6 +12,8 @@ class FirstRunsController < ApplicationController
     start_new_session_for user
 
     redirect_to root_url
+  rescue ActiveRecord::RecordNotUnique
+    redirect_to root_url
   end
 
   private

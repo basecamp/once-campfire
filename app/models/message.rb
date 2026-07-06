@@ -12,7 +12,13 @@ class Message < ApplicationRecord
   after_create_commit -> { room.receive(self) }
 
   scope :ordered, -> { order(:created_at) }
-  scope :with_creator, -> { includes(:creator) }
+  scope :with_creator, -> { preload(creator: :avatar_attachment) }
+  scope :with_attachment_details, -> {
+    with_rich_text_body_and_embeds
+    with_attached_attachment
+      .includes(attachment_blob: :variant_records)
+  }
+  scope :with_boosts, -> { includes(boosts: :booster) }
 
   def plain_text_body
     body.to_plain_text.presence || attachment&.filename&.to_s || ""

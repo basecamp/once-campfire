@@ -12,6 +12,7 @@
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <%= current_user_meta_tags %>
+    <%= script_aware_action_cable_meta_tag %>
 
     <%= tag.meta name: "vapid-public-key", content: Rails.configuration.x.vapid.public_key %>
     <%= tag.meta name: "turbo-prefetch", content: "true" %>

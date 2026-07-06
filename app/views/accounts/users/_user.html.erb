@@ -1,4 +1,4 @@
-<li class="flex align-center gap margin-none">
+<li class="flex align-center gap margin-none <%= "banned" if user.banned? %>">
   <figure class="avatar flex-item-no-shrink" style="--avatar-size: 3.75ch;">
     <%= avatar_tag user, loading: :lazy %>
   </figure>
@@ -9,23 +9,26 @@
 
   <hr class="separator" aria-hidden="true">
 
-  <% if Current.user.can_administer? && user != Current.user %>
+  <% if Current.user.can_administer? && user.active? %>
     <% unless user.bot? %>
       <%= form_with model: user, url: account_user_path(user), data: { controller: "form" }, method: :patch do | form | %>
         <label class="btn txt-small flex-item-no-shrink" for="<%= dom_id(user, :role) %>">
           <span class="for-screen-reader">Role: <%= user.administrator? ? "Administrator" : "Member" %></span>
           <%= image_tag "crown.svg", size: 20, aria: { hidden: "true" } %>
-          <%= form.check_box :role, { data: { action: "form#submit" }, hidden: true, id: dom_id(user, :role) }, "administrator", "member" %>
+          <%= form.check_box :role, { data: { action: "form#submit" }, hidden: true, id: dom_id(user, :role), disabled: user == Current.user }, "administrator", "member" %>
         </label>
       <% end %>
     <% end %>
 
-    <%= button_to account_user_path(user), method: :delete, class: "btn txt-small flex-item-no-shrink btn--negative", data: {
-          turbo_confirm: "Are you sure you want to permanently remove this person from the account? This can’t be undone."} do %>
-      <%= image_tag "minus.svg", size: 20, aria: { hidden: "true" } %>
-      <span class="for-screen-reader">Delete <%= user.name %></span>
+    <% unless user == Current.user %>
+      <%= button_to account_user_path(user), method: :delete, class: "btn txt-small flex-item-no-shrink btn--negative", data: {
+            turbo_confirm: "Are you sure you want to permanently remove this person from the account? This can’t be undone."} do %>
+        <%= image_tag "minus.svg", size: 20, aria: { hidden: "true" } %>
+        <span class="for-screen-reader">Delete <%= user.name %></span>
+      <% end %>
     <% end %>
-  <% elsif user == Current.user %>
+  <% end %>
+  <% if user == Current.user %>
     <%= link_to user_profile_path, class: "btn txt-small flex-item-no-shrink", target: "_top" do %>
       <%= image_tag "pencil.svg", size: 20, aria: { hidden: "true" } %>
       <span class="for-screen-reader">My settings</span>

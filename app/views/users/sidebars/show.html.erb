@@ -36,8 +36,10 @@
         <% end %>
       </div>
 
-      <%= link_to new_rooms_open_path, class: "rooms__new-btn btn room align-center gap txt-reversed", aria: { label: "New Chat Room" } do %>
-        <%= image_tag "add.svg", size: 20, aria: { hidden: "true" }, style: "view-transition-name: new-room" %>
+      <% if Current.user.administrator? || !Current.account.settings.restrict_room_creation_to_administrators? %>
+        <%= link_to new_rooms_open_path, class: "rooms__new-btn btn room align-center gap txt-reversed", aria: { label: "New Chat Room" } do %>
+          <%= image_tag "add.svg", size: 20, aria: { hidden: "true" }, style: "view-transition-name: new-room" %>
+        <% end %>
       <% end %>
     </div>
 
