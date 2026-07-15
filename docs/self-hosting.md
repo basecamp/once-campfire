@@ -99,6 +99,7 @@ Putting it all together, here's a complete `docker run` invocation:
 
 ```sh
 docker run \
+  --name campfire \
   --publish 80:80 --publish 443:443 \
   --restart unless-stopped \
   --volume campfire:/rails/storage \
@@ -155,4 +156,42 @@ Any pending database migrations run automatically when the container boots.
 ### Backups
 
 To back up your instance, back up the contents of the `/rails/storage` volume.
-The `script/admin/prepare-backup` script can help produce a consistent snapshot of the SQLite database.
+
+Because the SQLite database may be written to at any moment, you shouldn't copy its files directly while Campfire is running.
+Instead, first run `script/admin/prepare-backup` inside the running container to produce a consistent snapshot of the database (it's written to `storage/backups/` inside the volume):
+
+```sh
+docker exec campfire script/admin/prepare-backup
+```
+
+(If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
+
+Then archive the whole storage volume to a file on the host:
+
+```sh
+docker run --rm \
+  --user root \
+  --volume campfire:/rails/storage \
+  --volume "$PWD":/backup \
+  ghcr.io/basecamp/once-campfire:main \
+  tar czf "/backup/campfire-backup.tar.gz" -C /rails storage
+```
+
+This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files.
+Copy it somewhere safe, ideally off the machine.
+
+To restore, extract the archive back into a (stopped) instance's volume, and replace the live database with the snapshot:
+
+```sh
+docker run --rm \
+  --user root \
+  --volume campfire:/rails/storage \
+  --volume "$PWD":/backup \
+  ghcr.io/basecamp/once-campfire:main \
+  bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
+           cp /rails/storage/backups/production.sqlite3 /rails/storage/db/production.sqlite3 &&
+           rm -f /rails/storage/db/production.sqlite3-wal /rails/storage/db/production.sqlite3-shm &&
+           chown -R rails:rails /rails/storage"
+```
+
+Then start Campfire again.
