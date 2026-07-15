@@ -11,51 +11,45 @@ expect, including:
 - @mentions
 - API, with support for bot integrations
 
-## Deploying with Docker
+## Running your own Campfire instance
 
 Campfire's Docker image contains everything needed for a fully-functional,
 single-machine deployment. This includes the web app, background jobs, caching,
-file serving, and SSL.
+file serving, and SSL. You can use our pre-built image at
+`ghcr.io/basecamp/once-campfire:main`, or build your own from this repo.
 
-To persist storage of the database and file attachments, map a volume to `/rails/storage`.
+### Deploying with ONCE
 
-To configure additional features, you can set the following environment variables:
+The easiest way to self-host Campfire is with [ONCE](https://github.com/basecamp/once).
+It will guide you through the initial set up and then keep your instance up to date automatically.
 
-- `SSL_DOMAIN` - enable automatic SSL via Let's Encrypt for the given domain name
-- `DISABLE_SSL` - alternatively, set `DISABLE_SSL` to serve over plain HTTP
-- `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` - set these to a valid keypair to
-  allow sending Web Push notifications. You can generate a new keypair by running
-  `/script/admin/create-vapid-key`
-- `SENTRY_DSN` - to enable error reporting to sentry in production, supply your
-  DSN here
+If you don't already have `once` installed, run this on the machine you want to run Campfire on:
 
-For example:
+```sh
+curl https://get.once.com | sh
+```
 
-    docker build -t campfire .
+`once` will launch as soon as the install is finished. 
 
-    docker run \
-      --publish 80:80 --publish 443:443 \
-      --restart unless-stopped \
-      --volume campfire:/rails/storage \
-      --env SECRET_KEY_BASE=$YOUR_SECRET_KEY_BASE \
-      --env VAPID_PUBLIC_KEY=$YOUR_PUBLIC_KEY \
-      --env VAPID_PRIVATE_KEY=$YOUR_PRIVATE_KEY \
-      --env TLS_DOMAIN=chat.example.com \
-      campfire
+Choose Campfire from the list of applications, follow the instructions, and ONCE will take care of the rest.
 
-## Running in development
+If you prefer the command line to the dashboard, you can deploy directly:
+
+```sh
+once deploy ghcr.io/basecamp/once-campfire --host chat.example.com
+```
+
+### Deploying with Docker
+
+If you'd rather run the Docker image yourself, you can read more about that in the [self-hosting guide](docs/self-hosting.md).
+
+> [!TIP]
+> When you start Campfire for the first time, you'll be guided through a wizard to create an admin account.
+> The email address that you enter for the admin account will be visible on the sign-in page, it's there so
+> that people have someone to contact if they need help with their account. If that bothers you, put in any
+> email address you want and create yourself a new admin account.
+
+## Development
 
     bin/setup
     bin/rails server
-
-## Worth Noting
-
-When you start Campfire for the first time, you’ll be guided through
-creating an admin account.
-The email address of this admin account will be shown on the login page
-so that people who forget their password know who to contact for help.
-(You can change this email later in the settings)
-
-Campfire is single-tenant: any rooms designated "public" will be accessible by
-all users in the system. To support entirely distinct groups of customers, you
-would deploy multiple instances of the application.
