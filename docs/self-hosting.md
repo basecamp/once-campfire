@@ -12,6 +12,23 @@ This image changes with every merged pull request - it's the bleeding edge versi
 Tagged releases are also available, for example `ghcr.io/basecamp/once-campfire:v1.4.4`.
 These are the most stable and battle-tested versions of Campfire.
 
+We provide a tagged release for every major, minor and patch version of Campfire, so you can pin your deployment to a specific version if you want to avoid unexpected changes. For example:
+
+```bash
+# exactly version 1.4.4
+ghcr.io/basecamp/once-campfire:1.4.4
+
+# any 1.4.x version
+# e.g. 1.4.4 or 1.4.5
+# the last number is usually changed for bug fixes
+ghcr.io/basecamp/once-campfire:1.4
+
+# any 1.x version
+# e.g. 1.4.4 or 1.5.0
+# the middle number is usually changed for changes to, or addition of, features
+ghcr.io/basecamp/once-campfire:1
+```
+
 To run it you'll need three things:
 1. a machine that runs Docker
 2. a mounted volume (so that your database and file attachments are kept around between restarts)
