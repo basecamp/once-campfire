@@ -51,5 +51,5 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 
 ## Development
 
-    bin/setup
-    bin/rails server
+You are welcome - and encouraged - to modify Campfire to your liking.
+Please see our [development guide](docs/development.md) for how to get Campfire set up for local development.

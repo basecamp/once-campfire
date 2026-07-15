@@ -4,7 +4,7 @@ Campfire's Docker image contains everything needed for a fully-functional, singl
 This includes the web app, background jobs, caching, file serving, and SSL.
 
 > [!TIP]
-> The easiest way to self-host Campfire is with [ONCE](https://github.com/basecamp/once), which handles installation, updates, and backups for you. See the [README](../README.md#installing-with-once-recommended) for details. This guide covers running the Docker image by hand.
+> The easiest way to self-host Campfire is with [ONCE](https://github.com/basecamp/once), which handles installation, updates, and backups for you. See the [README](../README.md#deploying-with-once) for details. This guide covers running the Docker image by hand.
 
 The latest version of the docker image can be found at `ghcr.io/basecamp/once-campfire:main`.
 This image changes with every merged pull request - it's the bleeding edge version of Campfire.
