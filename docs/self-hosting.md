@@ -6,13 +6,9 @@ This includes the web app, background jobs, caching, file serving, and SSL.
 > [!TIP]
 > The easiest way to self-host Campfire is with [ONCE](https://github.com/basecamp/once), which handles installation, updates, and backups for you. See the [README](../README.md#deploying-with-once) for details. This guide covers running the Docker image by hand.
 
-The latest version of the docker image can be found at `ghcr.io/basecamp/once-campfire:main`.
-This image changes with every merged pull request - it's the bleeding edge version of Campfire.
+We recommend using `ghcr.io/basecamp/once-campfire:latest`, which always points to the most recent tagged release - the most stable and battle-tested version of Campfire.
 
-Tagged releases are also available, for example `ghcr.io/basecamp/once-campfire:v1.4.4`.
-These are the most stable and battle-tested versions of Campfire.
-
-We provide a tagged release for every major, minor and patch version of Campfire, so you can pin your deployment to a specific version if you want to avoid unexpected changes. For example:
+We provide a tagged release for every major, minor and patch version of Campfire, so you can also pin your deployment to a specific version if you want to avoid unexpected changes. For example:
 
 ```bash
 # exactly version 1.4.4
@@ -28,6 +24,9 @@ ghcr.io/basecamp/once-campfire:1.4
 # the middle number is usually changed for changes to, or addition of, features
 ghcr.io/basecamp/once-campfire:1
 ```
+
+If you want to live on the bleeding edge, the `main` tag tracks the main release branch instead.
+It changes with every merged pull request, so it's the newest - but least battle-tested - version of Campfire.
 
 To run it you'll need three things:
 1. a machine that runs Docker
@@ -48,7 +47,7 @@ By default Docker containers don't persist storage between runs, so you'll want 
 The simplest way to do this is with the `--volume` flag with `docker run`. For example:
 
 ```sh
-docker run --volume campfire:/rails/storage ghcr.io/basecamp/once-campfire:main
+docker run --volume campfire:/rails/storage ghcr.io/basecamp/once-campfire:latest
 ```
 
 That will create a named volume (called `campfire`) and mount it into the correct path.
@@ -72,7 +71,7 @@ Campfire needs a few secret values that are specific to your instance:
 You can generate them by running:
 
 ```sh
-docker run --rm ghcr.io/basecamp/once-campfire:main script/admin/generate-secrets
+docker run --rm ghcr.io/basecamp/once-campfire:latest script/admin/generate-secrets
 ```
 
 It prints a fresh set of values ready to set as environment variables:
@@ -124,7 +123,7 @@ docker run \
   --env VAPID_PUBLIC_KEY=$YOUR_PUBLIC_KEY \
   --env VAPID_PRIVATE_KEY=$YOUR_PRIVATE_KEY \
   --env TLS_DOMAIN=chat.example.com \
-  ghcr.io/basecamp/once-campfire:main
+  ghcr.io/basecamp/once-campfire:latest
 ```
 
 And here's an equivalent `docker-compose.yml` that you could use to run Campfire via `docker compose up`:
@@ -132,7 +131,7 @@ And here's an equivalent `docker-compose.yml` that you could use to run Campfire
 ```yaml
 services:
   web:
-    image: ghcr.io/basecamp/once-campfire:main
+    image: ghcr.io/basecamp/once-campfire:latest
     restart: unless-stopped
     ports:
       - "80:80"
@@ -165,7 +164,7 @@ To support entirely distinct groups of customers, you would deploy multiple inst
 All of Campfire's state lives in the mounted volume, so upgrading is a matter of pulling a newer image and recreating the container:
 
 ```sh
-docker pull ghcr.io/basecamp/once-campfire:main
+docker pull ghcr.io/basecamp/once-campfire:latest
 ```
 
 Any pending database migrations run automatically when the container boots.
@@ -190,7 +189,7 @@ docker run --rm \
   --user root \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
-  ghcr.io/basecamp/once-campfire:main \
+  ghcr.io/basecamp/once-campfire:latest \
   tar czf "/backup/campfire-backup.tar.gz" -C /rails storage
 ```
 
@@ -204,7 +203,7 @@ docker run --rm \
   --user root \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
-  ghcr.io/basecamp/once-campfire:main \
+  ghcr.io/basecamp/once-campfire:latest \
   bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
            cp /rails/storage/backups/production.sqlite3 /rails/storage/db/production.sqlite3 &&
            rm -f /rails/storage/db/production.sqlite3-wal /rails/storage/db/production.sqlite3-shm &&

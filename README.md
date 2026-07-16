@@ -16,7 +16,7 @@ expect, including:
 Campfire's Docker image contains everything needed for a fully-functional,
 single-machine deployment. This includes the web app, background jobs, caching,
 file serving, and SSL. You can use our pre-built image at
-`ghcr.io/basecamp/once-campfire:main`, or build your own from this repo.
+`ghcr.io/basecamp/once-campfire:latest`, or build your own from this repo.
 
 ### Deploying with ONCE
 
