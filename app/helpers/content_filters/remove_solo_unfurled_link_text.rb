@@ -4,7 +4,13 @@ class ContentFilters::RemoveSoloUnfurledLinkText < ActionText::Content::Filter
   end
 
   def apply
-    fragment.replace("div") { |node| node.tap { |n| n.inner_html = unfurled_links.first.to_s } }
+    if fragment.find_all("div").any?
+      # Trix-era bodies: one <div> wrapping the link text and the embed
+      fragment.replace("div") { |node| node.tap { |n| n.inner_html = unfurled_links.first.to_s } }
+    else
+      # Lexxy bodies: the link sits in its own <p>, the embed follows it
+      fragment.replace("p") { |node| node.at_css("action-text-attachment") ? node : nil }
+    end
   end
 
   private
@@ -12,7 +18,7 @@ class ContentFilters::RemoveSoloUnfurledLinkText < ActionText::Content::Filter
     TWITTER_DOMAIN_MAPPING = { "x.com" => "twitter.com" }
 
     def solo_unfurled_url
-      unfurled_links.first["href"] if unfurled_links.size == 1
+      ActionText::Attachment::OpengraphEmbed.from_node(unfurled_links.first)&.href if unfurled_links.size == 1
     end
 
     def unfurled_links

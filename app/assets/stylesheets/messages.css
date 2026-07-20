@@ -537,7 +537,7 @@ img.message__attachment {
     padding: var(--content-padding-block) 0 var(--content-padding-block) var(--content-padding-inline);
     text-shadow: 0 0 3px var(--color-text-reversed);
 
-    .trix-content {
+    .lexxy-content {
       font-size: 2.4em;
       line-height: 1.4;
     }

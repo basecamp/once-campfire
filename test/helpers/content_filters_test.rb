@@ -1,6 +1,7 @@
 require "test_helper"
 
 class ContentFiltersTest < ActionView::TestCase
+  include MessagesHelper, ERB::Util
   test "entire message contains an unfurled URL" do
     text = "https://basecamp.com/"
     message = Message.create! room: rooms(:pets), body: unfurled_message_body_for_basecamp(text), client_message_id: "0015", creator: users(:jason)
@@ -8,6 +9,16 @@ class ContentFiltersTest < ActionView::TestCase
     filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
     assert_not_equal message.body.body.to_html, filtered.to_html
     assert_match /<div><action-text-attachment/, filtered.to_html
+  end
+
+  test "entire message contains an unfurled URL in a lexxy body" do
+    text = "https://basecamp.com/"
+    body = "<p><a href=\"#{text}\">#{text}</a></p>#{unfurled_link_trix_attachment_for_basecamp}"
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
+
+    filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
+    assert_no_match %r{>\s*https://basecamp\.com/\s*</a>}, filtered.to_html
+    assert_match /<action-text-attachment/, filtered.to_html
   end
 
   test "message includes additional text besides an unfurled URL" do
@@ -51,6 +62,17 @@ class ContentFiltersTest < ActionView::TestCase
     filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
     assert_not_equal message.body.body.to_html, filtered.to_html
     assert_match /<div><action-text-attachment/, filtered.to_html
+  end
+
+  test "message keeps strikethrough, underline and code block formatting" do
+    body = %(<p>Hello <s>struck</s> <u>under</u> <mark>marked</mark></p><pre data-language="ruby">def x<br>end</pre>)
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0016", creator: users(:jason)
+
+    html = message_presentation(message)
+    assert_match %r{<s>struck</s>}, html
+    assert_match %r{<u>under</u>}, html
+    assert_match %r{<mark>marked</mark>}, html
+    assert_match %r{<pre data-language="ruby">}, html
   end
 
   test "message contains a forbidden tag" do

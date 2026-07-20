@@ -199,6 +199,8 @@ GEM
       activesupport (>= 6.0.0)
       redis (>= 4.2, < 6)
     language_server-protocol (3.17.0.5)
+    lexxy (0.9.24)
+      rails (>= 8.0.2)
     lint_roller (1.1.0)
     logger (1.7.0)
     loofah (2.25.2)
@@ -424,6 +426,7 @@ DEPENDENCIES
   importmap-rails!
   jbuilder
   kredis
+  lexxy (~> 0.9.24)
   mocha
   net-http-persistent
   ostruct

@@ -15,7 +15,9 @@ class ContentFilters::StyleUnfurledTwitterAvatars < ActionText::Content::Filter
     TWITTER_AVATAR_URL_PREFIX = "https://pbs.twimg.com/profile_images"
 
     def unfurled_twitter_avatars
-      fragment.find_all("#{opengraph_css_selector}[url*='#{TWITTER_AVATAR_URL_PREFIX}']")
+      fragment.find_all(opengraph_css_selector).select do |node|
+        ActionText::Attachment::OpengraphEmbed.from_node(node)&.url.to_s.start_with?(TWITTER_AVATAR_URL_PREFIX)
+      end
     end
 
     def opengraph_css_selector

@@ -19,15 +19,16 @@
                 <div class="flex flex-column flex-item-grow min-width gap">
                   <%= form.rich_text_area :body,
                         rows: 1,
-                        class: "input",
+                        class: "input lexxy-content",
                         style: "order: -1",
                         aria: { multiline: "true", label: "Write a message" },
+                        "permitted-attachment-types": "application/vnd.campfire.mention application/vnd.actiontext.opengraph-embed",
                         data: {
-                          controller: "rich-autocomplete",
-                          action: rich_text_data_actions,
-                          rich_autocomplete_url_value: autocompletable_users_path(room_id: room.id),
-                          permitted_attachment_types: "application/vnd.actiontext.opengraph-embed",
-                          composer_target: "text" } %>
+                          controller: "unfurl",
+                          action: "#{rich_text_data_actions} lexxy:insert-link->unfurl#unfurl",
+                          composer_target: "text" } do %>
+                    <%= mention_prompt_tag room %>
+                  <% end %>
                 </div>
 
                 <label class="btn btn--borderless txt-small flex-item-no-shrink composer__attachment-btn input--file">

@@ -1,165 +1,141 @@
-trix-toolbar {
-  display: none;
-  inset: auto 0 0 0;
-  min-width: 0;
-  position: sticky;
-  z-index: 3;
+/* Resolve Lexxy's palette to Campfire's, in the editor and in rendered messages,
+   so everything follows Campfire's light/dark color scheme */
+.lexxy-content {
+  --lexxy-color-canvas: transparent;
+  --lexxy-color-text: var(--color-text);
+  --lexxy-color-text-subtle: var(--color-text);
+  --lexxy-color-link: var(--color-link);
+  --lexxy-color-ink: var(--color-text);
+  --lexxy-color-ink-inverted: var(--color-text-reversed);
+  --lexxy-color-ink-medium: var(--color-text);
+  --lexxy-color-ink-lighter: var(--color-border-darker);
+  --lexxy-color-ink-lightest: var(--color-bg);
+  --lexxy-color-selected: var(--color-selected, var(--color-bg));
+  --lexxy-color-code-bg: var(--color-bg);
 
-  .trix-dialog {
-    bottom: 3rem !important;
-    top: auto !important;
-  }
-
-  .trix-button--icon {
-    height: auto !important;
-  }
-
-  .trix-dialog {
-    background-color: var(--color-bg) !important;
-    border-radius: 1rem !important;
-    border: 2px solid var(--color-text) !important;
-    box-shadow: none !important;
-    color: var(--color-text) !important;
-    gap: var(--inline-space);
-    padding: 0 !important;
-    overflow: clip;
-
-    .trix-input {
-      background: transparent !important;
-      border: 0 !important;
-      color: var(--color-text) !important;
-      font-size: max(16px, 1em) !important;
-      padding: var(--input-padding, 0.5em 0.8em) !important;
-    }
-
-    .trix-button {
-      color: var(--color-text) !important;
-    }
-  }
-
-  .trix-dialog--link {
-    .trix-dialog__link-fields {
-      align-items: center;
-      padding-right: 0.3em;
-    }
-
-    [value="Link"],
-    [value="Unlink"] {
-      width: 2.6em;
-      aspect-ratio: 1 / 1;
-      background-position: center center;
-      background-repeat: no-repeat;
-      text-indent: -9999%;
-      padding: 0;
-    }
-
-    [value="Link"] { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill='none'%3E%3Cpath fill='%23000' fill-rule='evenodd' d='M18.948 5.258a4.337 4.337 0 0 0-6.108 0L11.217 6.87a.993.993 0 0 0 0 1.41c.392.39 1.027.39 1.418 0l1.623-1.613a2.323 2.323 0 0 1 3.271 0 2.29 2.29 0 0 1 0 3.251l-2.393 2.38a3.021 3.021 0 0 1-4.255 0l-.05-.049a1.007 1.007 0 0 0-1.418 0 .993.993 0 0 0 0 1.41l.05.049a5.036 5.036 0 0 0 7.091 0l2.394-2.38a4.275 4.275 0 0 0 0-6.072Zm-13.683 13.6a4.337 4.337 0 0 0 6.108 0l1.262-1.255a.993.993 0 0 0 0-1.41 1.007 1.007 0 0 0-1.418 0L9.954 17.45a2.323 2.323 0 0 1-3.27 0 2.29 2.29 0 0 1 0-3.251l2.344-2.331a2.579 2.579 0 0 1 3.631 0c.392.39 1.027.39 1.419 0a.993.993 0 0 0 0-1.41 4.593 4.593 0 0 0-6.468 0l-2.345 2.33a4.275 4.275 0 0 0 0 6.072Z' clip-rule='evenodd'/%3E%3C/svg%3E"); }
-
-    [value="Unlink"] {
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill='none'%3E%3Cpath fill='%23000' fill-rule='evenodd' d='M18.954 5.264a3.58 3.58 0 0 0-5.04 0l-2.157 2.144a.993.993 0 0 0 0 1.41c.392.39 1.027.39 1.418 0l2.157-2.144a1.565 1.565 0 0 1 2.204 0c.607.603.609 1.58.005 2.186l-2.348 2.355a.993.993 0 0 0 .006 1.41 1.007 1.007 0 0 0 1.419-.007l2.347-2.354a3.528 3.528 0 0 0-.01-5ZM5.257 18.852a3.59 3.59 0 0 0 5.041.015l2.6-2.554a.993.993 0 0 0 .01-1.41 1.007 1.007 0 0 0-1.419-.009l-2.6 2.554c-.615.603-1.603.6-2.214-.006a1.554 1.554 0 0 1-.012-2.195l2.539-2.58a.993.993 0 0 0-.016-1.41 1.007 1.007 0 0 0-1.418.015l-2.539 2.58a3.54 3.54 0 0 0 .028 5Z' clip-rule='evenodd'/%3E%3Cpath stroke='%23000' stroke-linecap='round' stroke-width='2' d='M10.233 5.78V3.769M5.968 9.802H4.21M7.343 7.107 5.968 5.781M14.348 17.523v2.013M18.613 13.502h1.758M17.238 16.196l1.375 1.327'/%3E%3C/svg%3E%0A");
-      border-top-right-radius: 1em !important;
-      border-bottom-right-radius: 1em !important;
-    }
-  }
+  /* Campfire's message lines stack without extra block margins */
+  --lexxy-content-margin: 0;
 }
 
-trix-editor {
+lexxy-editor {
   &.input {
+    --lexxy-editor-padding: 0;
+
+    /* One line high when empty. Lexxy derives this from attr(rows lh, 8lh),
+       whose resolution differs between Chrome versions — pin it instead of
+       risking the 8-line fallback */
+    --lexxy-editor-rows: 1lh;
+
+    background: transparent;
+    border: 0;
+    border-radius: 0;
     min-height: 24px;
   }
 
   .attachment--content {
     margin: 0;
     display: inline-flex;
-
-    .attachment__toolbar {
-      top: 0;
-      z-index: 2;
-    }
   }
 }
 
-.trix-button-group--file-tools,
-.trix-button-group--history-tools {
-  display: none !important;
+/* The mentions menu needs a solid surface — the editor's transparent canvas
+   would let messages show through it */
+.lexxy-prompt-menu {
+  --lexxy-color-canvas: var(--color-bg);
+
+  border: 1px solid var(--color-border-dark);
 }
 
-.trix-button-group,
-.trix-button {
-  border: 0 !important;
-  margin: 0 !important;
-  border-radius: 0.3em !important;
-  box-shadow: none;
+/* Same for the code block language picker: with a transparent canvas the
+   native dropdown renders white-on-white in dark mode */
+lexxy-editor lexxy-code-language-picker select {
+  background-color: var(--color-bg);
+  color: var(--color-text);
 
-  &::before {
-    opacity: 1 !important;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    &::before {
-      filter: invert(100);
-    }
-  }
-
-  &.trix-active {
-    background-color: var(--color-text) !important;
-
-    &::before {
-      filter: invert(100);
-    }
-
-    @media (prefers-color-scheme: dark) {
-      &::before {
-        filter: invert(0);
-      }
-    }
-  }
-
-  &.trix-button--remove {
-    background-color: var(--color-negative);
-    border-radius: 1.8em !important;
-
-    &::before {
-      filter: invert(100);
-      background-size: 70%;
-      background-image: url("minus.svg");
-    }
+  option {
+    background-color: var(--color-bg);
+    color: var(--color-text);
   }
 }
 
-[data-trix-content-type~='application/vnd.campfire.mention'] {
-  .trix-button-group {
-    display: inline;
+/* The toolbar only shows when rich text mode is toggled on (see composer.css) */
+lexxy-toolbar {
+  /* Wide, airy button spacing like the Trix toolbar */
+  --lexxy-toolbar-gap: 1.3em;
+
+  /* Match the compact size of the Trix toolbar buttons */
+  --lexxy-toolbar-button-size: 1.7em;
+  --lexxy-toolbar-icon-size: 1.125em;
+
+  display: none;
+  border-block-end: 0;
+  min-width: 0;
+  z-index: 3;
+
+  /* Tools Campfire doesn't offer, matching the Trix toolbar: underline,
+     color highlights, tables, dividers and undo/redo (history tools were
+     hidden under Trix as well) */
+  button[name="underline"],
+  button[name="table"],
+  button[name="divider"],
+  button[name="undo"],
+  button[name="redo"],
+  lexxy-highlight-dropdown {
+    display: none !important;
+  }
+
+  /* No group separator pipes, like the Trix toolbar */
+  .lexxy-editor__toolbar-button.lexxy-editor__toolbar-group-end::after {
+    display: none;
   }
 }
 
-[data-trix-content-type~="application/vnd.actiontext.opengraph-embed"] {
-  * {
-    text-decoration: none;
-  }
+/* Attachment markup contains formatting whitespace that must not turn into
+   line breaks under the editor's white-space: pre-wrap */
+lexxy-editor action-text-attachment {
+  white-space: normal;
+}
 
-  trix-editor & {
+action-text-attachment[content-type~="application/vnd.campfire.mention"] {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+
+action-text-attachment[content-type~="application/vnd.actiontext.opengraph-embed"] {
+  lexxy-editor & {
     display: block;
     inline-size: fit-content;
     max-inline-size: 100%;
   }
-}
 
-.trix-button:not(.trix-button--remove) {
-  @media (any-hover: hover) {
-    &:where(:not(:active):hover) {
-      filter: brightness(0.9);
-      background-color: var(--color-bg);
+  /* No selection background — it peeks through the card's rounded corners.
+     The lexxy-editor prefix out-specifies Lexxy's own selection rule. */
+  lexxy-editor &.node--selected {
+    --lexxy-attachment-bg-color: transparent;
+  }
+
+  /* A prominent remove button on the card's top edge, horizontally
+     centered, like the Trix one. The lexxy-editor prefix out-specifies
+     Lexxy's own placement rules. */
+  lexxy-editor & lexxy-node-delete-button {
+    inset-block-start: 0;
+    inset-inline-start: 50%;
+    inset-inline-end: auto;
+    transform: translate(-50%, -50%);
+
+    .lexxy-floating-controls__group {
+      --button-size: 2.2em;
+
+      background-color: var(--color-negative);
+      border-radius: 50%;
+      color: white;
     }
   }
-
-  &:disabled {
-    opacity: 0.33;
-  }
 }
 
-trix-editor,
-.trix-content {
+.lexxy-content {
   pre {
     background-color: var(--color-bg) !important;
     border-radius: 0.5em;
@@ -179,11 +155,13 @@ trix-editor,
   blockquote {
     border: 0 solid var(--color-border-darker) !important;
     border-inline-start-width: var(--blockquote-border) !important;
+    font-style: normal;
     margin: 0 var(--blockquote-margin) !important;
     padding-inline-start: var(--blockquote-padding) !important;
   }
 
   cite {
+    display: block;
     margin-inline-start: calc(var(--blockquote-padding));
     font-style: normal;
     font-size: 0.8rem;
