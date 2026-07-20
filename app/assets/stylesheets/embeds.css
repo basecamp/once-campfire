@@ -15,7 +15,7 @@
       flex-direction: row;
     }
 
-    .cf-twitter-avatar & {
+    &.og-embed--twitter-avatar {
       flex-direction: row;
     }
   }
@@ -68,7 +68,7 @@
       }
     }
 
-    .cf-twitter-avatar & {
+    .og-embed--twitter-avatar & {
       aspect-ratio: 1;
       border-radius: 50%;
       inline-size: 2lh;

@@ -9,6 +9,7 @@ export default class CampfireRichTextExtension extends Lexxy.Extension {
       "figcaption",
       "actiontext-opengraph-embed",
       { tag: "div", attributes: [ "sgid" ] },
+      { tag: "span", attributes: [ "sgid" ] },
       { tag: "img", attributes: [ "alt" ] },
       { tag: "a", attributes: [ "rel", "target" ] }
     ]

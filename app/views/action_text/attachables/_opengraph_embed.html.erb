@@ -1,6 +1,6 @@
 <figure class="attachment attachment--content attachment--og">
   <actiontext-opengraph-embed>
-    <div class="og-embed gap">
+    <div class="og-embed gap <%= "og-embed--twitter-avatar" if opengraph_embed.twitter_avatar? %>">
       <div class="og-embed__content">
         <div class="og-embed__title">
           <%= link_to truncate(opengraph_embed.filename, length: 280, omission: "…"), opengraph_embed.href, rel: "noreferrer", target: "_blank" %>

@@ -9,5 +9,5 @@ module ContentFilters
   EDITOR_FORMATTING_TAGS = %w[ s u mark ]
   EDITOR_FORMATTING_ATTRIBUTES = %w[ data-language ]
 
-  TextMessagePresentationFilters = ActionText::Content::Filters.new(RemoveSoloUnfurledLinkText, StyleUnfurledTwitterAvatars, SanitizeTags)
+  TextMessagePresentationFilters = ActionText::Content::Filters.new(RemoveSoloUnfurledLinkText, SanitizeTags)
 end
