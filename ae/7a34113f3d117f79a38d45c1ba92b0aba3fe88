@@ -1,0 +1,21 @@
+test/lib/restricted_http/private_network_guard_test.rb
+  s_7aeadd29f28ba5::t_1961aac5910cdc 67-86
+lib/restricted_http/private_network_guard.rb
+  s_7aeadd29f28ba5::t_38358495ca9296 11-18,27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "ae7a34113f3d117f79a38d45c1ba92b0aba3fe88",
+  "prompts": {},
+  "sessions": {
+    "s_7aeadd29f28ba5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "05b97e8c-bc9c-4d76-9722-ebb524ab6daf",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
