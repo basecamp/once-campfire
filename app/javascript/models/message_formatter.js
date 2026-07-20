@@ -77,14 +77,15 @@ export default class MessageFormatter {
 
   #highlightCodeBlock(block) {
     this.#normalizeLineBreaks(block)
-    if (!this.#isPlainText(block)) return
 
-    const language = block.dataset.language
-    if (language && window.hljs.getLanguage(language)) {
-      block.classList.add(`language-${language}`)
+    if (this.#isPlainText(block)) {
+      const language = block.dataset.language
+      if (language && window.hljs.getLanguage(language)) {
+        block.classList.add(`language-${language}`)
+      }
+
+      window.hljs.highlightElement(block)
     }
-
-    window.hljs.highlightElement(block)
   }
 
   // Lexxy breaks code block lines with <br>, Trix-era blocks used newlines

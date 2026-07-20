@@ -18,7 +18,7 @@ export default class ClientMessage {
       body,
       messageTimestamp: Math.floor(now.getTime()),
       messageDatetime: now.toISOString(),
-      messageClasses: this.#containsOnlyEmoji(this.#plainTextFromNode(node)) ? "message--emoji" : "",
+      messageClasses: this.#messageClassesFromNode(node),
     })
   }
 
@@ -52,6 +52,14 @@ export default class ClientMessage {
     }
   }
 
+  #messageClassesFromNode(node) {
+    if (this.#containsOnlyEmoji(this.#plainTextFromNode(node))) {
+      return "message--emoji"
+    } else {
+      return ""
+    }
+  }
+
 
   #isPlayCommand(node) {
     return this.#matchPlayCommand(node)
@@ -62,7 +70,11 @@ export default class ClientMessage {
   }
 
   #plainTextFromNode(node) {
-    return this.#isRichText(node) ? node.toString()?.trim() : node
+    if (this.#isRichText(node)) {
+      return node.toString().trim()
+    } else {
+      return node
+    }
   }
 
   #isRichText(node) {

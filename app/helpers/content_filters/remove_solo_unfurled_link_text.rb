@@ -4,12 +4,10 @@ class ContentFilters::RemoveSoloUnfurledLinkText < ActionText::Content::Filter
   end
 
   def apply
-    if fragment.find_all("div").any?
-      # Trix-era bodies: one <div> wrapping the link text and the embed
-      fragment.replace("div") { |node| node.tap { |n| n.inner_html = unfurled_links.first.to_s } }
+    if trix_body?
+      remove_link_text_from_wrapping_div
     else
-      # Lexxy bodies: the link sits in its own <p>, the embed follows it
-      fragment.replace("p") { |node| node.at_css("action-text-attachment") ? node : nil }
+      remove_link_paragraphs
     end
   end
 
@@ -40,5 +38,21 @@ class ContentFilters::RemoveSoloUnfurledLinkText < ActionText::Content::Filter
 
     def twitter_url?(url)
       url.present? && TWITTER_DOMAINS.any? { |domain| url.strip.include?(domain) }
+    end
+
+    def trix_body?
+      fragment.find_all("div").any?
+    end
+
+    def remove_link_text_from_wrapping_div
+      fragment.replace("div") { |node| node.tap { |n| n.inner_html = unfurled_links.first.to_s } }
+    end
+
+    def remove_link_paragraphs
+      fragment.replace("p") do |node|
+        if node.at_css("action-text-attachment")
+          node
+        end
+      end
     end
 end
