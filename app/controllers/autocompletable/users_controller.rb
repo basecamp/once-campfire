@@ -10,7 +10,11 @@ class Autocompletable::UsersController < ApplicationController
 
   private
     def find_autocompletable_users
-      query.present? ? users_scope.active.filtered_by(query) : users_scope.active
+      if query.present?
+        users_scope.active.filtered_by(query)
+      else
+        users_scope.active
+      end
     end
 
     # The rich text editor's mentions prompt filters with `filter`, the
