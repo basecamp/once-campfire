@@ -74,6 +74,11 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
     assert_private_ip "64:ff9b::a00:5"       # NAT64 -> 10.0.0.5
   end
 
+  test "private_ip? returns true for local-use NAT64 addresses (RFC8215)" do
+    assert_private_ip "64:ff9b:1:fffe::a00:1"  # local-use NAT64 embedding 10.0.0.1
+    assert_private_ip "64:ff9b:1::808:808"     # blocked even when embedding a public IP
+  end
+
   test "private_ip? returns false for NAT64 addresses embedding a public IPv4" do
     # DNS64 legitimately synthesizes these for public sites on IPv6-only hosts.
     assert_not RestrictedHTTP::PrivateNetworkGuard.private_ip?("64:ff9b::808:808")  # -> 8.8.8.8
@@ -90,9 +95,10 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
     assert_private_ip "fe80::1"
   end
 
-  test "private_ip? returns true for IPv6 multicast and documentation ranges" do
+  test "private_ip? returns true for IPv6 multicast, documentation, and benchmarking ranges" do
     assert_private_ip "ff02::1"
     assert_private_ip "2001:db8::1"
+    assert_private_ip "2001:2::1"  # benchmarking (RFC5180), matches 198.18.0.0/15
   end
 
   test "private_ip? returns false for public IPv6 addresses" do

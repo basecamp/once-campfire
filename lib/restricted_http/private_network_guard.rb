@@ -20,8 +20,13 @@ module RestrictedHTTP
     # fetch target, so they are blocked outright. ULA (fc00::/7, incl. the AWS
     # IMDSv6 address fd00:ec2::254), link-local, and loopback are covered by the
     # predicates in #disallowed_ipv6?.
+    # The local-use NAT64 prefix (64:ff9b:1::/48, RFC 8215) also embeds an
+    # IPv4 target, but at a deployment-chosen position we can't extract, and it
+    # is only meaningful inside the network that deployed it, so it is blocked
+    # outright rather than handled like NAT64_WELL_KNOWN below.
     DISALLOWED_IPV6 = %w[
-      ::/128 100::/64 2001::/32 2001:db8::/32 2002::/16 fec0::/10 ff00::/8
+      ::/128 64:ff9b:1::/48 100::/64 2001::/32 2001:2::/48 2001:db8::/32
+      2002::/16 fec0::/10 ff00::/8
     ].map { |cidr| IPAddr.new(cidr) }.freeze
 
     # Well-known NAT64 prefix (RFC 6052/6146). An address here embeds an IPv4
