@@ -8,7 +8,6 @@ const OPENGRAPH_EMBED_CONTENT_TYPE = "application/vnd.actiontext.opengraph-embed
 const UNFURLED_TWITTER_AVATAR_CSS_CLASS = "cf-twitter-avatar"
 const TWITTER_AVATAR_URL_PREFIX = "https://pbs.twimg.com/profile_images"
 
-// Unfurls URLs pasted into the rich text editor into OpenGraph preview attachments
 export default class extends Controller {
   #abortController
 
@@ -44,14 +43,14 @@ export default class extends Controller {
         if (title && href) return { title, href, image, description }
       }
     } catch {
-      // Ignore aborted or failed requests, like the previous implementation did
+      // Ignore aborted and failed requests
     }
 
     return null
   }
 
   #opengraphEmbedHTML({ title, href, image, description }) {
-    return `<actiontext-opengraph-embed class="${this.#isTwitterAvatar(image) ? UNFURLED_TWITTER_AVATAR_CSS_CLASS : ""}">
+    return `<actiontext-opengraph-embed class="${this.#embedClass(image)}">
       <div class="og-embed gap">
         <div class="og-embed__content">
           <div class="og-embed__title">
@@ -59,12 +58,28 @@ export default class extends Controller {
           </div>
           <div class="og-embed__description">${escapeHTML(truncateString(description, 560))}</div>
         </div>
-        ${image ? `<div class="og-embed__image"><img src="${escapeHTML(image)}" class="image center" alt="" /></div>` : ""}
+        ${this.#imageHTML(image)}
       </div>
     </actiontext-opengraph-embed>`
   }
 
+  #embedClass(image) {
+    if (this.#isTwitterAvatar(image)) {
+      return UNFURLED_TWITTER_AVATAR_CSS_CLASS
+    } else {
+      return ""
+    }
+  }
+
   #isTwitterAvatar(image) {
-    return !!image?.startsWith(TWITTER_AVATAR_URL_PREFIX)
+    return Boolean(image) && image.startsWith(TWITTER_AVATAR_URL_PREFIX)
+  }
+
+  #imageHTML(image) {
+    if (image) {
+      return `<div class="og-embed__image"><img src="${escapeHTML(image)}" class="image center" alt="" /></div>`
+    } else {
+      return ""
+    }
   }
 }
