@@ -88,6 +88,25 @@ lexxy-toolbar {
   .lexxy-editor__toolbar-button.lexxy-editor__toolbar-group-end::after {
     display: none;
   }
+
+  /* Dropdown panels: a solid surface with a uniform radius. Lexxy derives
+     the panel's radius and gap from --lexxy-toolbar-gap, which Campfire
+     repurposes for button spacing */
+  .lexxy-editor__toolbar-dropdown [data-dropdown-panel] {
+    --lexxy-color-canvas: var(--color-bg);
+    --lexxy-color-ink-lightest: var(--color-message-bg);
+    --lexxy-color-selected: var(--color-selected);
+    --lexxy-color-selected-hover: var(--color-message-bg);
+
+    border: 1px solid var(--color-border-dark);
+    border-radius: 0.5em;
+    gap: 0.25em;
+    padding: 0.25em;
+  }
+
+  .lexxy-editor__toolbar-dropdown > .lexxy-editor__toolbar-button[aria-expanded="true"] {
+    border-radius: var(--lexxy-radius);
+  }
 }
 
 /* Attachment markup contains formatting whitespace that must not turn into

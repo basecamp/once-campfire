@@ -33,12 +33,13 @@ class ActionText::Attachment::OpengraphEmbed
 
       def attributes_from_content(content)
         fragment = Nokogiri::HTML.fragment(content)
-        link = fragment.at_css(".og-embed__title a")
+        title = fragment.at_css(".og-embed__title")
+        link = title&.at_css("a")
 
         {
           href: link&.[]("href"),
           url: fragment.at_css(".og-embed__image img")&.[]("src"),
-          filename: link&.text&.strip,
+          filename: (link || title)&.text&.strip,
           description: fragment.at_css(".og-embed__description")&.text&.strip
         }
       end
