@@ -17,6 +17,7 @@
                 controller: "form", action: "lexxy:file-accept->form#preventAttachment keydown.esc->form#cancel keydown.ctrl+enter->form#submit:prevent keydown.meta+enter->form#submit:prevent" } do |form| %>
             <div class="full-width input input--actor min-width fill-white">
               <%= form.rich_text_area :body,
+                    value: editable_body(@message),
                     rows: 1,
                     class: "input lexxy-content",
                     aria: { multiline: "true", label: "Edit message" },

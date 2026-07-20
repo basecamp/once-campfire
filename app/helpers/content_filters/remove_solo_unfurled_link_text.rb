@@ -1,4 +1,7 @@
 class ContentFilters::RemoveSoloUnfurledLinkText < ActionText::Content::Filter
+  TWITTER_DOMAINS = %w[ x.com twitter.com ]
+  TWITTER_DOMAIN_MAPPING = { "x.com" => "twitter.com" }
+
   def applicable?
     normalize_tweet_url(solo_unfurled_url) == normalize_tweet_url(content.to_plain_text)
   end
@@ -12,9 +15,6 @@ class ContentFilters::RemoveSoloUnfurledLinkText < ActionText::Content::Filter
   end
 
   private
-    TWITTER_DOMAINS = %w[ x.com twitter.com ]
-    TWITTER_DOMAIN_MAPPING = { "x.com" => "twitter.com" }
-
     def solo_unfurled_url
       ActionText::Attachment::OpengraphEmbed.from_node(unfurled_links.first)&.href if unfurled_links.size == 1
     end
