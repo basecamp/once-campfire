@@ -64,6 +64,26 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
     assert_private_ip "::93.184.216.34"
   end
 
+  # IPv6/encapsulation and shared-address ranges (SSRF bypass prevention)
+
+  test "private_ip? returns true for NAT64 addresses" do
+    assert_private_ip "64:ff9b::a00:1"  # NAT64-embedded 10.0.0.1
+  end
+
+  test "private_ip? returns true for 6to4 addresses" do
+    assert_private_ip "2002::1"
+    assert_private_ip "2002:0a00:0001::"  # 6to4-embedded 10.0.0.1
+  end
+
+  test "private_ip? returns true for CGNAT / shared address space" do
+    assert_private_ip "100.64.0.1"
+    assert_private_ip "100.127.255.255"
+  end
+
+  test "private_ip? returns false for public addresses outside the new ranges" do
+    assert_not RestrictedHTTP::PrivateNetworkGuard.private_ip?("93.184.216.34")
+  end
+
   test "private_ip? returns true for invalid addresses" do
     assert RestrictedHTTP::PrivateNetworkGuard.private_ip?("not-an-ip")
     assert RestrictedHTTP::PrivateNetworkGuard.private_ip?("")
