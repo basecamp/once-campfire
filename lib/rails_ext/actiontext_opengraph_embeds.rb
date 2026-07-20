@@ -14,12 +14,32 @@ class ActionText::Attachment::OpengraphEmbed
     end
 
     private
+      # Trix serialized the embed's details as attributes of the
+      # <action-text-attachment> node. Lexxy only serializes the sgid, content
+      # and content-type, so newer attachments carry the details in their
+      # content markup instead.
       def attributes_from_node(node)
+        if node["href"].present?
+          {
+            href: web_url(node["href"]),
+            url: web_url(node["url"]),
+            filename: node["filename"],
+            description: node["caption"]
+          }
+        else
+          attributes_from_content(node["content"].to_s)
+        end
+      end
+
+      def attributes_from_content(content)
+        fragment = Nokogiri::HTML.fragment(content)
+        link = fragment.at_css(".og-embed__title a")
+
         {
-          href: web_url(node["href"]),
-          url: web_url(node["url"]),
-          filename: node["filename"],
-          description: node["caption"]
+          href: web_url(link&.[]("href")),
+          url: web_url(fragment.at_css(".og-embed__image img")&.[]("src")),
+          filename: link&.text&.strip,
+          description: fragment.at_css(".og-embed__description")&.text&.strip
         }
       end
 
@@ -77,10 +97,6 @@ class ActionText::Attachment::OpengraphEmbed
   end
 
   def to_partial_path
-    "action_text/attachables/opengraph_embed"
-  end
-
-  def to_trix_content_attachment_partial_path
     "action_text/attachables/opengraph_embed"
   end
 end

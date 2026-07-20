@@ -11,7 +11,7 @@ export default class extends Controller {
   }
 
   reply() {
-    const content = `<blockquote>${this.#bodyContent}</blockquote><cite>${this.authorTarget.innerHTML} ${this.#linkToOriginal}</cite><br>`
+    const content = `<blockquote>${this.#bodyContent}</blockquote><cite>${this.authorTarget.innerHTML} ${this.#linkToOriginal}</cite><p><br></p>`
     this.composerOutlet.replaceMessageContent(content)
   }
 
@@ -23,7 +23,7 @@ export default class extends Controller {
   }
 
   get #bodyContent() {
-    const body = this.bodyTarget.querySelector(".trix-content").cloneNode(true)
+    const body = this.bodyTarget.querySelector(".lexxy-content").cloneNode(true)
     return this.#stripMentionAttachments(this.#stripUnfurledAttachments(body)).innerHTML
   }
 
