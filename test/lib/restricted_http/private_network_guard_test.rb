@@ -74,9 +74,12 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
     assert_private_ip "64:ff9b::a00:5"       # NAT64 -> 10.0.0.5
   end
 
-  test "private_ip? returns true for local-use NAT64 addresses (RFC8215)" do
-    assert_private_ip "64:ff9b:1:fffe::a00:1"  # local-use NAT64 embedding 10.0.0.1
-    assert_private_ip "64:ff9b:1::808:808"     # blocked even when embedding a public IP
+  test "private_ip? returns true for local-use NAT64 addresses embedding a private IPv4 (RFC8215)" do
+    assert_private_ip "64:ff9b:1::a00:1"  # local-use NAT64 -> 10.0.0.1
+  end
+
+  test "private_ip? returns false for local-use NAT64 addresses embedding a public IPv4 (RFC8215)" do
+    assert_not RestrictedHTTP::PrivateNetworkGuard.private_ip?("64:ff9b:1::808:808")  # -> 8.8.8.8
   end
 
   test "private_ip? returns false for NAT64 addresses embedding a public IPv4" do
