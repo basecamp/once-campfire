@@ -30,20 +30,26 @@ class ContentFiltersTest < ActionView::TestCase
     assert_match %r{<div>Hello https://basecamp\.com/<action-text-attachment}, filtered.to_html
   end
 
-  test "unfurled tweet without any image" do
-    text = "<div>https://twitter.com/37signals/status/1750290547908952568<action-text-attachment content-type=\"application/vnd.actiontext.opengraph-embed\" url=\"https://pbs.twimg.com/profile_images/1671940407633010689/9P5gi6LF_200x200.jpg\" href=\"https://twitter.com/37signals/status/1750290547908952568\" filename=\"37signals (@37signals)\" caption=\"We're back up on all apps, everyone. Really sorry for the disruption to your day.\" content=\"<actiontext-opengraph-embed>\n      <div class=&quot;og-embed&quot;>\n        <div class=&quot;og-embed__content&quot;>\n          <div class=&quot;og-embed__title&quot;>37signals (@37signals)</div>\n          <div class=&quot;og-embed__description&quot;>We're back up on all apps, everyone. Really sorry for the disruption to your day.</div>\n        </div>\n        <div class=&quot;og-embed__image&quot;>\n          <img src=&quot;https://pbs.twimg.com/profile_images/1671940407633010689/9P5gi6LF_200x200.jpg&quot; class=&quot;image&quot; alt=&quot;&quot; />\n        </div>\n      </div>\n    </actiontext-opengraph-embed>\"></action-text-attachment></div>"
-    message = Message.create! room: rooms(:pets), body: unfurled_message_body_for_basecamp(text), client_message_id: "0015", creator: users(:jason)
+  test "unfurled tweet with an avatar image gets the twitter avatar treatment" do
+    body = %(<div>https://twitter.com/37signals/status/1750290547908952568<action-text-attachment content-type="application/vnd.actiontext.opengraph-embed" url="https://pbs.twimg.com/profile_images/1671940407633010689/9P5gi6LF_200x200.jpg" href="https://twitter.com/37signals/status/1750290547908952568" filename="37signals (@37signals)" caption="We're back up on all apps, everyone."></action-text-attachment></div>)
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
 
-    filtered = ContentFilters::StyleUnfurledTwitterAvatars.apply(message.body.body)
-    assert_match %r{<div class="cf-twitter-avatar">}, filtered.to_html
+    assert_match /og-embed--twitter-avatar/, message_presentation(message)
   end
 
-  test "unfurled tweet containing an image" do
-    text = "<div>https://twitter.com/dhh/status/1748445489648050505<action-text-attachment content-type=\"application/vnd.actiontext.opengraph-embed\" url=\"https://pbs.twimg.com/media/GEO5l04bsAA9f6H.jpg\" href=\"https://twitter.com/dhh/status/1748445489648050505\" filename=\"DHH (@dhh)\" caption=\"We pay homage to the glorious MIT License with the ONCE license. May all our future legalese be as succinct!\" content=\"<actiontext-opengraph-embed>\n      <div class=&quot;og-embed&quot;>\n        <div class=&quot;og-embed__content&quot;>\n          <div class=&quot;og-embed__title&quot;>DHH (@dhh)</div>\n          <div class=&quot;og-embed__description&quot;>We pay homage to the glorious MIT License with the ONCE license. May all our future legalese be as succinct!</div>\n        </div>\n        <div class=&quot;og-embed__image&quot;>\n          <img src=&quot;https://pbs.twimg.com/media/GEO5l04bsAA9f6H.jpg&quot; class=&quot;image&quot; alt=&quot;&quot; />\n        </div>\n      </div>\n    </actiontext-opengraph-embed>\"></action-text-attachment></div>"
-    message = Message.create! room: rooms(:pets), body: unfurled_message_body_for_basecamp(text), client_message_id: "0015", creator: users(:jason)
+  test "unfurled tweet with an avatar image in a lexxy body gets the twitter avatar treatment" do
+    content = %(<actiontext-opengraph-embed><div class="og-embed gap"><div class="og-embed__content"><div class="og-embed__title"><a href="https://twitter.com/x/status/1">Tweet</a></div><div class="og-embed__description">desc</div></div><div class="og-embed__image"><img src="https://pbs.twimg.com/profile_images/x.jpg" class="image center" alt="" /></div></div></actiontext-opengraph-embed>)
+    body = %(<p><a href="https://twitter.com/x/status/1">https://twitter.com/x/status/1</a></p><action-text-attachment content-type="application/vnd.actiontext.opengraph-embed" content="#{CGI.escapeHTML(content)}"></action-text-attachment>)
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
 
-    filtered = ContentFilters::StyleUnfurledTwitterAvatars.apply(message.body.body)
-    assert_no_match %r{<div class="cf-twitter-avatar">}, filtered.to_html
+    assert_match /og-embed--twitter-avatar/, message_presentation(message)
+  end
+
+  test "unfurled tweet with a content image is not styled as an avatar" do
+    body = %(<div>https://twitter.com/dhh/status/1748445489648050505<action-text-attachment content-type="application/vnd.actiontext.opengraph-embed" url="https://pbs.twimg.com/media/GEO5l04bsAA9f6H.jpg" href="https://twitter.com/dhh/status/1748445489648050505" filename="DHH (@dhh)" caption="We pay homage to the glorious MIT License!"></action-text-attachment></div>)
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
+
+    assert_no_match /og-embed--twitter-avatar/, message_presentation(message)
   end
 
   test "entire message contains an unfurled URL from x.com but unfurls to twitter.com" do

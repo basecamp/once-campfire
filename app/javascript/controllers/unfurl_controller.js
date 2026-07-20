@@ -5,7 +5,7 @@ import { escapeHTML } from "helpers/dom_helpers"
 
 const OPENGRAPH_EMBED_CONTENT_TYPE = "application/vnd.actiontext.opengraph-embed"
 
-const UNFURLED_TWITTER_AVATAR_CSS_CLASS = "cf-twitter-avatar"
+const UNFURLED_TWITTER_AVATAR_CSS_CLASS = "og-embed--twitter-avatar"
 const TWITTER_AVATAR_URL_PREFIX = "https://pbs.twimg.com/profile_images"
 
 export default class extends Controller {
@@ -50,8 +50,8 @@ export default class extends Controller {
   }
 
   #opengraphEmbedHTML({ title, href, image, description }) {
-    return `<actiontext-opengraph-embed class="${this.#embedClass(image)}">
-      <div class="og-embed gap">
+    return `<actiontext-opengraph-embed>
+      <div class="og-embed gap ${this.#embedClass(image)}">
         <div class="og-embed__content">
           <div class="og-embed__title">
             <a href="${escapeHTML(href)}" rel="noreferrer" target="_blank">${escapeHTML(truncateString(title, 280))}</a>
