@@ -2,6 +2,7 @@ class ActionText::Attachment::OpengraphEmbed
   include ActiveModel::Model
 
   OPENGRAPH_EMBED_CONTENT_TYPE = "application/vnd.actiontext.opengraph-embed"
+  TWITTER_AVATAR_URL_PREFIX = "https://pbs.twimg.com/profile_images"
 
   class << self
     def from_node(node)
@@ -46,6 +47,10 @@ class ActionText::Attachment::OpengraphEmbed
   end
 
   attr_accessor :href, :url, :filename, :description
+
+  def twitter_avatar?
+    url.to_s.start_with?(TWITTER_AVATAR_URL_PREFIX)
+  end
 
   def attachable_content_type
     OPENGRAPH_EMBED_CONTENT_TYPE
