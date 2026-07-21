@@ -21,7 +21,7 @@ Rails.application.configure do
     config.action_controller.perform_caching = true
     config.action_controller.enable_fragment_cache_logging = true
 
-    config.cache_store = :redis_cache_store
+    config.cache_store = :solid_cache_store
     config.public_file_server.headers = {
       "cache-control" => "public, max-age=#{2.days.to_i}"
     }
@@ -65,7 +65,7 @@ Rails.application.configure do
   # config.action_cable.disable_request_forgery_protection = true
 
   # Uncomment to test with production class job queue
-  # config.active_job.queue_adapter = :resque
+  # config.active_job.queue_adapter = :solid_queue
 
   # Highlight code that enqueued background job in logs.
   config.active_job.verbose_enqueue_logs = true

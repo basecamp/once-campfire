@@ -1,0 +1,160 @@
+#!/usr/bin/env ruby
+require "json"
+require "csv"
+
+BIN_MS = 10_000
+SLO_P95_MS = 500
+
+class Run
+  attr_reader :label, :dir
+
+  def initialize(label)
+    @label = label
+    @dir = File.expand_path("../tmp/bench/#{label}", __dir__)
+    abort "No results in tmp/bench/#{label}" unless File.exist?(File.join(dir, "k6.log"))
+  end
+
+  def report
+    write_series
+    print_summary
+  end
+
+  def series
+    @series ||= build_series
+  end
+
+  def meta
+    @meta ||= JSON.parse(File.read(File.join(dir, "meta.json")))
+  end
+
+  def summary
+    @summary ||= JSON.parse(File.read(File.join(dir, "summary.json")))
+  rescue Errno::ENOENT
+    {}
+  end
+
+  def capacity
+    breach = first_sustained_breach
+    if breach
+      breach[:connected]
+    else
+      nil
+    end
+  end
+
+  private
+    def build_series
+      events = parse_k6_log
+      stats = parse_stats
+      first_ts = events.map { |e| e[:ts] }.min
+      return [] unless first_ts
+
+      bins = Hash.new { |h, k| h[k] = { lats: [], conns: 0, sents: 0, errs: 0, cpu: [], mem: [] } }
+      events.each do |event|
+        bin = (event[:ts] - first_ts) / BIN_MS
+        case event[:kind]
+        when "CONN" then bins[bin][:conns] += 1
+        when "LAT"  then bins[bin][:lats] << event[:value]
+        when "SENT" then bins[bin][:sents] += 1
+        when "ERR"  then bins[bin][:errs] += 1
+        end
+      end
+      stats.each do |stat|
+        bin = (stat[:ts] - first_ts) / BIN_MS
+        next if bin < 0
+        bins[bin][:cpu] << stat[:cpu]
+        bins[bin][:mem] << stat[:mem]
+      end
+
+      connected = 0
+      (0..bins.keys.max).map do |bin|
+        data = bins[bin]
+        connected = [ connected + data[:conns], meta["users"] ].min
+        {
+          elapsed_s: bin * BIN_MS / 1000,
+          connected: connected,
+          sent: data[:sents],
+          samples: data[:lats].size,
+          lat_p50: percentile(data[:lats], 50),
+          lat_p95: percentile(data[:lats], 95),
+          lat_max: data[:lats].max,
+          errors: data[:errs],
+          cpu_perc: average(data[:cpu]),
+          mem_mb: average(data[:mem])&.then { |bytes| (bytes / 1024.0 / 1024.0).round(1) }
+        }
+      end
+    end
+
+    def parse_k6_log
+      events = []
+      File.foreach(File.join(dir, "k6.log")) do |line|
+        if line =~ /BENCH (CONN|LAT|SENT|ERR) (\d+)(?: (\S+))?/
+          events << { kind: $1, ts: $2.to_i, value: $3.to_i }
+        end
+      end
+      events
+    end
+
+    def parse_stats
+      path = File.join(dir, "stats.csv")
+      return [] unless File.exist?(path)
+      CSV.read(path, headers: true).map do |row|
+        { ts: row["epoch_ms"].to_i, cpu: row["cpu_perc"].to_f, mem: row["mem_bytes"].to_i }
+      end
+    end
+
+    def percentile(values, pct)
+      return nil if values.empty?
+      sorted = values.sort
+      sorted[((pct / 100.0) * (sorted.size - 1)).round]
+    end
+
+    def average(values)
+      return nil if values.empty?
+      (values.sum / values.size.to_f).round(1)
+    end
+
+    def write_series
+      CSV.open(File.join(dir, "series.csv"), "w") do |csv|
+        csv << series.first.keys
+        series.each { |row| csv << row.values }
+      end
+    end
+
+    def first_sustained_breach
+      series.each_cons(2) do |a, b|
+        if breached?(a) && breached?(b)
+          return a
+        end
+      end
+      nil
+    end
+
+    def breached?(bin)
+      if bin[:samples] > 0 && bin[:lat_p95] && bin[:lat_p95] > SLO_P95_MS
+        true
+      else
+        bin[:errors] > 0
+      end
+    end
+
+    def print_summary
+      latency = summary.dig("metrics", "delivery_latency") || {}
+      puts
+      puts "== #{label} (#{meta['cpus']} CPU, #{meta['memory']} RAM, ramp to #{meta['users']}) =="
+      puts "  delivery latency: p50=#{latency['med']&.round(1)}ms p95=#{latency['p(95)']&.round(1)}ms max=#{latency['max']&.round(1)}ms"
+      puts "  messages received: #{summary.dig('metrics', 'bench_messages_received', 'count')}"
+      puts "  socket errors: #{summary.dig('metrics', 'bench_socket_errors', 'count') || 0}"
+      peak = series.map { |bin| bin[:mem_mb] }.compact.max
+      puts "  peak container memory: #{peak} MB"
+      if capacity
+        puts "  capacity at SLO (p95 <= #{SLO_P95_MS}ms, no errors): ~#{capacity} concurrent users"
+      else
+        puts "  capacity at SLO: not reached (>= #{series.last[:connected]} concurrent users)"
+      end
+      puts "  series: tmp/bench/#{label}/series.csv"
+    end
+end
+
+abort "Usage: bin/bench-report LABEL [LABEL...]" if ARGV.empty?
+ARGV.each { |label| Run.new(label).report }

@@ -8,9 +8,6 @@ app_root="$(
 )"
 export PATH="$app_root/bin:$PATH"
 
-REDIS_PORT=6379
-REDIS_HOST=localhost
-
 if [ "$RAILS_ENV" = "production" ]; then
   echo "RAILS_ENV is production; bailing out"
   exit 1
@@ -43,10 +40,6 @@ step() {
   local exit_code=$?
   echo
   return $exit_code
-}
-
-redis_running() {
-  nc -z "$REDIS_HOST" "$REDIS_PORT" 2>/dev/null
 }
 
 echo
@@ -87,21 +80,6 @@ if [[ $* == *--reset* ]]; then
   step "Resetting the database" rails db:reset
 fi
 step "Preparing the database" rails db:prepare
-
-# Start Redis if not running
-if ! redis_running; then
-  if command -v docker &>/dev/null; then
-    if docker ps -aq -f name=campfire-redis | grep -q .; then
-      step "Starting Redis" docker start campfire-redis
-    else
-      step "Setting up Redis" docker run -d --name campfire-redis -p "$REDIS_PORT:$REDIS_PORT" redis:7
-    fi
-  else
-    echo "Couldn't start Redis"
-    echo "Install either docker or redis and then run this command again"
-    exit 1
-  fi
-fi
 
 # Install GitHub Actions linting tools
 for tool in actionlint shellcheck zizmor; do

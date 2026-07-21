@@ -1,0 +1,186 @@
+#!/usr/bin/env ruby
+require "optparse"
+require "json"
+require "net/http"
+require "fileutils"
+require "etc"
+require "time"
+
+options = {
+  users: 3000, ramp: 480, hold: 120, cpus: 2, memory: "2g",
+  send_interval: 1, sample: 25, build: true, port: 3000, image: "campfire-bench"
+}
+
+OptionParser.new do |parser|
+  parser.on("--label LABEL", "Run label (required), e.g. redis-2cpu-2g") { |v| options[:label] = v }
+  parser.on("--users N", Integer, "Ramp target (default 3000, max 10000)") { |v| options[:users] = v }
+  parser.on("--ramp SECONDS", Integer, "Ramp duration (default 480)") { |v| options[:ramp] = v }
+  parser.on("--hold SECONDS", Integer, "Hold duration at target (default 120)") { |v| options[:hold] = v }
+  parser.on("--cpus N", Integer, "App container CPU count via cpuset (default 2)") { |v| options[:cpus] = v }
+  parser.on("--memory SIZE", "App container memory limit (default 2g)") { |v| options[:memory] = v }
+  parser.on("--send-interval S", Float, "Seconds between messages (default 1)") { |v| options[:send_interval] = v }
+  parser.on("--sample N", Integer, "1-in-N receivers log latency lines (default 25)") { |v| options[:sample] = v }
+  parser.on("--port PORT", Integer, "Host port for the app (default 3000)") { |v| options[:port] = v }
+  parser.on("--image TAG", "Image tag (default campfire-bench)") { |v| options[:image] = v }
+  parser.on("--no-build", "Skip docker build") { options[:build] = false }
+end.parse!
+
+abort "--label is required" unless options[:label]
+
+class Bench
+  APP_CONTAINER = "campfire-bench-app"
+  K6_CONTAINER = "campfire-bench-k6"
+
+  attr_reader :opts, :results_dir
+
+  def initialize(opts)
+    @opts = opts
+    @root = File.expand_path("..", __dir__)
+    @perf_dir = File.join(@root, "test/performance")
+    @results_dir = File.join(@root, "tmp/bench", opts[:label])
+  end
+
+  def run
+    FileUtils.mkdir_p(results_dir)
+    build if opts[:build]
+    write_meta
+    start_app
+    wait_for_app
+    sampler = start_stats_sampler
+    run_k6
+  ensure
+    stop(sampler)
+    capture_app_state
+    cleanup
+  end
+
+  private
+    def build
+      sh "docker", "build", "-t", opts[:image], @root
+    end
+
+    def write_meta
+      meta = opts.merge(
+        git_revision: `git rev-parse HEAD`.strip,
+        git_branch: `git rev-parse --abbrev-ref HEAD`.strip,
+        host_cpus: Etc.nprocessors,
+        started_at: Time.now.utc.iso8601
+      )
+      File.write(File.join(results_dir, "meta.json"), JSON.pretty_generate(meta))
+    end
+
+    def start_app
+      system "docker", "rm", "-f", APP_CONTAINER, err: File::NULL, out: File::NULL
+      sh "docker", "run", "-d", "--name", APP_CONTAINER,
+         "--cpuset-cpus", app_cpuset,
+         "--memory", opts[:memory], "--memory-swap", opts[:memory],
+         "-p", "#{opts[:port]}:80",
+         "-e", "SECRET_KEY_BASE=dummy",
+         "-e", "RAILS_ENV=performance",
+         opts[:image]
+    end
+
+    def app_cpuset
+      (0...opts[:cpus]).to_a.join(",")
+    end
+
+    def wait_for_app
+      timeout_at = Time.now + 300
+      uri = URI("http://127.0.0.1:#{opts[:port]}/")
+      loop do
+        raise "App not up after 300s" if Time.now > timeout_at
+        begin
+          break if Net::HTTP.get_response(uri).code.to_i < 400
+        rescue Errno::ECONNREFUSED, Errno::ECONNRESET, EOFError
+        end
+        puts "Waiting for app (seeding 10k users on first boot)..."
+        sleep 2
+      end
+      puts "App is up."
+    end
+
+    def start_stats_sampler
+      stats_path = File.join(results_dir, "stats.csv")
+      fork do
+        File.open(stats_path, "w") do |file|
+          file.puts "epoch_ms,cpu_perc,mem_bytes"
+          file.sync = true
+          loop do
+            line = `docker stats --no-stream --format "{{.CPUPerc}} {{.MemUsage}}" #{APP_CONTAINER} 2>/dev/null`.strip
+            if line =~ /([\d.]+)%\s+([\d.]+)(\w+)/
+              file.puts "#{(Time.now.to_f * 1000).to_i},#{$1},#{to_bytes($2.to_f, $3)}"
+            end
+            sleep 1
+          end
+        end
+      end
+    end
+
+    def to_bytes(value, unit)
+      factors = { "B" => 1, "KiB" => 1024, "MiB" => 1024**2, "GiB" => 1024**3,
+                  "kB" => 1000, "MB" => 1000**2, "GB" => 1000**3 }
+      (value * factors.fetch(unit, 1)).to_i
+    end
+
+    def run_k6
+      total = opts[:ramp] + opts[:hold]
+      puts "Running k6: ramp to #{opts[:users]} users over #{opts[:ramp]}s, hold #{opts[:hold]}s (total #{total}s)..."
+      system "docker", "rm", "-f", K6_CONTAINER, err: File::NULL, out: File::NULL
+      k6_log = File.join(results_dir, "k6.log")
+      summary = File.join(results_dir, "summary.json")
+      finished = system(
+        "docker", "run", "--rm", "--name", K6_CONTAINER,
+        "--network", "host",
+        "--cpuset-cpus", k6_cpuset,
+        "--ulimit", "nofile=262144:262144",
+        "-u", "#{Process.uid}:#{Process.gid}",
+        "-v", "#{@perf_dir}:/src",
+        "-v", "#{results_dir}:/results",
+        "-e", "HOST=127.0.0.1", "-e", "PORT=#{opts[:port]}",
+        "-e", "USERS=#{opts[:users]}",
+        "-e", "RAMP_S=#{opts[:ramp]}", "-e", "HOLD_S=#{opts[:hold]}",
+        "-e", "SEND_INTERVAL_S=#{opts[:send_interval]}",
+        "-e", "SAMPLE=#{opts[:sample]}",
+        "grafana/k6", "run",
+        "--summary-export", "/results/summary.json",
+        "--quiet",
+        "/src/ramp.js",
+        out: k6_log, err: [ k6_log, "a" ]
+      )
+      if finished
+        puts "k6 finished."
+      else
+        puts "k6 exited non-zero — results still captured in #{k6_log}."
+      end
+    end
+
+    def k6_cpuset
+      (opts[:cpus]...Etc.nprocessors).to_a.join(",")
+    end
+
+    def stop(sampler)
+      Process.kill("TERM", sampler)
+      Process.wait(sampler)
+    rescue Errno::ESRCH, Errno::ECHILD
+      nil
+    end
+
+    def capture_app_state
+      oom = `docker inspect --format '{{.State.OOMKilled}}' #{APP_CONTAINER} 2>/dev/null`.strip
+      File.write(File.join(results_dir, "oom.txt"), oom)
+      system "docker logs --tail 200 #{APP_CONTAINER} > #{File.join(results_dir, 'app.log')} 2>&1"
+      puts "App container was OOM-killed during the run." if oom == "true"
+    end
+
+    def cleanup
+      system "docker", "rm", "-f", APP_CONTAINER, err: File::NULL, out: File::NULL
+    end
+
+    def sh(*cmd)
+      puts "+ #{cmd.join(' ')}"
+      system(*cmd) || abort("Command failed: #{cmd.join(' ')}")
+    end
+end
+
+Bench.new(options).run
+puts "Results in tmp/bench/#{options[:label]}/"

@@ -1,18 +1,25 @@
-default: &default
-  adapter: redis
-  url: redis://localhost:6379
-
+# Async adapter only works within the same process, so for manually triggering cable updates from a console,
+# and seeing results in the browser, you must do so from the web console (running inside the dev process),
+# not a terminal started via bin/rails console! Add "console" to any action or any ERB template view
+# to make the web console appear.
 development:
-  <<: *default
-  channel_prefix: campfire_development
+  adapter: async
 
 test:
   adapter: test
 
 performance:
-  <<: *default
-  channel_prefix: campfire_performance
+  adapter: solid_cable
+  connects_to:
+    database:
+      writing: cable
+  polling_interval: 0.05.seconds
+  message_retention: 1.day
 
 production:
-  <<: *default
-  channel_prefix: campfire_production
+  adapter: solid_cable
+  connects_to:
+    database:
+      writing: cable
+  polling_interval: 0.05.seconds
+  message_retention: 1.day

@@ -35,8 +35,6 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 worker_count = (Concurrent.processor_count * 0.666).ceil
 workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
 
-ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
-
 # Use the `preload_app!` method when specifying a `workers` number.
 # This directive tells Puma to first boot the application and load code
 # before forking the application. This takes advantage of Copy On Write

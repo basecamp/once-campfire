@@ -9,14 +9,14 @@ gem "benchmark"
 
 # Drivers
 gem "sqlite3"
-gem "redis", "~> 5.4"
 
 # Deployment
 gem "puma", "~> 7.2", ">= 7.2.1"
 
-# Jobs
-gem "resque", "~> 2.7.0"
-gem "resque-pool", "~> 0.7.1"
+# Jobs, caching, WebSockets
+gem "solid_queue"
+gem "solid_cache"
+gem "solid_cable"
 
 # Assets
 gem "propshaft", github: "rails/propshaft"
@@ -41,7 +41,6 @@ gem "rails_autolink"
 gem "geared_pagination"
 gem "jbuilder"
 gem "net-http-persistent"
-gem "kredis"
 gem "platform_agent"
 gem "thruster"
 
