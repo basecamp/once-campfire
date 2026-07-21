@@ -1,11 +1,11 @@
 <figure class="attachment attachment--content attachment--og">
   <actiontext-opengraph-embed>
-    <div class="og-embed gap">
+    <div class="og-embed gap <%= "og-embed--twitter-avatar" if opengraph_embed.twitter_avatar? %>">
       <div class="og-embed__content">
         <div class="og-embed__title">
           <%= link_to truncate(opengraph_embed.filename, length: 280, omission: "…"), opengraph_embed.href, rel: "noreferrer", target: "_blank" %>
         </div>
-        <div class="og-embed__description"><%= truncate(opengraph_embed.caption, length: 560, omission: "…").html_safe %></div>
+        <div class="og-embed__description"><%= truncate(opengraph_embed.description.to_s, length: 560, omission: "…").html_safe %></div>
       </div>
       <% if opengraph_embed.url %>
         <div class="og-embed__image">

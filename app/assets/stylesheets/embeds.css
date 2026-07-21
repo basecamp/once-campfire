@@ -1,5 +1,5 @@
-trix-editor,
-.trix-content {
+
+.lexxy-content {
   .og-embed {
     background: var(--color-bg);
     border: 1px solid var(--color-border-dark);
@@ -15,7 +15,7 @@ trix-editor,
       flex-direction: row;
     }
 
-    .cf-twitter-avatar & {
+    &.og-embed--twitter-avatar {
       flex-direction: row;
     }
   }
@@ -35,10 +35,11 @@ trix-editor,
 
   .og-embed__title {
     font-weight: 600;
-    text-decoration: underline;
 
+    /* Underline the link itself so the line is link-colored */
     a {
       color: var(--color-link);
+      text-decoration: underline;
     }
   }
 
@@ -53,7 +54,11 @@ trix-editor,
       inline-size: 15dvw;
     }
 
+    /* block-size/border-radius guard against Lexxy's 1em round avatar
+       styling for custom attachment images */
     > * {
+      block-size: auto;
+      border-radius: 0;
       object-position: top right;
       inline-size: 100%;
       object-fit: contain;
@@ -63,7 +68,7 @@ trix-editor,
       }
     }
 
-    .cf-twitter-avatar & {
+    .og-embed--twitter-avatar & {
       aspect-ratio: 1;
       border-radius: 50%;
       inline-size: 2lh;

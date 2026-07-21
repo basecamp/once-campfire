@@ -73,12 +73,12 @@ module RoomsHelper
     def composer_data_actions
       drag_and_drop_actions = "drop-target:drop@window->composer#dropFiles"
 
-      trix_attachment_actions =
-        "trix-file-accept->composer#preventAttachment refresh-room:online@window->composer#online"
+      attachment_actions =
+        "lexxy:file-accept->composer#preventAttachment refresh-room:online@window->composer#online"
 
       remaining_actions =
         "typing-notifications#stop paste->composer#pasteFiles turbo:submit-end->composer#submitEnd refresh-room:offline@window->composer#offline"
 
-      [ drop_target_actions, drag_and_drop_actions, trix_attachment_actions, remaining_actions ].join(" ")
+      [ drop_target_actions, drag_and_drop_actions, attachment_actions, remaining_actions ].join(" ")
     end
 end
