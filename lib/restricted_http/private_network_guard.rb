@@ -6,12 +6,10 @@ module RestrictedHTTP
   module PrivateNetworkGuard
     extend self
 
-    # IPv4 ranges that must never be a fetch target (RFC 5735/6890 special-use,
-    # plus CGNAT and benchmarking). RFC1918/loopback/link-local are also covered
-    # by the IPAddr predicates in #disallowed_ipv4?.
+    # IPv4 special-use ranges (RFC 5735/6890) not already covered by the
+    # private?/loopback?/link_local? predicates in #disallowed_ipv4?.
     DISALLOWED_IPV4 = %w[
-      0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16
-      172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16
+      0.0.0.0/8 100.64.0.0/10 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24
       198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4
     ].map { |cidr| IPAddr.new(cidr) }.freeze
 
