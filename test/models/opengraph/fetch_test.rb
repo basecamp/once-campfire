@@ -50,7 +50,7 @@ class Opengraph::FetchTest < ActiveSupport::TestCase
     WebMock.disable_net_connect! allow: [ @url.host ]
     Resolv.stubs(:getaddress).with(@url.host).returns("1.2.3.4", "127.0.0.1")
     TCPSocket.expects(:open).with { |*args, **| args.first == @url.host }.never
-    TCPSocket.expects(:open).with { |*args, **| args.first == "1.2.3.4" }.throws(:dns_not_rebound)
+    TCPSocket.expects(:open).with { |*args, **| args.first == "1.2.3.4" && args[1] == 443 }.throws(:dns_not_rebound)
 
     assert_throws :dns_not_rebound do
       @fetch.fetch_document(@url)
@@ -67,7 +67,7 @@ class Opengraph::FetchTest < ActiveSupport::TestCase
     WebMock.disable_net_connect! allow: [ @url.host ]
     Resolv.stubs(:getaddress).with(@url.host).returns("1.2.3.4", "127.0.0.1")
     TCPSocket.expects(:open).with { |*args, **| args.first == @url.host }.never
-    TCPSocket.expects(:open).with { |*args, **| args.first == "1.2.3.4" }.throws(:dns_not_rebound)
+    TCPSocket.expects(:open).with { |*args, **| args.first == "1.2.3.4" && args[1] == 443 }.throws(:dns_not_rebound)
 
     assert_throws :dns_not_rebound do
       @fetch.fetch_document(URI.parse("https://www.other.com/"), ip: "1.2.3.4")

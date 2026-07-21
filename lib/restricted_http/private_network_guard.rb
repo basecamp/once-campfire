@@ -1,3 +1,4 @@
+require "ipaddr"
 require "resolv"
 
 module RestrictedHTTP
