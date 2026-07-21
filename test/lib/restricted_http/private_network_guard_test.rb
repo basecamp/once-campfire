@@ -64,6 +64,50 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
     assert_private_ip "::93.184.216.34"
   end
 
+  test "private_ip? returns true for carrier-grade NAT addresses (RFC6598)" do
+    assert_private_ip "100.64.0.1"
+    assert_private_ip "100.127.255.255"
+  end
+
+  test "private_ip? returns true for NAT64 addresses embedding a private IPv4" do
+    assert_private_ip "64:ff9b::a9fe:a9fe"  # NAT64 -> 169.254.169.254 (AWS metadata)
+    assert_private_ip "64:ff9b::a00:5"       # NAT64 -> 10.0.0.5
+  end
+
+  test "private_ip? returns true for local-use NAT64 addresses embedding a private IPv4 (RFC8215)" do
+    assert_private_ip "64:ff9b:1::a00:1"  # local-use NAT64 -> 10.0.0.1
+  end
+
+  test "private_ip? returns false for local-use NAT64 addresses embedding a public IPv4 (RFC8215)" do
+    assert_not RestrictedHTTP::PrivateNetworkGuard.private_ip?("64:ff9b:1::808:808")  # -> 8.8.8.8
+  end
+
+  test "private_ip? returns false for NAT64 addresses embedding a public IPv4" do
+    # DNS64 legitimately synthesizes these for public sites on IPv6-only hosts.
+    assert_not RestrictedHTTP::PrivateNetworkGuard.private_ip?("64:ff9b::808:808")  # -> 8.8.8.8
+  end
+
+  test "private_ip? returns true for 6to4 and Teredo transition addresses" do
+    assert_private_ip "2002:a9fe:a9fe::"  # 6to4 embedding 169.254.169.254
+    assert_private_ip "2001::1"            # Teredo
+  end
+
+  test "private_ip? returns true for IPv6 loopback, ULA, and link-local" do
+    assert_private_ip "::1"
+    assert_private_ip "fd00:ec2::254"  # AWS IMDSv6 (ULA)
+    assert_private_ip "fe80::1"
+  end
+
+  test "private_ip? returns true for IPv6 multicast, documentation, and benchmarking ranges" do
+    assert_private_ip "ff02::1"
+    assert_private_ip "2001:db8::1"
+    assert_private_ip "2001:2::1"  # benchmarking (RFC5180), matches 198.18.0.0/15
+  end
+
+  test "private_ip? returns false for public IPv6 addresses" do
+    assert_not RestrictedHTTP::PrivateNetworkGuard.private_ip?("2606:4700:4700::1111")
+  end
+
   test "private_ip? returns true for invalid addresses" do
     assert RestrictedHTTP::PrivateNetworkGuard.private_ip?("not-an-ip")
     assert RestrictedHTTP::PrivateNetworkGuard.private_ip?("")
