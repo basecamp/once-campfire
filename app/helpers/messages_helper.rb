@@ -56,6 +56,8 @@ module MessagesHelper
       message_attachment_presentation(message)
     when "sound"
       message_sound_presentation(message)
+    when "poll"
+      render "messages/polls/poll", message: message, poll: message.poll
     else
       auto_link h(ContentFilters::TextMessagePresentationFilters.apply(message.body.body)), html: { target: "_blank" }
     end

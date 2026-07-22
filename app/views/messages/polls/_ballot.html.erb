@@ -1,0 +1,21 @@
+<div id="<%= dom_id(poll, :ballot) %>" class="poll__ballot">
+  <% selected_ids = poll.options.flat_map(&:votes).select { |vote| vote.voter_id == voter.id }.map(&:poll_option_id) %>
+  <% poll.options.each do |option| %>
+    <% selected = selected_ids.include?(option.id) %>
+    <% if poll.closed? %>
+      <button class="btn poll__choice <%= "poll__choice--selected" if selected %>" type="button" disabled><%= selected ? "Voted: #{option.body}" : option.body %></button>
+    <% elsif selected %>
+      <%= button_to option.body,
+            message_poll_vote_path(poll.message, option),
+            method: :delete,
+            class: "btn poll__choice poll__choice--selected",
+            form: { data: { turbo: true } } %>
+    <% else %>
+      <%= button_to option.body,
+            message_poll_votes_path(poll.message),
+            params: { poll_option_id: option.id },
+            class: "btn poll__choice",
+            form: { data: { turbo: true } } %>
+    <% end %>
+  <% end %>
+</div>

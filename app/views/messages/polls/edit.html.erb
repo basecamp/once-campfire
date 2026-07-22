@@ -1,0 +1,35 @@
+<turbo-frame id="<%= dom_id(@message, :edit) %>">
+  <div class="message__body position-relative" data-controller="scroll-into-view">
+    <div class="message__body-content message__body-content--editing poll-editor-message gap border">
+      <% if @poll.open? %>
+        <%= render "polls/editor",
+              title: "Edit poll",
+              poll: @poll,
+              room: @message.room,
+              url: message_poll_path(@message),
+              method: :patch,
+              submit_label: "Save poll",
+              delete_button: render("messages/polls/delete_button", message: @message),
+              inline: true %>
+      <% else %>
+        <div class="poll-editor">
+          <h2 class="margin-none">Manage poll</h2>
+          <p class="txt-small colorize--grey margin-none">This poll is closed, so it can no longer be edited.</p>
+          <div class="message__edit-btns flex align-center justify-space-between gap full-width pad-block-start-half">
+            <span></span>
+            <%= render "messages/polls/delete_button", message: @message %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+
+    <div class="message__actions flex flex-wrap">
+      <%= link_to room_message_path(@message.room, @message), class: "message__action-btn message__edit-close-btn txt-small btn btn--borderless" do %>
+        <%= image_tag "remove.svg", class: "colorize--black", aria: { hidden: "true" } %>
+        <span class="for-screen-reader">Close editor and discard changes</span>
+      <% end %>
+    </div>
+
+    <%= form_with url: room_message_path(@message.room, @message), method: :delete, id: dom_id(@message, :delete_form), data: { turbo_frame: dom_id(@message, :edit) } %>
+  </div>
+</turbo-frame>

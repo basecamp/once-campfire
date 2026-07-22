@@ -31,6 +31,7 @@ class MessagesController < ApplicationController
   end
 
   def edit
+    head :unprocessable_entity if @message.content_type.poll?
   end
 
   def update
@@ -56,13 +57,14 @@ class MessagesController < ApplicationController
 
 
     def find_paged_messages
+      relation = @room.messages.with_creator.with_poll
       case
       when params[:before].present?
-        @room.messages.with_creator.page_before(@room.messages.find(params[:before]))
+        relation.page_before(@room.messages.find(params[:before]))
       when params[:after].present?
-        @room.messages.with_creator.page_after(@room.messages.find(params[:after]))
+        relation.page_after(@room.messages.find(params[:after]))
       else
-        @room.messages.with_creator.last_page
+        relation.last_page
       end
     end
 

@@ -6,6 +6,11 @@
       <span class="for-screen-reader">Search</span>
     <% end %>
 
+    <%= link_to new_room_poll_path(room), class: "btn flex-item-no-shrink margin-block-end composer__context-btn" do %>
+      <%= image_tag "chart.svg", size: 20, aria: { hidden: "true" } %>
+      <span class="for-screen-reader">Create poll</span>
+    <% end %>
+
     <turbo-frame id="composer-frame">
       <%= composer_form_tag(room) do |form| %>
         <fieldset data-composer-target="fields" contents>

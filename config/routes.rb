@@ -61,6 +61,7 @@ Rails.application.routes.draw do
 
   resources :rooms do
     resources :messages
+    resources :polls, only: %i[ new create ]
 
     post ":bot_key/messages", to: "messages/by_bots#create", as: :bot_messages
 
@@ -82,6 +83,10 @@ Rails.application.routes.draw do
   resources :messages do
     scope module: "messages" do
       resources :boosts
+      resource :poll, only: %i[ edit update ] do
+        patch :close
+        resources :votes, only: %i[ create destroy ], controller: "poll_votes"
+      end
     end
   end
 

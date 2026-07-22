@@ -126,6 +126,25 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
+  test "legacy message edit path does not render poll editor" do
+    message = rooms(:designers).messages.create!(creator: users(:jason), client_message_id: SecureRandom.uuid)
+    message.create_poll!(question: "Ready?", options_attributes: [ { body: "Yep", position: 0 }, { body: "Nope", position: 1 } ])
+
+    get edit_room_message_url(message.room, message)
+
+    assert_response :unprocessable_entity
+  end
+
+  test "legacy message edit path remains forbidden for poll non-admin non-creator" do
+    sign_in :kevin
+    message = rooms(:designers).messages.create!(creator: users(:jason), client_message_id: SecureRandom.uuid)
+    message.create_poll!(question: "Ready?", options_attributes: [ { body: "Yep", position: 0 }, { body: "Nope", position: 1 } ])
+
+    get edit_room_message_url(message.room, message)
+
+    assert_response :forbidden
+  end
+
   test "mentioning a bot triggers a webhook" do
     WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 200)
 

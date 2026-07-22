@@ -1,0 +1,19 @@
+<% alert = local_assigns.fetch(:alert, flash[:alert]) %>
+<% message = local_assigns.fetch(:message, alert || flash[:notice]) %>
+
+<% if message %>
+  <div class="flash <%= "flash--alert" if alert %>" role="alert" aria-atomic="true" data-controller="element-removal" data-action="animationend->element-removal#remove">
+    <div class="flash__inner shadow">
+      <% if alert %>
+        <%= image_tag "alert.svg", aria: { hidden: true }, size: 24, class: "colorize--white" %>
+      <% else %>
+        <%= image_tag "check.svg", aria: { hidden: true }, size: 24, class: "colorize--white" %>
+      <% end %>
+    </div>
+    <% if alert %>
+      <span class="flash__message shadow"><%= message %></span>
+    <% else %>
+      <span class="for-screen-reader"><%= message %></span>
+    <% end %>
+  </div>
+<% end %>

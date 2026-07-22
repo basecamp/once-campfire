@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
+ActiveRecord::Schema[8.2].define(version: 2026_05_28_110000) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -104,6 +104,38 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
     t.index ["room_id"], name: "index_messages_on_room_id"
   end
 
+  create_table "poll_options", force: :cascade do |t|
+    t.string "body", limit: 120, null: false
+    t.datetime "created_at", null: false
+    t.integer "poll_id", null: false
+    t.integer "position", null: false
+    t.datetime "updated_at", null: false
+    t.index ["poll_id", "position"], name: "index_poll_options_on_poll_id_and_position"
+    t.index ["poll_id"], name: "index_poll_options_on_poll_id"
+  end
+
+  create_table "poll_votes", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "poll_id", null: false
+    t.integer "poll_option_id", null: false
+    t.datetime "updated_at", null: false
+    t.integer "voter_id", null: false
+    t.index ["poll_id", "voter_id"], name: "index_poll_votes_on_poll_id_and_voter_id"
+    t.index ["poll_id"], name: "index_poll_votes_on_poll_id"
+    t.index ["poll_option_id", "voter_id"], name: "index_poll_votes_on_poll_option_id_and_voter_id", unique: true
+    t.index ["poll_option_id"], name: "index_poll_votes_on_poll_option_id"
+    t.index ["voter_id"], name: "index_poll_votes_on_voter_id"
+  end
+
+  create_table "polls", force: :cascade do |t|
+    t.datetime "closed_at"
+    t.datetime "created_at", null: false
+    t.integer "message_id", null: false
+    t.boolean "multi_select", default: false, null: false
+    t.datetime "updated_at", null: false
+    t.index ["message_id"], name: "index_polls_on_message_id", unique: true
+  end
+
   create_table "push_subscriptions", force: :cascade do |t|
     t.string "auth_key"
     t.datetime "created_at", null: false
@@ -172,6 +204,11 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
   add_foreign_key "boosts", "messages"
   add_foreign_key "messages", "rooms"
   add_foreign_key "messages", "users", column: "creator_id"
+  add_foreign_key "poll_options", "polls", on_delete: :cascade
+  add_foreign_key "poll_votes", "poll_options", on_delete: :cascade
+  add_foreign_key "poll_votes", "polls", on_delete: :cascade
+  add_foreign_key "poll_votes", "users", column: "voter_id", on_delete: :cascade
+  add_foreign_key "polls", "messages", on_delete: :cascade
   add_foreign_key "push_subscriptions", "users"
   add_foreign_key "searches", "users"
   add_foreign_key "sessions", "users"
