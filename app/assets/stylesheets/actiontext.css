@@ -66,6 +66,8 @@ trix-toolbar {
 trix-editor {
   &.input {
     min-height: 24px;
+    overflow-y: auto;
+    max-height: 360px;
   }
 
   .attachment--content {
