@@ -81,4 +81,19 @@ Rails.application.configure do
 
   # Visit /rails/locks to see the locks
   config.middleware.insert_before Rack::Sendfile, ActionDispatch::DebugLocks
+
+  # SMTP mailer setup
+  config.feature_enable_smtp = ENV.fetch("SMTP_ENABLED", false)
+  config.action_mailer.delivery_method = :smtp
+  config.action_mailer.smtp_settings = {
+    address:         ENV.fetch("SMTP_ADDRESS", nil),
+    port:            ENV.fetch("SMTP_PORT", nil),
+    domain:          ENV.fetch("SMTP_DOMAIN", nil),
+    user_name:       ENV.fetch("SMTP_USER_NAME", nil),
+    password:        ENV.fetch("SMTP_PASSWORD", nil),
+    authentication:  "plain",
+    open_timeout:    5,
+    read_timeout:    5,
+    openssl_verify_mode:  "none"
+  }
 end
