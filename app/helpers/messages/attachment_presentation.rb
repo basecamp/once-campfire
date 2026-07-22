@@ -5,7 +5,7 @@ class Messages::AttachmentPresentation
 
   def render
     if message.attachment.attached?
-      if message.attachment.previewable? || message.attachment.variable?
+      if message.attachment.previewable? || message.attachment.variable? || message.attachment.audio?
         render_preview
       else
         render_link
@@ -20,6 +20,8 @@ class Messages::AttachmentPresentation
     def render_preview
       if message.attachment.video?
         video_preview_tag
+      elsif message.attachment.audio?
+        audio_preview_tag
       else
         lightboxed_image_preview_tag
       end
@@ -32,6 +34,30 @@ class Messages::AttachmentPresentation
         tag.video \
           src: rails_blob_path(message.attachment), poster: url_for(message.attachment.preview(format: :webp, resize_to_limit: [ Message::THUMBNAIL_MAX_WIDTH, Message::THUMBNAIL_MAX_HEIGHT ])),
           controls: true, preload: :none, width: "100%", height: "100%", class: "message__attachment"
+      end
+    end
+
+    def audio_preview_tag
+      tag.div class: "audio-message-container", data: { controller: "sound", sound_url_value: rails_blob_path(message.attachment), sound_audio_message_duration_value: message.attachment.metadata["duration"].to_i }  do
+        tag.div class: "sound audio-message" do
+          tag.button("🔊", class: "btn btn--plain audio-message-btn", data: { action: "sound#playAndAnimate" }) + sound_preview_tag
+        end + tag.div(message.attachment.metadata["duration"].to_i, class: "audio-message-metadata", data: { sound_target: "audioMessageMetadata" })
+      end
+    end
+
+    def generate_sound_bars_tags
+      html_element = ""
+
+      11.times do |i|
+        html_element << tag.div(class: "sound-bar sound-bar-#{i}")
+      end
+
+      html_element.html_safe
+    end
+
+    def sound_preview_tag
+      tag.div(class: "sound-bar-container", data: { sound_target: "soundBarContainer" }) do
+        generate_sound_bars_tags
       end
     end
 
