@@ -57,4 +57,7 @@ Rails.application.configure do
 
   # Load test helpers
   config.autoload_paths += %w[ test/test_helpers ]
+
+  # Enable URL unfurling for tests
+  ENV["ENABLE_URL_UNFURLING"] = "true"
 end
