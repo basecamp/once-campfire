@@ -8,9 +8,8 @@ class Accounts::LogosController < ApplicationController
     if stale?(etag: Current.account)
       expires_in 5.minutes, public: true, stale_while_revalidate: 1.week
 
-      if Current.account&.logo&.attached?
-        logo = Current.account.logo.variant(logo_variant).processed
-        send_png_file ActiveStorage::Blob.service.path_for(logo.key)
+      if (logo_variant = Current.account&.logo_variant(logo_size))
+        send_png_file ActiveStorage::Blob.service.path_for(logo_variant.key)
       else
         send_stock_icon
       end
@@ -23,9 +22,6 @@ class Accounts::LogosController < ApplicationController
   end
 
   private
-    LARGE_SQUARE_PNG_VARIANT = { resize_to_limit: [ 512, 512 ], format: :png }
-    SMALL_SQUARE_PNG_VARIANT = { resize_to_limit: [ 192, 192 ], format: :png }
-
     def send_png_file(path)
       send_file path, content_type: "image/png", disposition: :inline
     end
@@ -38,8 +34,8 @@ class Accounts::LogosController < ApplicationController
       end
     end
 
-    def logo_variant
-      small_logo? ? SMALL_SQUARE_PNG_VARIANT : LARGE_SQUARE_PNG_VARIANT
+    def logo_size
+      small_logo? ? :small : :large
     end
 
     def small_logo?

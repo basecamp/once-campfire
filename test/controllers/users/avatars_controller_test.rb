@@ -18,6 +18,14 @@ class Users::AvatarsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "image/webp", @response.content_type
   end
 
+  test "show initials when image cannot be resized" do
+    users(:kevin).update! avatar: fixture_file_upload("pixel.bmp", "image/bmp")
+    get user_avatar_url(users(:kevin).avatar_token)
+
+    assert_response :success
+    assert_select "text", text: "K"
+  end
+
   test "show image with invalid token responds 404" do
     get user_avatar_url("not-a-valid-token")
 

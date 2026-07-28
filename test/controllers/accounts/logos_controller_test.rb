@@ -30,6 +30,13 @@ class Accounts::LogosControllerTest < ActionDispatch::IntegrationTest
     assert_valid_png_response size: 192
   end
 
+  test "show stock when custom logo cannot be resized" do
+    accounts(:signal).update! logo: fixture_file_upload("pixel.bmp", "image/bmp")
+
+    get account_logo_url
+    assert_valid_png_response size: 512
+  end
+
   test "destroy" do
     accounts(:signal).update! logo: fixture_file_upload("moon.jpg", "image/jpeg")
 

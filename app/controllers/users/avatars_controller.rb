@@ -9,8 +9,7 @@ class Users::AvatarsController < ApplicationController
     if stale?(etag: @user)
       expires_in 30.minutes, public: true, stale_while_revalidate: 1.week
 
-      if @user.avatar.attached?
-        avatar_variant = @user.avatar.variant(SQUARE_WEBP_VARIANT).processed
+      if (avatar_variant = @user.avatar_variant)
         send_webp_blob_file avatar_variant.key
       elsif @user.bot?
         render_default_bot
@@ -26,8 +25,6 @@ class Users::AvatarsController < ApplicationController
   end
 
   private
-    SQUARE_WEBP_VARIANT = { resize_to_limit: [ 512, 512 ], format: :webp }
-
     def send_webp_blob_file(key)
       send_file ActiveStorage::Blob.service.path_for(key), content_type: "image/webp", disposition: :inline
     end
