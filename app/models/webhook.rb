@@ -24,6 +24,8 @@ class Webhook < ApplicationRecord
         Net::HTTP::Post.new(uri, "Content-Type" => "application/json").tap { |request| request.body = payload }
     end
 
+    # No PrivateNetworkGuard, unlike Opengraph::Fetch: only an administrator sets this URL,
+    # and operators legitimately point bots at their own internal services.
     def http
       Net::HTTP.new(uri.host, uri.port).tap do |http|
         http.use_ssl = (uri.scheme == "https")

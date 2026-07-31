@@ -53,3 +53,7 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 
 You are welcome - and encouraged - to modify Campfire to your liking.
 Please see our [development guide](docs/development.md) for how to get Campfire set up for local development.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability and a description of our trust model.
