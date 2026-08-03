@@ -6,8 +6,8 @@ export default class extends Controller {
   open(event) {
     event.preventDefault()
 
+    this.#set(event.currentTarget)
     this.dialogTarget.showModal()
-    this.#set(event.target.closest("a"))
   }
 
   reset() {
