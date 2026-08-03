@@ -6,7 +6,7 @@ import MessagePaginator from "models/message_paginator"
 import ScrollManager from "models/scroll_manager"
 
 export default class extends Controller {
-  static targets = [ "latest", "message", "body", "messages", "template" ]
+  static targets = [ "latest", "message", "body", "messages", "template", "deliveryStatus" ]
   static classes = [ "firstOfDay", "formatted", "me", "mentioned", "threaded" ]
   static values = { pageUrl: String }
 
@@ -28,7 +28,7 @@ export default class extends Controller {
   }
 
   connect() {
-    this.#clientMessage = new ClientMessage(this.templateTarget)
+    this.#clientMessage = new ClientMessage(this.templateTarget, Current.room.id)
     this.#paginator = new MessagePaginator(this.messagesTarget, this.pageUrlValue, this.#formatter, this.#allContentViewed.bind(this))
     this.#scrollManager = new ScrollManager(this.messagesTarget)
 
@@ -47,6 +47,12 @@ export default class extends Controller {
 
   messageTargetConnected(target) {
     this.#formatter.format(target, ThreadStyle.thread)
+    if (target.dataset.messageId) {
+      this.dispatch("committed", { detail: {
+        clientMessageId: target.dataset.clientMessageId,
+        userId: target.dataset.userId
+      } })
+    }
   }
 
   bodyTargetConnected(target) {
@@ -99,21 +105,90 @@ export default class extends Controller {
 
   // Outlet actions
 
-  async insertPendingMessage(clientMessageId, node) {
-    await this.#ensureUpToDate()
+  async insertPendingMessage(clientMessageId, node, { preservePagination = false } = {}) {
+    if (!preservePagination) await this.#ensureUpToDate()
+    const preserveCurrentPage = preservePagination && !this.#paginator.upToDate
+    let inserted = false
 
-    return this.#scrollManager.autoscroll(true, async () => {
+    const insert = async () => {
+      const existingMessages = this.#messagesWithClientId(clientMessageId)
+      const committedMessage = existingMessages.find((message) => message.dataset.messageId != null)
+
+      if (committedMessage) {
+        existingMessages.filter((message) => message != committedMessage).forEach((message) => message.remove())
+        return
+      }
+
       const message = this.#clientMessage.render(clientMessageId, node)
-      this.messagesTarget.insertAdjacentHTML("beforeend", message)
-    })
+      const [ pendingMessage, ...duplicates ] = existingMessages
+      duplicates.forEach((message) => message.remove())
+
+      if (pendingMessage) {
+        pendingMessage.outerHTML = message
+      } else {
+        this.messagesTarget.insertAdjacentHTML("beforeend", message)
+      }
+      inserted = true
+    }
+
+    if (preserveCurrentPage) {
+      await insert()
+    } else {
+      await this.#scrollManager.autoscroll(true, insert)
+    }
+
+    return inserted
   }
 
   updatePendingMessage(clientMessageId, body) {
     this.#clientMessage.update(clientMessageId, body)
   }
 
-  failPendingMessage(clientMessageId) {
-    this.#clientMessage.failed(clientMessageId)
+  failPendingMessage(clientMessageId, options) {
+    this.#clientMessage.failed(clientMessageId, options)
+  }
+
+  retryPendingMessage(clientMessageId, options) {
+    this.#clientMessage.retrying(clientMessageId, options)
+  }
+
+  removePendingMessage(clientMessageId) {
+    this.#messagesWithClientId(clientMessageId)
+      .filter((message) => message.dataset.messageId == null)
+      .forEach((message) => message.remove())
+  }
+
+  removePendingFileMessages() {
+    Array.from(this.messagesTarget.children)
+      .filter((message) => message.dataset.messageId == null && message.querySelector(".message__pending-upload"))
+      .forEach((message) => message.remove())
+  }
+
+  async announcePendingMessageSent(clientMessageId) {
+    this.deliveryStatusTarget.textContent = ""
+    await nextEventLoopTick()
+    this.deliveryStatusTarget.textContent = "Message sent"
+
+    const message = this.#messagesWithClientId(clientMessageId).find((candidate) =>
+      candidate.dataset.messageId != null && Number(candidate.dataset.userId) == Number(Current.user.id)
+    )
+    if (message?.dataset.messageId) {
+      message.tabIndex = -1
+      message.focus({ preventScroll: true })
+    }
+  }
+
+  pendingMessageCommitted(clientMessageId) {
+    return this.#messagesWithClientId(clientMessageId).some((message) =>
+      message.dataset.messageId != null && Number(message.dataset.userId) == Number(Current.user.id)
+    )
+  }
+
+  requestPendingMessageRetry(event) {
+    this.dispatch("retry-pending", { detail: {
+      action: event.currentTarget.dataset.clientMessageAction || "retry",
+      clientMessageId: event.currentTarget.dataset.clientMessageId
+    } })
   }
 
   // Callbacks
@@ -186,5 +261,11 @@ export default class extends Controller {
 
   #sortValue(node) {
     return (node && parseInt(node.dataset.sortValue)) || 0
+  }
+
+  #messagesWithClientId(clientMessageId) {
+    return Array.from(this.messagesTarget.children).filter(
+      (message) => message.dataset.clientMessageId == clientMessageId
+    )
   }
 }

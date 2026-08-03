@@ -6,12 +6,12 @@ class Accounts::UsersController < ApplicationController
   end
 
   def update
-    @user.update(role_params)
+    @user.update_role_by! role_params, actor: Current.user
     redirect_to edit_account_url
   end
 
   def destroy
-    @user.deactivate
+    @user.deactivate_by! actor: Current.user
     redirect_to edit_account_url
   end
 

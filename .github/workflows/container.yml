@@ -1,0 +1,199 @@
+name: Container validation
+
+on:
+  pull_request:
+    branches: [ main, "release/**" ]
+  push:
+    branches: [ main, "release/**" ]
+
+concurrency:
+  group: container-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  IMAGE_DESCRIPTION: Campfire is a web-based chat application with multiple rooms, direct messages, file attachments with previews, search, web push notifications, @mentions, and bot integrations. Single-tenant; production-ready image with web app, background jobs, caching, file serving, and SSL.
+  SOURCE_URL: https://github.com/${{ github.repository }}
+  LEGACY_IMAGE: ghcr.io/basecamp/once-campfire@sha256:1d65108897b04482ce0c4627f1c62e234bc25a4bab1422d2a234b048f5db84bb
+  LEGACY_REVISION: 50f25cea80c8b610325bc03c1f2504c5bfda3191
+  BUILDKIT_IMAGE: docker.io/moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+  SBOM_SCANNER_IMAGE: docker.io/docker/buildkit-syft-scanner:1.11.0@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+
+jobs:
+  validate:
+    name: Container validation (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize evidence directory
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_directory="$RUNNER_TEMP/container-evidence-$ARCHITECTURE"
+          mkdir -m 700 "$evidence_directory"
+          host_architecture=$(uname -m)
+          [[ "$host_architecture" == x86_64 ]]
+          jq -n --arg architecture "$ARCHITECTURE" --arg host_architecture "$host_architecture" --arg source_revision "$SOURCE_REVISION" \
+            '{format_version: 1, architecture: $architecture, host_architecture: $host_architecture, source_revision: $source_revision, status: "started"}' \
+            > "$evidence_directory/run.json"
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_REVISION" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+
+      - name: Set up pinned QEMU emulation
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+          cache-image: false
+
+      - name: Set up pinned Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+          cache-binary: false
+
+      - name: Build exact runnable and attested OCI candidates
+        id: build
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          CONTAINER_PLATFORM: ${{ matrix.platform }}
+          SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_directory="$RUNNER_TEMP/container-evidence-$ARCHITECTURE"
+          image="campfire-ci:${ARCHITECTURE}-${SOURCE_REVISION}"
+          app_version="ci-${SOURCE_REVISION:0:12}"
+          build_identity=$(printf '%s' "container-ci:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${ARCHITECTURE}:${SOURCE_REVISION}" | sha256sum | cut -d' ' -f1)
+          source_date_epoch=$(git show -s --format=%ct "$SOURCE_REVISION")
+          common=(
+            --file Dockerfile
+            --platform "$CONTAINER_PLATFORM"
+            --pull
+            --build-arg "BUILDKIT_MULTI_PLATFORM=1"
+            --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
+            --build-arg "OCI_SOURCE=$SOURCE_URL"
+            --build-arg "OCI_DESCRIPTION=$IMAGE_DESCRIPTION"
+            --build-arg "APP_VERSION=$app_version"
+            --build-arg "GIT_REVISION=$SOURCE_REVISION"
+            --build-arg "BUILD_IDENTITY=$build_identity"
+          )
+
+          docker buildx build "${common[@]}" \
+            --tag "$image" \
+            --provenance=mode=max \
+            --sbom="generator=$SBOM_SCANNER_IMAGE" \
+            --output "type=oci,dest=$evidence_directory/campfire.oci.tar" \
+            --output "type=docker,dest=$evidence_directory/campfire.runtime.tar" \
+            --metadata-file "$evidence_directory/build-metadata.json" .
+          docker load --input "$evidence_directory/campfire.runtime.tar"
+
+          {
+            echo "image=$image"
+            echo "app_version=$app_version"
+            echo "build_identity=$build_identity"
+            echo "evidence_directory=$evidence_directory"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Inspect configuration, attestations, boot, health, and request limit
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          APP_VERSION: ${{ steps.build.outputs.app_version }}
+          TARGET_BUILD_IDENTITY: ${{ steps.build.outputs.build_identity }}
+          CONTAINER_PLATFORM: ${{ matrix.platform }}
+          SOURCE_REVISION: ${{ github.sha }}
+          EVIDENCE_DIRECTORY: ${{ steps.build.outputs.evidence_directory }}
+          OCI_ARCHIVE: ${{ steps.build.outputs.evidence_directory }}/campfire.oci.tar
+          BUILD_METADATA: ${{ steps.build.outputs.evidence_directory }}/build-metadata.json
+          RUNTIME_ARCHIVE: ${{ steps.build.outputs.evidence_directory }}/campfire.runtime.tar
+        run: script/ci/validate-container-image
+
+      - name: Remove inspected image archives before recovery
+        env:
+          EVIDENCE_DIRECTORY: ${{ steps.build.outputs.evidence_directory }}
+        run: rm -f "$EVIDENCE_DIRECTORY/campfire.oci.tar" "$EVIDENCE_DIRECTORY/campfire.runtime.tar"
+
+      - name: Pull pinned legacy image for the exact platform
+        env:
+          CONTAINER_PLATFORM: ${{ matrix.platform }}
+        run: docker pull --platform "$CONTAINER_PLATFORM" "$LEGACY_IMAGE"
+
+      - name: Exercise upgrade and recovery on disposable volumes
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          CONTAINER_PLATFORM: ${{ matrix.platform }}
+          SOURCE_REVISION: ${{ github.sha }}
+          IMAGE: ${{ steps.build.outputs.image }}
+          TARGET_BUILD_IDENTITY: ${{ steps.build.outputs.build_identity }}
+          EVIDENCE_DIRECTORY: ${{ steps.build.outputs.evidence_directory }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_digest=$(<"$EVIDENCE_DIRECTORY/runnable-digest")
+          export RELEASE_SHA="$SOURCE_REVISION"
+          export RELEASE_TAG="ci-$SOURCE_REVISION"
+          export TARGET_DIGEST="$target_digest"
+          export TARGET_MANIFEST_PATH="$EVIDENCE_DIRECTORY/oci-runnable-manifest.json"
+          export CONTAINER_VALIDATION_EVIDENCE="$EVIDENCE_DIRECTORY/container-validation.json"
+          export RECOVERY_EVIDENCE_PATH="$EVIDENCE_DIRECTORY/recovery-receipt.json"
+          script/ci/verify-image-recovery \
+            "$IMAGE" "$LEGACY_IMAGE" \
+            "ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCHITECTURE}"
+
+      - name: Seal container evidence receipt
+        if: always()
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE_DIRECTORY="$RUNNER_TEMP/container-evidence-$ARCHITECTURE"
+          if [[ -f "$EVIDENCE_DIRECTORY/container-validation.json" && -f "$EVIDENCE_DIRECTORY/recovery-receipt.json" ]]; then
+            jq -n \
+              --arg architecture "$ARCHITECTURE" \
+              --arg source_revision "$SOURCE_REVISION" \
+              --arg validation_sha256 "$(sha256sum "$EVIDENCE_DIRECTORY/container-validation.json" | cut -d' ' -f1)" \
+              --arg recovery_sha256 "$(sha256sum "$EVIDENCE_DIRECTORY/recovery-receipt.json" | cut -d' ' -f1)" \
+              '{format_version: 1, architecture: $architecture, source_revision: $source_revision, container_validation_sha256: $validation_sha256, recovery_receipt_sha256: $recovery_sha256, status: "passed"}' \
+              > "$EVIDENCE_DIRECTORY/receipt.json"
+          else
+            jq -n --arg architecture "$ARCHITECTURE" --arg source_revision "$SOURCE_REVISION" \
+              '{format_version: 1, architecture: $architecture, source_revision: $source_revision, status: "incomplete"}' \
+              > "$EVIDENCE_DIRECTORY/receipt.json"
+          fi
+
+      - name: Remove unretained image archives
+        if: always()
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+        run: rm -f "$RUNNER_TEMP/container-evidence-$ARCHITECTURE/campfire.oci.tar" "$RUNNER_TEMP/container-evidence-$ARCHITECTURE/campfire.runtime.tar"
+
+      - name: Upload retained container evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-evidence-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/container-evidence-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 30

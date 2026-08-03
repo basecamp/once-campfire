@@ -17,6 +17,8 @@ class ScrollTracker {
   #intersectionObserver
   #mutationObserver
   #firstChildWasHidden
+  #firstMessage
+  #lastMessage
 
   constructor(container, callback) {
     this.#container = container
@@ -38,11 +40,15 @@ class ScrollTracker {
   #childrenChanged() {
     this.disconnect()
 
-    if (this.#container.firstElementChild) {
+    const messages = Array.from(this.#container.children).filter((element) => element.dataset.messageId)
+    this.#firstMessage = messages[0]
+    this.#lastMessage = messages[messages.length - 1]
+
+    if (this.#firstMessage) {
       this.#firstChildWasHidden = false
 
-      this.#intersectionObserver.observe(this.#container.firstElementChild)
-      this.#intersectionObserver.observe(this.#container.lastElementChild)
+      this.#intersectionObserver.observe(this.#firstMessage)
+      if (this.#lastMessage != this.#firstMessage) this.#intersectionObserver.observe(this.#lastMessage)
     }
   }
 
@@ -55,7 +61,7 @@ class ScrollTracker {
       //
       // We don't do this with the last item, because it's possible that
       // fetching a page could return less than a screenfull.
-      const isFirst = entry.target === this.#container.firstElementChild
+      const isFirst = entry.target === this.#firstMessage
       const significantReveal = (isFirst && this.#firstChildWasHidden) || !isFirst
 
       if (entry.isIntersecting) {
@@ -125,8 +131,9 @@ export default class MessagePaginator {
 
   #messageBecameVisible(element) {
     const messageId = element.dataset.messageId
-    const firstMesage = element === this.#container.firstElementChild
-    const lastMessage = element === this.#container.lastElementChild
+    const messages = Array.from(this.#container.children).filter((candidate) => candidate.dataset.messageId)
+    const firstMesage = element === messages[0]
+    const lastMessage = element === messages[messages.length - 1]
 
     if (messageId) {
       if (firstMesage) {

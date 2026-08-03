@@ -1,0 +1,291 @@
+#!/usr/bin/env ruby
+
+require "fileutils"
+require "json"
+require "pathname"
+require "rubygems/package"
+require "zlib"
+require File.expand_path("../../lib/campfire_backup/authentication", __dir__)
+require File.expand_path("../../lib/campfire_backup/backup_encryption", __dir__)
+require File.expand_path("../../lib/campfire_backup/operation_lock", __dir__)
+require File.expand_path("../../lib/campfire_backup/subprocess", __dir__)
+
+class BackupExtractor
+  BACKUP_ID_PATTERN = /\A\d{8}T\d{6}Z-[0-9a-f]{16}\z/
+
+  class << self
+    def extract(archive_path:, destination_directory:, backup_id:,
+        expected_installation_fingerprint:, expected_environment:,
+        authentication_key: CampfireBackup::Authentication.key_from_env, encryption_keyring: nil,
+        legacy_authentication_path: nil, output: true, fault_after: nil)
+      completed = false
+      owned_paths = nil
+      operation_lock = nil
+      legacy_plaintext = !legacy_authentication_path.nil?
+      if legacy_plaintext && encryption_keyring
+        raise "Legacy plaintext extraction does not accept an encryption keyring"
+      end
+      owned_encryption_keyring = !legacy_plaintext && encryption_keyring.nil?
+      unless legacy_plaintext
+        encryption_keyring ||= CampfireBackup::BackupEncryption.keyring_from_env!
+        encryption_keyring.assert_distinct_from! authentication_key
+      end
+      raise "BACKUP_ID is invalid" unless backup_id.to_s.match?(BACKUP_ID_PATTERN)
+
+      destination_directory = Pathname(destination_directory).expand_path
+      operation_lock = CampfireBackup::OperationLock.acquire(
+        destination_directory, purpose: "extract", shared: true
+      )
+      destination_directory = operation_lock.directory
+      owned_paths = CampfireBackup::OwnedPaths.new(destination_directory)
+      archive_path = Pathname(archive_path).expand_path
+      operation_lock.assert_current!
+      raise "Backup extraction destination cannot be a symbolic link" if destination_directory.symlink?
+      existing_entries = destination_directory.children.reject { _1 == operation_lock.shared_path }
+      if existing_entries.any?
+        entries = existing_entries.map { _1.basename.to_s }.sort.join(", ")
+        raise "Backup extraction destination must be empty; found #{entries}. " \
+          "No files were changed. Remove and recreate this disposable destination, then retry: #{destination_directory}"
+      end
+      File.chmod 0o700, destination_directory
+      fault_after&.call("claimed")
+      operation_lock.assert_current!
+
+      encryption_key_id = nil
+      process_archive = lambda do |authenticated_archive_io, evidence, key_id|
+        encryption_key_id = key_id
+        yield evidence if block_given?
+        fault_after&.call("authenticated")
+        operation_lock.assert_current!
+
+        entries, total_bytes = inspect_archive(authenticated_archive_io, backup_id)
+        ensure_capacity! destination_directory, total_bytes
+        operation_lock.assert_current!
+        extract_archive authenticated_archive_io, destination_directory, backup_id, entries, owned_paths, operation_lock
+        fault_after&.call("extracted")
+        operation_lock.assert_current!
+      end
+
+      if legacy_plaintext
+        with_legacy_plaintext_archive(
+          archive_path:, authentication_path: legacy_authentication_path,
+          temporary_directory: destination_directory, backup_id:,
+          expected_installation_fingerprint:, expected_environment:,
+          authentication_key:
+        ) { |archive_io, evidence| process_archive.call(archive_io, evidence, nil) }
+      else
+        CampfireBackup::BackupEncryption.with_decrypted_archive(
+          archive_path, keyring: encryption_keyring, temporary_directory: destination_directory
+        ) do |authenticated_archive_io, authentication_data, envelope|
+          evidence = CampfireBackup::Authentication.verify_archive!(
+            archive_io: authenticated_archive_io, authentication_data:, expected_backup_id: backup_id,
+            expected_installation_fingerprint:, expected_environment:, key: authentication_key,
+            expected_archive_filename: plaintext_archive_filename(backup_id)
+          )
+          process_archive.call(authenticated_archive_io, evidence, envelope.fetch(:key_id))
+        end
+      end
+      flush_directory_tree destination_directory
+      operation_lock.assert_current!
+
+      generation = destination_directory.join(backup_id)
+      if output
+        puts JSON.generate(
+          status: "extracted", backup_id:, path: generation.to_s,
+          format: legacy_plaintext ? "legacy-plaintext" : "encrypted", encryption_key_id:
+        )
+      end
+      completed = true
+      generation
+    ensure
+      if owned_paths && !completed
+        incomplete = owned_paths.cleanup
+        if incomplete.any?
+          warn "Backup extraction cleanup was incomplete. Remove and recreate this disposable destination before retrying: #{destination_directory}"
+        end
+      end
+      operation_lock&.release
+      encryption_keyring&.clear! if owned_encryption_keyring
+    end
+
+    private
+      def plaintext_archive_filename(backup_id)
+        "campfire-#{backup_id}.tar.gz"
+      end
+
+      def with_legacy_plaintext_archive(archive_path:, authentication_path:, temporary_directory:,
+          backup_id:, expected_installation_fingerprint:, expected_environment:, authentication_key:)
+        authentication_data = CampfireBackup::BackupEncryption.read_independent_file(
+          authentication_path, description: "Legacy backup authentication statement",
+          maximum_bytes: CampfireBackup::BackupEncryption::MAX_AUTHENTICATION_BYTES
+        )
+        CampfireBackup::BackupEncryption.open_independent_file(
+          archive_path, description: "Legacy plaintext backup archive",
+          maximum_bytes: CampfireBackup::BackupEncryption::MAX_ARCHIVE_BYTES
+        ) do |source|
+          source_stat = source.stat
+          CampfireBackup::BackupEncryption.ensure_plaintext_staging_capacity!(
+            temporary_directory, source_stat.size
+          )
+          CampfireBackup::BackupEncryption.with_unlinked_temporary_file(temporary_directory) do |staged|
+            copied = IO.copy_stream(source, staged, source_stat.size)
+            unless copied == source_stat.size && source.read(1).nil? &&
+                file_identity(source.stat) == file_identity(source_stat)
+              raise "Legacy plaintext backup archive changed while it was staged"
+            end
+            staged.flush
+            staged.rewind
+            evidence = CampfireBackup::Authentication.verify_archive!(
+              archive_io: staged, authentication_data:, expected_backup_id: backup_id,
+              expected_installation_fingerprint:, expected_environment:, key: authentication_key,
+              expected_archive_filename: plaintext_archive_filename(backup_id)
+            )
+            yield staged, evidence
+          end
+        end
+      end
+
+      def file_identity(stat)
+        [ stat.dev, stat.ino, stat.ftype, stat.size, stat.nlink ]
+      end
+
+      def inspect_archive(archive_io, backup_id)
+        entries = {}
+        total_bytes = 0
+        each_entry(archive_io) do |entry|
+          name = safe_name(entry, backup_id)
+          raise "Backup archive contains duplicate paths" if entries.key?(name)
+
+          type = entry.directory? ? :directory : entry.file? ? :file : nil
+          raise "Backup archive contains links or special files" unless type
+          entries[name] = { type:, bytes: entry.header.size }
+          total_bytes += entry.header.size if type == :file
+        end
+        raise "Backup archive does not contain its manifest" unless entries["#{backup_id}/manifest.json"]&.fetch(:type) == :file
+
+        entries.each do |name, metadata|
+          next if metadata.fetch(:type) == :directory
+
+          parents = Pathname(name).each_filename.to_a
+          parents.pop
+          parents.length.times do |index|
+            parent = parents.first(index + 1).join("/")
+            raise "Backup archive nests content below a file" if entries[parent]&.fetch(:type) == :file
+          end
+        end
+        [ entries, total_bytes ]
+      end
+
+      def safe_name(entry, backup_id)
+        name = entry.full_name
+        raise "Backup archive contains an unsafe path" if name.empty? || name.bytesize > 4096 || name.start_with?("/")
+
+        parts = name.split("/", -1)
+        parts.pop if entry.directory? && parts.last == ""
+        if parts.empty? || parts.first != backup_id || parts.any? { _1.empty? || _1 == "." || _1 == ".." }
+          raise "Backup archive contains an unsafe path"
+        end
+        parts.join("/")
+      end
+
+      def extract_archive(archive_io, destination_directory, backup_id, expected_entries, owned_paths, operation_lock)
+        each_entry(archive_io) do |entry|
+          operation_lock.assert_current!
+          name = safe_name(entry, backup_id)
+          destination = destination_directory.join(name)
+          metadata = expected_entries.fetch(name)
+          if metadata.fetch(:type) == :directory
+            create_directory destination, destination_directory, owned_paths, operation_lock
+            File.chmod 0o700, destination
+          else
+            create_directory destination.dirname, destination_directory, owned_paths, operation_lock
+            File.open(destination, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+              owned_paths.record destination
+              copied = IO.copy_stream(entry, file)
+              raise "Backup archive entry size changed during extraction" unless copied == metadata.fetch(:bytes)
+              file.fsync
+            end
+          end
+        end
+      end
+
+      def create_directory(path, root, owned_paths, operation_lock)
+        return if path == root
+        operation_lock.assert_current!
+        if path.exist? || path.symlink?
+          unless owned_paths.owned?(path) && path.directory? && !path.symlink?
+            raise "Backup extraction destination changed concurrently"
+          end
+          return
+        end
+
+        create_directory path.dirname, root, owned_paths, operation_lock
+        Dir.mkdir path, 0o700
+        owned_paths.record path
+      rescue Errno::EEXIST
+        raise "Backup extraction destination changed concurrently"
+      end
+
+      def each_entry(archive_io)
+        archive_io.rewind
+        gzip = Zlib::GzipReader.new(archive_io)
+        tar = Gem::Package::TarReader.new(gzip)
+        tar.each { yield _1 }
+      rescue Zlib::Error, Gem::Package::TarInvalidError => error
+        raise "Backup archive is invalid: #{error.message}"
+      ensure
+        begin
+          gzip&.finish unless gzip&.closed?
+        rescue Zlib::Error
+          nil
+        end
+        archive_io.rewind if archive_io && !archive_io.closed?
+      end
+
+      def ensure_capacity!(destination_directory, bytes)
+        output, status = CampfireBackup::Subprocess.capture2("df", "-Pk", destination_directory.to_s)
+        raise "Could not determine restore filesystem capacity" unless status.success?
+
+        available = output.lines.last.split.fetch(3).to_i * 1024
+        raise "Insufficient free space to extract backup" if available < bytes + 16 * 1024 * 1024
+      end
+
+      def flush_directory_tree(path)
+        directories = Dir.glob(path.join("**", "*"), File::FNM_DOTMATCH).filter_map do |name|
+          candidate = Pathname(name)
+          candidate if candidate.directory? && !candidate.symlink?
+        end
+        directories.sort_by { _1.each_filename.count }.reverse_each do |directory|
+          File.chmod 0o700, directory
+          flush_directory directory
+        end
+        flush_directory path
+      end
+
+      def flush_directory(path)
+        File.open(path, &:fsync)
+      end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  arguments = ARGV.dup
+  options = if arguments.length == 2 && arguments.first != "--legacy-plaintext"
+    { archive_path: arguments.fetch(0), destination_directory: arguments.fetch(1) }
+  elsif arguments.length == 4 && arguments.shift == "--legacy-plaintext"
+    {
+      archive_path: arguments.fetch(0), legacy_authentication_path: arguments.fetch(1),
+      destination_directory: arguments.fetch(2)
+    }
+  else
+    warn "Usage: extract-backup ENCRYPTED_BACKUP DESTINATION\n" \
+      "   or: extract-backup --legacy-plaintext ARCHIVE AUTHENTICATION_STATEMENT DESTINATION"
+    exit 64
+  end
+
+  BackupExtractor.extract(
+    **options, backup_id: ENV.fetch("BACKUP_ID"),
+    expected_installation_fingerprint: ENV.fetch("EXPECTED_INSTALLATION_FINGERPRINT"),
+    expected_environment: ENV.fetch("EXPECTED_ENVIRONMENT", "production")
+  )
+end

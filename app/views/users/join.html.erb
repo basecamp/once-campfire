@@ -1,0 +1,9 @@
+<% @page_title = "Join Campfire" %>
+<% @body_class = "signup" %>
+
+<section class="panel center txt-align-center flex flex-column gap">
+  <h1 class="txt-x-large margin-none">Open your invitation link</h1>
+  <p>The private code is exchanged in this browser and removed before signup.</p>
+  <%= render "shared/credential_fragment_exchange", url: join_intent_path, label: "Invitation code" %>
+  <%= link_to "Sign in instead", new_session_path, class: "btn" %>
+</section>

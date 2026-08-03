@@ -9,6 +9,22 @@ class Search < ApplicationRecord
     def record(query)
       find_or_create_by(query: query).touch
     end
+
+    def record_for!(user, query)
+      User::MutationFence.with(user.id) do
+        transaction do
+          User.lock_active!(user).searches.record(query)
+        end
+      end
+    end
+
+    def clear_for!(user)
+      User::MutationFence.with(user.id) do
+        transaction do
+          User.lock_active!(user).searches.destroy_all
+        end
+      end
+    end
   end
 
   private

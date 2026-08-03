@@ -1,0 +1,527 @@
+#!/usr/bin/env ruby
+
+require "digest"
+require "fileutils"
+require "json"
+require "pathname"
+require "rubygems/package"
+require "tmpdir"
+require "zlib"
+require File.expand_path("../../lib/campfire_backup/authentication", __dir__)
+require File.expand_path("../../lib/campfire_backup/backup_encryption", __dir__)
+require File.expand_path("../../lib/campfire_backup/mount_identity", __dir__)
+require File.expand_path("../../lib/campfire_backup/operation_lock", __dir__)
+require File.expand_path("../../lib/campfire_backup/source_state_inventory", __dir__)
+load File.expand_path("verify-backup", __dir__) unless defined?(BackupVerifier)
+load File.expand_path("extract-backup", __dir__) unless defined?(BackupExtractor)
+
+class BackupArchiver
+  STAGING_MARKER = "publication.json"
+  PLAINTEXT_TMPDIR_ENV = "BACKUP_PLAINTEXT_TMPDIR"
+
+  class << self
+    def archive(generation_path:, destination_directory:, expected_installation_fingerprint:,
+        expected_environment:, authentication_key: CampfireBackup::Authentication.key_from_env,
+        encryption_keyring: nil, plaintext_temporary_directory: ENV[PLAINTEXT_TMPDIR_ENV],
+        mount_identity_resolver: CampfireBackup::MountIdentity.method(:for_path), fault_after: nil)
+      owned_encryption_keyring = encryption_keyring.nil?
+      encryption_keyring ||= CampfireBackup::BackupEncryption.keyring_from_env!
+      encryption_keyring.assert_distinct_from! authentication_key
+      generation_path = Pathname(generation_path).expand_path
+      raise "Backup generation path cannot be a symbolic link" if generation_path.symlink?
+      generation_path = generation_path.realpath
+      destination_directory = Pathname(destination_directory).expand_path
+      raise "Backup archive destination cannot be a symbolic link" if destination_directory.symlink?
+      operation_lock = CampfireBackup::OperationLock.acquire(
+        destination_directory, purpose: "archive", shared: true
+      )
+      destination_directory = operation_lock.directory
+      operation_lock.assert_current!
+      BackupVerifier.verify(
+        generation_path:, expected_installation_fingerprint:, expected_environment:,
+        authentication_key:, output: false
+      )
+      source_manifest = generation_path.join("manifest.json").read
+      source_manifest_sha256 = Digest::SHA256.hexdigest(source_manifest)
+      manifest = JSON.parse(source_manifest)
+      manifest = CampfireBackup::Authentication.verify_manifest!(manifest, key: authentication_key)
+      backup_id = manifest.fetch("backup_id")
+      archive_path = destination_directory.join("campfire-#{backup_id}.campfire-backup")
+      staging_directory = destination_directory.join(".campfire-#{backup_id}.archive-staging")
+      if archive_path.symlink? || (archive_path.exist? && !archive_path.file?)
+        raise "Backup archive publication path must be an independent regular file"
+      end
+      raise "Backup archive staging path cannot be a symbolic link" if staging_directory.symlink?
+
+      identity = publication_identity(manifest, archive_path, encryption_keyring)
+      with_private_plaintext_workspace(
+        destination_directory, expected_environment:, plaintext_temporary_directory:,
+        mount_identity_resolver:
+      ) do |plaintext_workspace|
+        if archive_path.exist? && !staging_directory.exist?
+          verify_publication!(
+            archive_path:, backup_id:, expected_installation_fingerprint:, expected_environment:,
+            authentication_key:, encryption_keyring:,
+            expected_manifest_sha256: source_manifest_sha256, plaintext_workspace:
+          )
+          operation_lock.assert_current!
+          return report_publication(archive_path, backup_id, authentication_key)
+        end
+
+        reconcile_interrupted_publication!(
+          staging_directory:, archive_path:, identity:,
+          expected_installation_fingerprint:, expected_environment:, authentication_key:, fault_after:,
+          encryption_keyring:, operation_lock:, expected_manifest_sha256: source_manifest_sha256,
+          plaintext_workspace:
+        )
+        if archive_path.exist?
+          verify_publication!(
+            archive_path:, backup_id:, expected_installation_fingerprint:, expected_environment:,
+            authentication_key:, encryption_keyring:,
+            expected_manifest_sha256: source_manifest_sha256, plaintext_workspace:
+          )
+          operation_lock.assert_current!
+          return report_publication(archive_path, backup_id, authentication_key)
+        end
+
+        create_staging_directory! staging_directory, identity, authentication_key
+        staged_archive = staging_directory.join(archive_path.basename)
+        CampfireBackup::BackupEncryption.with_unlinked_temporary_file(plaintext_workspace) do |plaintext_archive|
+          write_archive plaintext_archive, generation_path
+          plaintext_archive.flush
+          plaintext_archive.rewind
+          statement = CampfireBackup::Authentication.sign_statement({
+            format_version: CampfireBackup::Authentication::ARCHIVE_FORMAT_VERSION,
+            kind: "campfire-backup-archive",
+            backup_id:,
+            environment: manifest.fetch("environment"),
+            installation_fingerprint: manifest.fetch("installation_fingerprint"),
+            schema_version: manifest.fetch("schema_version"),
+            application_version: manifest.fetch("application_version"),
+            source_state_sha256: CampfireBackup::SourceStateInventory.validate_manifest!(manifest),
+            archive: {
+              filename: plaintext_archive_filename(backup_id),
+              bytes: plaintext_archive.stat.size,
+              sha256: digest_io(plaintext_archive)
+            }
+          }, key: authentication_key)
+          File.open(
+            staged_archive, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600
+          ) do |encrypted_archive|
+            CampfireBackup::BackupEncryption.encrypt_archive(
+              archive_io: plaintext_archive, authentication: JSON.generate(statement),
+              destination_io: encrypted_archive, keyring: encryption_keyring
+            )
+            encrypted_archive.fsync
+          end
+        end
+        flush_directory staging_directory
+        verify_publication!(
+          archive_path: staged_archive, backup_id:, expected_installation_fingerprint:,
+          expected_environment:, authentication_key:, encryption_keyring:,
+          expected_manifest_sha256: source_manifest_sha256, plaintext_workspace:
+        )
+        operation_lock.assert_current!
+        fault_after&.call("staged")
+        operation_lock.assert_current!
+
+        publication = publish_exclusively! staged_archive, archive_path
+        flush_directory destination_directory
+        fault_after&.call("archive")
+        operation_lock.assert_current!
+        if publication == :linked && !File.identical?(staged_archive, archive_path)
+          raise "Backup archive publication changed during commit"
+        end
+        operation_lock.assert_current!
+        remove_owned_staging! staging_directory, identity, authentication_key
+        operation_lock.assert_current!
+        verify_publication!(
+          archive_path:, backup_id:, expected_installation_fingerprint:, expected_environment:,
+          authentication_key:, encryption_keyring:,
+          expected_manifest_sha256: source_manifest_sha256, plaintext_workspace:
+        )
+        operation_lock.assert_current!
+        report_publication archive_path, backup_id, authentication_key
+      end
+    ensure
+      if defined?(staging_directory) && staging_directory&.directory? &&
+          (!defined?(archive_path) || !archive_path&.exist?)
+        remove_owned_staging!(staging_directory, identity, authentication_key) if defined?(identity) && identity
+      end
+      operation_lock&.release
+      encryption_keyring&.clear! if owned_encryption_keyring
+    end
+
+    private
+      def with_private_plaintext_workspace(destination_directory, expected_environment:,
+          plaintext_temporary_directory:, mount_identity_resolver:)
+        root = trusted_plaintext_temporary_root(plaintext_temporary_directory)
+        Dir.mktmpdir("campfire-backup-plaintext-", root.to_s) do |name|
+          directory = Pathname(name)
+          stat = directory.lstat
+          unless stat.directory? && !directory.symlink? && stat.uid == Process.euid &&
+              (stat.mode & 0o077).zero? && directory.dirname == root
+            raise "Backup plaintext workspace must be a private directory"
+          end
+          assert_separate_plaintext_mount!(
+            directory, destination_directory, expected_environment:, mount_identity_resolver:
+          )
+          yield directory
+        end
+      end
+
+      def trusted_plaintext_temporary_root(configured_directory)
+        configured_directory = configured_directory.to_s
+        path = Pathname(configured_directory.empty? ? Dir.tmpdir : configured_directory).expand_path
+        stat = path.lstat
+        private_root = stat.uid == Process.euid && (stat.mode & 0o077).zero?
+        sticky_root = stat.uid.zero? && (stat.mode & 0o1777) == 0o1777
+        unless stat.directory? && !path.symlink? && (private_root || sticky_root)
+          raise "#{PLAINTEXT_TMPDIR_ENV} must name a trusted private or root-owned sticky directory"
+        end
+
+        canonical = path.realpath
+        current = canonical.lstat
+        unless [ stat.dev, stat.ino, stat.ftype ] == [ current.dev, current.ino, current.ftype ]
+          raise "#{PLAINTEXT_TMPDIR_ENV} changed while it was verified"
+        end
+        canonical
+      rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+        raise "#{PLAINTEXT_TMPDIR_ENV} must name a trusted private or root-owned sticky directory"
+      end
+
+      def assert_separate_plaintext_mount!(workspace, destination, expected_environment:,
+          mount_identity_resolver:)
+        return unless expected_environment == "production"
+
+        workspace_mount = mount_identity_resolver.call(workspace)
+        destination_mount = mount_identity_resolver.call(destination)
+        unless [ [ workspace_mount, workspace ], [ destination_mount, destination ] ].all? do |mount, path|
+          mount.is_a?(CampfireBackup::MountIdentity::Entry) && mount.covers?(path)
+        end
+          raise "Backup plaintext workspace mount identity could not be verified"
+        end
+        if workspace_mount.same_source_volume?(destination_mount)
+          raise "#{PLAINTEXT_TMPDIR_ENV} must be on a different mount from the archive destination"
+        end
+      rescue CampfireBackup::MountIdentity::Error => error
+        raise "Backup plaintext workspace mount identity could not be verified: #{error.message}"
+      end
+
+      def publication_identity(manifest, archive_path, encryption_keyring)
+        {
+          format_version: 2,
+          kind: "campfire-backup-archive-staging",
+          backup_id: manifest.fetch("backup_id"),
+          environment: manifest.fetch("environment"),
+          installation_fingerprint: manifest.fetch("installation_fingerprint"),
+          archive: archive_path.basename.to_s,
+          encryption_key_id: encryption_keyring.active_id
+        }
+      end
+
+      def create_staging_directory!(directory, identity, authentication_key)
+        if directory.exist?
+          remove_owned_staging! directory, identity, authentication_key
+        end
+        Dir.mkdir directory, 0o700
+        authentication = CampfireBackup::Authentication.sign_statement(
+          identity, key: authentication_key
+        ).fetch(:authentication)
+        write_json directory.join(STAGING_MARKER), authentication
+        flush_directory directory
+        flush_directory directory.dirname
+      end
+
+      def reconcile_interrupted_publication!(staging_directory:, archive_path:,
+          identity:, expected_installation_fingerprint:, expected_environment:, authentication_key:, fault_after:,
+          encryption_keyring:, operation_lock:, expected_manifest_sha256:, plaintext_workspace:)
+        return unless staging_directory.exist?
+
+        verify_owned_staging! staging_directory, identity, authentication_key
+        staged_archive = staging_directory.join(archive_path.basename)
+
+        if archive_path.symlink? || (archive_path.exist? && !archive_path.file?)
+          raise "Backup archive publication path must be an independent regular file"
+        elsif archive_path.exist?
+          remove_owned_staging!(staging_directory, identity, authentication_key) if
+            staged_archive.file? && File.identical?(staged_archive, archive_path)
+          verify_publication!(
+            archive_path:, backup_id: identity.fetch(:backup_id),
+            expected_installation_fingerprint:, expected_environment:, authentication_key:,
+            encryption_keyring:, expected_manifest_sha256:, plaintext_workspace:
+          )
+          operation_lock.assert_current!
+          remove_owned_staging!(staging_directory, identity, authentication_key)
+        elsif staged_archive.file?
+          verify_publication!(
+            archive_path: staged_archive, backup_id: identity.fetch(:backup_id),
+            expected_installation_fingerprint:, expected_environment:, authentication_key:,
+            encryption_keyring:, expected_manifest_sha256:, plaintext_workspace:
+          )
+          operation_lock.assert_current!
+          publication = publish_exclusively! staged_archive, archive_path
+          flush_directory archive_path.dirname
+          fault_after&.call("archive")
+          operation_lock.assert_current!
+          if publication == :linked && !File.identical?(staged_archive, archive_path)
+            raise "Backup archive publication changed during commit"
+          end
+          remove_owned_staging! staging_directory, identity, authentication_key
+          verify_publication!(
+            archive_path:, backup_id: identity.fetch(:backup_id),
+            expected_installation_fingerprint:, expected_environment:, authentication_key:,
+            encryption_keyring:, expected_manifest_sha256:, plaintext_workspace:
+          )
+          operation_lock.assert_current!
+        else
+          remove_owned_staging! staging_directory, identity, authentication_key
+        end
+      end
+
+      def verify_owned_staging!(directory, identity, authentication_key)
+        directory_stat = directory.lstat
+        unless directory_stat.directory? && !directory.symlink? && directory_stat.uid == Process.euid &&
+            (directory_stat.mode & 0o077).zero?
+          raise "Backup archive staging path is not a private directory"
+        end
+        marker = directory.join(STAGING_MARKER)
+        marker_stat = marker.lstat
+        unless marker_stat.file? && marker_stat.nlink == 1 && !marker.symlink?
+          raise "Backup archive staging ownership marker is not an independent regular file"
+        end
+        authentication = JSON.parse(marker.read)
+        statement = identity.transform_keys(&:to_s).merge("authentication" => authentication)
+        payload = CampfireBackup::Authentication.verify_statement!(statement, key: authentication_key)
+        expected = identity.transform_keys(&:to_s)
+        raise "Backup archive staging ownership does not match" unless payload == expected
+
+        allowed = [ STAGING_MARKER, identity.fetch(:archive) ]
+        directory.children.each do |path|
+          unless allowed.include?(path.basename.to_s) && path.file? && !path.symlink?
+            raise "Backup archive staging contains an unexpected entry: #{path}"
+          end
+
+          stat = path.lstat
+          next if path == marker && stat.nlink == 1
+          next if stat.nlink == 1
+
+          final_path = directory.dirname.join(identity.fetch(:archive))
+          unless stat.nlink == 2 && final_path.file? && !final_path.symlink? &&
+              File.identical?(path, final_path)
+            raise "Backup archive staging contains a linked file: #{path}"
+          end
+        end
+      rescue Errno::ENOENT, JSON::ParserError, KeyError
+        raise "Backup archive staging ownership cannot be authenticated; preserve #{directory} for manual inspection"
+      end
+
+      def publish_exclusively!(staged_path, final_path)
+        File.link staged_path, final_path
+        :linked
+      rescue Errno::EEXIST
+        unless byte_identical_regular_files?(staged_path, final_path)
+          raise "Backup archive publication raced with a conflicting final file; preserve both the final and authenticated staging files"
+        end
+        :identical
+      end
+
+      def byte_identical_regular_files?(left_path, right_path)
+        return false unless left_path.lstat.file? && right_path.lstat.file?
+
+        flags = File::RDONLY
+        flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+        File.open(left_path, flags) do |left|
+          File.open(right_path, flags) do |right|
+            left_stat = left.stat
+            right_stat = right.stat
+            unless left_stat.file? && left_stat.nlink == 1 && right_stat.file? &&
+                right_stat.nlink == 1 && left_stat.size == right_stat.size
+              return false
+            end
+
+            loop do
+              left_chunk = left.read(1024 * 1024)
+              right_chunk = right.read(1024 * 1024)
+              return false unless left_chunk == right_chunk
+              break unless left_chunk
+            end
+            left_current = left_path.lstat
+            right_current = right_path.lstat
+            return false unless
+              [ left_stat.dev, left_stat.ino, left_stat.ftype, left_stat.nlink ] ==
+                [ left_current.dev, left_current.ino, left_current.ftype, left_current.nlink ] &&
+              [ right_stat.dev, right_stat.ino, right_stat.ftype, right_stat.nlink ] ==
+                [ right_current.dev, right_current.ino, right_current.ftype, right_current.nlink ]
+          end
+        end
+        true
+      rescue Errno::ENOENT, Errno::ELOOP, Errno::EISDIR, Errno::ENXIO, Errno::ENODEV
+        false
+      end
+
+      def remove_owned_staging!(directory, identity, authentication_key)
+        return unless directory.exist?
+
+        verify_owned_staging! directory, identity, authentication_key
+        FileUtils.remove_entry_secure directory
+        flush_directory directory.dirname
+      end
+
+      def verify_publication!(archive_path:, backup_id:,
+          expected_installation_fingerprint:, expected_environment:, authentication_key:,
+          encryption_keyring:, expected_manifest_sha256:, plaintext_workspace:)
+        evidence = nil
+        Dir.mktmpdir("campfire-archive-verification", plaintext_workspace.to_s) do |directory|
+          generation = BackupExtractor.extract(
+            archive_path:, destination_directory: Pathname(directory).join("extracted"), backup_id:,
+            expected_installation_fingerprint:, expected_environment:, authentication_key:,
+            encryption_keyring:, output: false
+          ) { evidence = _1 }
+          BackupVerifier.verify(
+            generation_path: generation, expected_installation_fingerprint:, expected_environment:,
+            authentication_key:, output: false
+          )
+          extracted_manifest = generation.join("manifest.json").read
+          unless Digest::SHA256.hexdigest(extracted_manifest) == expected_manifest_sha256
+            raise "Backup archive does not contain the exact source generation manifest"
+          end
+          manifest = JSON.parse(extracted_manifest)
+          manifest = CampfireBackup::Authentication.verify_manifest!(manifest, key: authentication_key)
+          unless evidence.fetch("schema_version") == manifest.fetch("schema_version") &&
+              evidence.fetch("application_version") == manifest.fetch("application_version") &&
+              evidence.fetch("source_state_sha256") == CampfireBackup::SourceStateInventory.validate_manifest!(manifest)
+            raise "Backup archive statement does not match its extracted generation"
+          end
+        end
+      end
+
+      def report_publication(archive_path, backup_id, authentication_key)
+        encryption = CampfireBackup::BackupEncryption.envelope_metadata(archive_path)
+        puts JSON.generate(
+          status: "archived", backup_id:, archive: archive_path.to_s,
+          encryption_key_id: encryption.fetch(:key_id),
+          authentication_key_id: CampfireBackup::Authentication.key_id(authentication_key)
+        )
+        archive_path
+      end
+
+      def write_json(path, value)
+        File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+          file.write JSON.pretty_generate(value) << "\n"
+          file.fsync
+        end
+      end
+
+      def write_archive(file, generation_path)
+        file.binmode
+        gzip = Zlib::GzipWriter.new(file)
+        Gem::Package::TarWriter.new(gzip) do |tar|
+          add_directory tar, generation_path, generation_path.basename.to_s
+        end
+        gzip.finish
+        gzip = nil
+        file.flush
+        file.rewind
+      ensure
+        begin
+          gzip&.finish
+        rescue Zlib::Error
+          nil
+        end
+      end
+
+      def add_directory(tar, source, archive_name)
+        source_stat = source.lstat
+        unless source_stat.directory? && !source_stat.symlink?
+          raise "Backup generation contains a symbolic link or special file"
+        end
+        tar.mkdir archive_name, 0o700
+        source.children.sort_by { _1.basename.to_s }.each do |child|
+          child_stat = child.lstat
+          raise "Backup generation contains a symbolic link" if child_stat.symlink?
+
+          child_name = "#{archive_name}/#{child.basename}"
+          if child_stat.directory?
+            add_directory tar, child, child_name
+          elsif child_stat.file?
+            add_regular_file tar, child, child_name, child_stat
+          else
+            raise "Backup generation contains a link or special file"
+          end
+        end
+        current = source.lstat
+        unless [ source_stat.dev, source_stat.ino, source_stat.ftype ] ==
+            [ current.dev, current.ino, current.ftype ]
+          raise "Backup generation changed while it was archived"
+        end
+      end
+
+      def add_regular_file(tar, path, archive_name, expected_stat)
+        raise "Backup generation contains a hard-linked file" unless expected_stat.nlink == 1
+
+        flags = File::RDONLY | File::BINARY
+        flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+        File.open(path, flags) do |source|
+          opened = source.stat
+          current = path.lstat
+          unless opened.file? && opened.nlink == 1 &&
+              [ opened.dev, opened.ino, opened.ftype, opened.size ] ==
+                [ expected_stat.dev, expected_stat.ino, expected_stat.ftype, expected_stat.size ] &&
+              [ opened.dev, opened.ino, opened.ftype ] ==
+                [ current.dev, current.ino, current.ftype ]
+            raise "Backup generation file changed while it was archived"
+          end
+
+          tar.add_file_simple(archive_name, 0o600, opened.size) do |entry|
+            copied = IO.copy_stream(source, entry, opened.size)
+            unless copied == opened.size && source.read(1).nil?
+              raise "Backup generation file changed while it was archived"
+            end
+          end
+          after = source.stat
+          path_after = path.lstat
+          unless after.nlink == 1 &&
+              [ opened.dev, opened.ino, opened.ftype, opened.size ] ==
+                [ after.dev, after.ino, after.ftype, after.size ] &&
+              [ after.dev, after.ino, after.ftype ] ==
+                [ path_after.dev, path_after.ino, path_after.ftype ]
+            raise "Backup generation file changed while it was archived"
+          end
+        end
+      rescue Errno::ELOOP, Errno::ENOENT, Errno::ENXIO, Errno::ENODEV
+        raise "Backup generation file changed while it was archived"
+      end
+
+      def digest_io(io)
+        position = io.pos
+        io.rewind
+        digest = Digest::SHA256.new
+        while (chunk = io.read(1024 * 1024))
+          digest << chunk
+        end
+        digest.hexdigest
+      ensure
+        io.seek position, IO::SEEK_SET if defined?(position) && position
+      end
+
+      def plaintext_archive_filename(backup_id)
+        "campfire-#{backup_id}.tar.gz"
+      end
+
+      def flush_directory(path)
+        File.open(path, &:fsync)
+      end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  BackupArchiver.archive(
+    generation_path: ARGV.fetch(0),
+    destination_directory: ARGV.fetch(1),
+    expected_installation_fingerprint: ENV.fetch("EXPECTED_INSTALLATION_FINGERPRINT"),
+    expected_environment: ENV.fetch("EXPECTED_ENVIRONMENT", "production")
+  )
+end

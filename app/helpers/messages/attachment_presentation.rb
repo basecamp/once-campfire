@@ -15,7 +15,7 @@ class Messages::AttachmentPresentation
 
   private
     attr_reader :message, :context
-    delegate :tag, :link_to, :broadcast_image_tag, :rails_blob_path, :url_for, to: :context
+    delegate :tag, :link_to, :image_tag, :broadcast_image_tag, to: :context
 
     def render_preview
       if message.attachment.video?
@@ -30,8 +30,9 @@ class Messages::AttachmentPresentation
 
       inline_media_dimension_constraints(width, height) do
         tag.video \
-          src: rails_blob_path(message.attachment), poster: url_for(message.attachment.preview(format: :webp, resize_to_limit: [ Message::THUMBNAIL_MAX_WIDTH, Message::THUMBNAIL_MAX_HEIGHT ])),
-          controls: true, preload: :none, width: "100%", height: "100%", class: "message__attachment"
+          src: attachment_path, poster: attachment_path(representation: "video_preview"),
+          controls: true, preload: :none, width: "100%", height: "100%", class: "message__attachment",
+          aria: { label: filename }
       end
     end
 
@@ -40,7 +41,8 @@ class Messages::AttachmentPresentation
 
       inline_media_dimension_constraints(width, height) do
         lightbox_link do
-          broadcast_image_tag message.attachment.representation(:thumb), width: width, height: height, class: "message__attachment", loading: "lazy"
+          image_tag attachment_path(representation: "thumb"), alt: filename,
+            width: width, height: height, class: "message__attachment", loading: "lazy"
         end
       end
     end
@@ -81,8 +83,9 @@ class Messages::AttachmentPresentation
     end
 
     def lightbox_link(&)
-      link_to rails_blob_path(message.attachment), class: "flex", data: {
-        lightbox_target: "image", action: "lightbox#open", lightbox_url_value: download_url }, &
+      link_to attachment_path, class: "flex", data: {
+        lightbox_target: "image", action: "lightbox#open", lightbox_url_value: download_url,
+        lightbox_filename_value: filename }, &
     end
 
     def download_link
@@ -92,8 +95,12 @@ class Messages::AttachmentPresentation
     end
 
     def share_button
-      tag.button class: "btn message__action-btn", style: "--width: auto;", data: { controller: "web-share", action: "web-share#share", web_share_files_value: download_url } do
-        broadcast_image_tag("share.svg", aria: { hidden: "true" }, size: 20) + tag.span("Share #{ filename }", class: "for-screen-reader")
+      tag.button type: "button", class: "btn message__action-btn", style: "--width: auto;", data: {
+        controller: "web-share", action: "web-share#share", web_share_files_value: download_url,
+        web_share_filename_value: filename
+      } do
+        broadcast_image_tag("share.svg", aria: { hidden: "true" }, size: 20) +
+          tag.span("Share #{ filename }", class: "for-screen-reader", data: { web_share_target: "label" })
       end
     end
 
@@ -102,6 +109,10 @@ class Messages::AttachmentPresentation
     end
 
     def download_url
-      rails_blob_path message.attachment, disposition: "attachment", only_path: true
+      attachment_path disposition: "attachment"
+    end
+
+    def attachment_path(**options)
+      context.room_message_attachment_path message.room, message, **options
     end
 end

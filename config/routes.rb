@@ -3,11 +3,26 @@ Rails.application.routes.draw do
 
   resource :first_run
 
-  resource :session do
-    scope module: "sessions" do
-      resources :transfers, only: %i[ show update ]
-    end
+  post "auth/openid_connect", to: "oidc/sessions#new", as: :openid_connect
+  get "auth/openid_connect/callback", to: "oidc/sessions#create"
+  post "auth/openid_connect/backchannel_logout", to: "oidc/back_channel_logouts#create",
+    as: :oidc_back_channel_logout
+  get "auth/failure", to: "oidc/sessions#failure"
+  resource :oidc_link, only: %i[ show update ], controller: "oidc/links"
+  resource :oidc_flow, only: %i[ show destroy ], controller: "oidc/flows"
+
+  scope "/scim/v2", module: "scim/v2", as: "scim_v2" do
+    get "ServiceProviderConfig", to: "service_provider_configs#show", as: :service_provider_config
+    get "Users", to: "users#index", as: :users
+    get "Users/:id", to: "users#show", as: :user
+    patch "Users/:id", to: "users#update"
+    delete "Users/:id", to: "users#destroy"
   end
+
+  resource :session
+  get "session/transfer", to: "sessions/transfers#show", as: :session_transfer
+  post "session/transfer/intent", to: "sessions/transfers#intent", as: :session_transfer_intent
+  put "session/transfer", to: "sessions/transfers#update"
 
   resource :account do
     scope module: "accounts" do
@@ -29,8 +44,9 @@ Rails.application.routes.draw do
     route_for :account_logo, v: Current.account&.updated_at&.to_fs(:number), size: options[:size]
   end
 
-  get "join/:join_code", to: "users#new", as: :join
-  post "join/:join_code", to: "users#create"
+  get "join", to: "users#new", as: :join
+  post "join/intent", to: "users/join_intents#create", as: :join_intent
+  post "join", to: "users#create"
 
   resources :qr_code, only: :show
 
@@ -60,9 +76,11 @@ Rails.application.routes.draw do
   end
 
   resources :rooms do
-    resources :messages
+    resources :messages do
+      resource :attachment, only: :show, module: :messages
+    end
 
-    post ":bot_key/messages", to: "messages/by_bots#create", as: :bot_messages
+    post "bot/messages", to: "messages/by_bots#create", as: :bot_messages
 
     scope module: "rooms" do
       resource :refresh, only: :show
@@ -95,4 +113,7 @@ Rails.application.routes.draw do
   get "service-worker" => "pwa#service_worker"
 
   get "up" => "rails/health#show", as: :rails_health_check
+  get "up/oidc" => "oidc/readiness#show", as: :oidc_readiness_check
+  get "up/scim" => "scim/readiness#show", as: :scim_readiness_check
+  get "up/work" => "reliable_work/readiness#show", as: :reliable_work_readiness_check
 end

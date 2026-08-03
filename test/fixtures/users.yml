@@ -3,24 +3,28 @@
 david:
   name: David
   email_address: david@37signals.com
+  normalized_email_address: david@37signals.com
   password_digest: <%= password_digest %>
   role: administrator
 
 jason:
   name: Jason
   email_address: jason@37signals.com
+  normalized_email_address: jason@37signals.com
   password_digest: <%= password_digest %>
   role: administrator
 
 jz:
   name: JZ
   email_address: jz@37signals.com
+  normalized_email_address: jz@37signals.com
   password_digest: <%= password_digest %>
   bio: Designer
 
 kevin:
   name: Kevin
   email_address: kevin@37signals.com
+  normalized_email_address: kevin@37signals.com
   password_digest: <%= password_digest %>
   bio: Programmer
 

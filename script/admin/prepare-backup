@@ -1,27 +1,457 @@
 #!/usr/bin/env ruby
 require File.expand_path("../../config/environment", File.dirname(__FILE__))
+require "base64"
+require "digest"
+require "fileutils"
+require "json"
+require "securerandom"
+require "campfire_backup/authentication"
+require "campfire_backup/installation_identity"
+require "campfire_backup/operation_lock"
+require "campfire_backup/recovery_markers"
+require "campfire_backup/redis_validator"
+require "campfire_backup/schema_verifier"
+require "campfire_backup/source_state_inventory"
+require "campfire_backup/subprocess"
+require "campfire_backup/upgrade_recovery_guard"
 
 class Backup
-  class << self
-    def create
-      dest = SQLite3::Database.new(backup_filename)
-      backup = SQLite3::Backup.new(dest, "main", Room.connection.raw_connection, "main")
+  FORMAT_VERSION = 1
+  GENERATION_PATTERN = /\A\d{8}T\d{6}Z-[0-9a-f]{16}\z/
+  STAGING_PATTERN = /\A\.\d{8}T\d{6}Z-[0-9a-f]{16}\.tmp\z/
+  PERSISTENT_DIRECTORIES = %w[ files redis ].freeze
+  QUIESCENCE_CONFIRMATION = "CAMPFIRE IS STOPPED"
+  LEGACY_QUIESCENCE_CONFIRMATION = "LEGACY CAMPFIRE EXITED 0"
+  LEGACY_CONFIRMATION_ENV = "CONFIRM_LEGACY_QUIESCED_BACKUP"
+  LEGACY_EXIT_CODE_ENV = "LEGACY_CAMPFIRE_EXIT_CODE"
 
-      backup.step(-1)
-      backup.finish
-      dest.close
+  class << self
+    def create(destination_directory: backup_directory, storage_directory: Rails.root.join("storage"),
+        confirmation: ENV["CONFIRM_QUIESCED_BACKUP"],
+        legacy_confirmation: ENV[LEGACY_CONFIRMATION_ENV],
+        legacy_exit_code: ENV[LEGACY_EXIT_CODE_ENV],
+        authentication_key: CampfireBackup::Authentication.key_from_env,
+        database_relative_path: nil)
+      unless confirmation == QUIESCENCE_CONFIRMATION
+        raise "Stop Campfire and set CONFIRM_QUIESCED_BACKUP='#{QUIESCENCE_CONFIRMATION}'"
+      end
+
+      storage_directory = Pathname(storage_directory).expand_path
+      operation_lock = CampfireBackup::OperationLock.acquire(
+        storage_directory, purpose: "backup", shared: true
+      )
+      storage_directory = operation_lock.directory
+      operation_lock.assert_current!
+      database_path = CampfireBackup::UpgradeRecoveryGuard.verify_backup_target!(
+        connection: Room.connection, storage_directory:
+      )
+      database_identity = CampfireBackup::UpgradeRecoveryGuard.assert_database_connection!(
+        connection: Room.connection, expected_database: database_path
+      )
+      verify_shutdown_evidence!(
+        storage_directory, legacy_confirmation:, legacy_exit_code:
+      )
+      destination_directory = Pathname(destination_directory).expand_path
+      raise "Backup destination cannot be a symbolic link" if destination_directory.symlink?
+      destination_directory.mkpath
+      raise "Backup destination is not a directory" unless destination_directory.directory?
+
+      lock_path = destination_directory.join(".backup.lock")
+      if lock_path.symlink? || (lock_path.exist? && (!lock_path.file? || lock_path.stat.nlink != 1))
+        raise "Backup destination lock is not an independent regular file"
+      end
+      lock_flags = File::RDWR | File::CREAT
+      lock_flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+      File.open(lock_path, lock_flags, 0o600) do |lock|
+        opened = lock.stat
+        current = lock_path.lstat
+        unless opened.file? && opened.nlink == 1 &&
+            [ opened.dev, opened.ino ] == [ current.dev, current.ino ] && current.file?
+          raise "Backup destination lock changed during acquisition"
+        end
+        unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+          raise "Another Campfire backup operation is already running"
+        end
+        create_locked(
+          destination_directory:, storage_directory:, database_path:, database_identity:,
+          authentication_key:, database_relative_path:, operation_lock:
+        )
+      end
+    ensure
+      operation_lock&.release
     end
 
     private
-      def backup_filename
-        Rails.root.join("storage", "backups").tap(&:mkpath).join(primary_database_filename)
+      def verify_shutdown_evidence!(storage_directory, legacy_confirmation:, legacy_exit_code:)
+        if current_storage_format?
+          CampfireBackup::RecoveryMarkers.verify_clean_shutdown! storage_directory
+        elsif legacy_confirmation != LEGACY_QUIESCENCE_CONFIRMATION || legacy_exit_code.to_s != "0"
+          raise "Legacy Campfire storage has no clean-shutdown proof. Verify the source container is stopped " \
+            "with ExitCode 0, then set #{LEGACY_EXIT_CODE_ENV}=0 and " \
+            "#{LEGACY_CONFIRMATION_ENV}='#{LEGACY_QUIESCENCE_CONFIRMATION}'"
+        end
       end
 
-      def primary_database_filename
-        path = Rails.application.config.database_configuration[Rails.env]["primary"]["database"]
-        File.basename(path)
+      def current_storage_format?
+        database = Room.connection.raw_connection
+        migration_applied = database.get_first_value(<<~SQL).to_i == 1
+          SELECT 1 FROM schema_migrations
+          WHERE version = '#{CampfireBackup::UpgradeRecoveryGuard::GATED_MIGRATION}'
+          LIMIT 1
+        SQL
+        identity_column = database.execute("PRAGMA table_info(accounts)").any? do |row|
+          (row.is_a?(Hash) ? row["name"] : row[1]) == "installation_identifier"
+        end
+        migration_applied || identity_column
+      end
+
+      def create_locked(destination_directory:, storage_directory:, database_path:, database_identity:,
+          authentication_key:, database_relative_path:, operation_lock:)
+        cleanup_staging_directories destination_directory
+        validate_latest_pointer! destination_directory
+        assert_source_database! database_path, database_identity, operation_lock
+        installation_identifier = CampfireBackup::InstallationIdentity.ensure!(
+          storage_directory, Room.connection.raw_connection
+        )
+        source_entries = persistent_source_entries(storage_directory)
+        ensure_capacity! destination_directory, source_entries.sum { _1.fetch(:bytes) }
+        assert_source_database! database_path, database_identity, operation_lock
+        checkpoint_source_database!
+        assert_source_database_semantics! database_path, database_identity, operation_lock
+        backup_id = "#{Time.current.utc.strftime('%Y%m%dT%H%M%SZ')}-#{SecureRandom.hex(8)}"
+        staging_directory = destination_directory.join(".#{backup_id}.tmp")
+        generation_directory = destination_directory.join(backup_id)
+        if staging_directory.exist? || staging_directory.symlink? ||
+            generation_directory.exist? || generation_directory.symlink?
+          raise "Backup generation identity collided with an existing path; retry"
+        end
+        snapshot_filename = database_relative_path ? Pathname(database_relative_path).basename : database_path.basename
+        snapshot_path = staging_directory.join(snapshot_filename)
+        operation_lock.assert_current!
+        Dir.mkdir staging_directory, 0o700
+
+        assert_source_database! database_path, database_identity, operation_lock
+        create_snapshot snapshot_path
+        assert_source_database! database_path, database_identity, operation_lock
+        copy_persistent_files(source_entries, staging_directory.join("payload"))
+        unless persistent_source_entries(storage_directory) == source_entries
+          raise "Persistent storage changed while the backup was being prepared; stop Campfire and try again"
+        end
+        CampfireBackup::RedisValidator.validate! staging_directory.join("payload")
+        database_metadata = inspect_snapshot(
+          snapshot_path, payload_directory: staging_directory.join("payload"), installation_identifier:
+        )
+        files = payload_file_metadata(staging_directory.join("payload"))
+        assert_source_database! database_path, database_identity, operation_lock
+        checkpoint_source_database!
+        source_state = CampfireBackup::SourceStateInventory.capture(
+          database: Room.connection.raw_connection,
+          database_path:,
+          storage_directory:,
+          environment: Rails.env,
+          backup_id:,
+          installation_identifier:,
+          schema_version: database_metadata.fetch(:schema_version),
+          database_relative_path:
+        )
+        assert_source_database! database_path, database_identity, operation_lock
+        expected_database = {
+          "path" => source_state.fetch("database").fetch("path"),
+          "bytes" => snapshot_path.size,
+          "sha256" => Digest::SHA256.file(snapshot_path).hexdigest
+        }
+        unless source_state.fetch("database") == expected_database
+          raise "Campfire database source state changed while its recovery generation was being prepared"
+        end
+        unless source_state.fetch("storage_files") == files.map(&:stringify_keys)
+          raise "Campfire persistent-file source state changed while its recovery generation was being prepared"
+        end
+        CampfireBackup::SchemaVerifier.verify!(
+          snapshot_path, schema_version: database_metadata.fetch(:schema_version)
+        )
+        assert_source_database! database_path, database_identity, operation_lock
+        manifest = {
+          format_version: FORMAT_VERSION,
+          backup_id:,
+          created_at: Time.current.utc.iso8601,
+          environment: Rails.env,
+          application_version: Rails.application.config.app_version,
+          schema_version: database_metadata.fetch(:schema_version),
+          installation_fingerprint: database_metadata.fetch(:installation_fingerprint),
+          database: {
+            path: snapshot_path.basename.to_s,
+            bytes: snapshot_path.size,
+            sha256: Digest::SHA256.file(snapshot_path).hexdigest,
+            integrity_check: "ok",
+            foreign_key_check: "ok"
+          },
+          files:,
+          source_state:
+        }
+        manifest = CampfireBackup::Authentication.sign_manifest(manifest, key: authentication_key)
+
+        write_json staging_directory.join("manifest.json"), manifest
+        verify_staged_files!(staging_directory, manifest, authentication_key:)
+        flush_directory_tree staging_directory
+        assert_source_database_semantics! database_path, database_identity, operation_lock
+        File.rename staging_directory, generation_directory
+        flush_directory destination_directory
+        assert_source_database! database_path, database_identity, operation_lock
+        publish_latest destination_directory, generation_directory.basename
+        assert_source_database! database_path, database_identity, operation_lock
+
+        result = manifest.merge(path: generation_directory.to_s)
+        puts JSON.generate(result)
+        result
+      end
+
+      def create_snapshot(path)
+        destination = SQLite3::Database.new(path.to_s)
+        backup = SQLite3::Backup.new(destination, "main", Room.connection.raw_connection, "main")
+        backup.step(-1)
+        backup.finish
+        backup = nil
+        mode = destination.get_first_value("PRAGMA journal_mode = DELETE")
+        raise "SQLite backup could not disable WAL sidecars" unless mode.to_s.downcase == "delete"
+        raise "SQLite backup failed its integrity check" unless destination.get_first_value("PRAGMA integrity_check") == "ok"
+        raise "SQLite backup failed its foreign-key check" if destination.execute("PRAGMA foreign_key_check").any?
+      ensure
+        begin
+          backup&.finish
+        rescue SQLite3::Exception
+          nil
+        end
+        destination&.close
+        flush_file path if path&.exist?
+      end
+
+      def assert_source_database!(database_path, database_identity, operation_lock)
+        operation_lock.assert_current!
+        CampfireBackup::UpgradeRecoveryGuard.assert_database_connection!(
+          connection: Room.connection, expected_database: database_path,
+          expected_identity: database_identity
+        )
+      end
+
+      def assert_source_database_semantics!(database_path, database_identity, operation_lock)
+        operation_lock.assert_current!
+        CampfireBackup::UpgradeRecoveryGuard.assert_database_connection_semantics!(
+          connection: Room.connection, expected_database: database_path,
+          expected_identity: database_identity
+        )
+        operation_lock.assert_current!
+      end
+
+      def checkpoint_source_database!
+        result = Room.connection.raw_connection.get_first_row("PRAGMA wal_checkpoint(TRUNCATE)")
+        result = result.values_at("busy", "log", "checkpointed") if result.is_a?(Hash)
+        result = result&.map(&:to_i)
+        unless [ [ 0, 0, 0 ], [ 0, -1, -1 ] ].include?(result)
+          raise "SQLite WAL checkpoint did not complete; stop Campfire and try again"
+        end
+      end
+
+      def inspect_snapshot(path, payload_directory:, installation_identifier:)
+        database = SQLite3::Database.new(path.to_s, readonly: true)
+        database.results_as_hash = true
+        account_count = database.get_first_value("SELECT COUNT(*) FROM accounts").to_i
+        raise "Backup requires exactly one initialized Campfire account" unless account_count == 1
+        if database.execute("PRAGMA table_info(accounts)").any? { _1.fetch("name") == "installation_identifier" }
+          snapshot_identifier = database.get_first_value("SELECT installation_identifier FROM accounts")
+          raise "Backup installation identity changed during snapshot" unless snapshot_identifier == installation_identifier
+        end
+        verify_blob_files database, payload_directory
+
+        {
+          schema_version: database.get_first_value("SELECT MAX(version) FROM schema_migrations").to_i,
+          installation_fingerprint: CampfireBackup::InstallationIdentity.fingerprint(installation_identifier)
+        }
+      ensure
+        database&.close
+      end
+
+      def verify_blob_files(database, payload_directory)
+        database.execute("SELECT key, byte_size, checksum FROM active_storage_blobs").each do |blob|
+          relative_path = Pathname("files").join(blob.fetch("key")[0, 2], blob.fetch("key")[2, 2], blob.fetch("key"))
+          path = payload_directory.join(relative_path)
+          unless path.exist? && path.lstat.file? && path.size == blob.fetch("byte_size")
+            raise "Backup is missing uploaded file #{blob.fetch('key')}"
+          end
+          checksum = Base64.strict_encode64(Digest::MD5.file(path).digest)
+          raise "Backup uploaded-file checksum does not match the database" unless checksum == blob.fetch("checksum")
+        end
+      end
+
+      def persistent_source_entries(storage_directory)
+        entries = PERSISTENT_DIRECTORIES.flat_map do |directory|
+          root = storage_directory.join(directory)
+          next [] unless root.exist?
+          raise "Backup refuses symbolic links in persistent storage" if root.symlink?
+
+          Dir.glob(root.join("**", "*"), File::FNM_DOTMATCH).filter_map do |name|
+            path = Pathname(name)
+            next if path.basename.to_s.in?(%w[ . .. ])
+
+            stat = path.lstat
+            raise "Backup refuses symbolic links in persistent storage" if stat.symlink?
+            raise "Backup refuses special files in persistent storage" unless stat.file? || stat.directory?
+            next unless stat.file?
+
+            source_entry path, storage_directory
+          end
+        end
+        marker = storage_directory.join(CampfireBackup::InstallationIdentity::FILENAME)
+        entries << source_entry(marker, storage_directory) if marker.file?
+        entries.sort_by { _1.fetch(:path) }
+      end
+
+      def copy_persistent_files(source_entries, payload_directory)
+        payload_directory.mkpath
+        source_entries.map do |entry|
+          source = Pathname(entry.fetch(:source))
+          destination = payload_directory.join(entry.fetch(:path))
+          destination.dirname.mkpath
+          FileUtils.copy_file source, destination
+          if entry.fetch(:path) == CampfireBackup::InstallationIdentity::FILENAME
+            File.chmod 0o644, destination
+          end
+          flush_file destination
+
+          current = source.lstat
+          unless current.file? && current.size == entry.fetch(:bytes) && current.ino == entry.fetch(:inode) &&
+              [ current.mtime.to_i, current.mtime.nsec ] == entry.fetch(:modified_at)
+            raise "Persistent storage changed while the backup was being prepared; stop Campfire and try again"
+          end
+
+          {
+            path: entry.fetch(:path),
+            bytes: destination.size,
+            sha256: Digest::SHA256.file(destination).hexdigest
+          }
+        end
+      end
+
+      def source_entry(path, storage_directory)
+        stat = path.lstat
+        raise "Backup refuses symbolic links in persistent storage" if stat.symlink?
+        raise "Backup refuses special files in persistent storage" unless stat.file?
+
+        {
+          source: path.to_s,
+          path: path.relative_path_from(storage_directory).to_s,
+          bytes: stat.size,
+          modified_at: [ stat.mtime.to_i, stat.mtime.nsec ],
+          inode: stat.ino
+        }
+      end
+
+      def payload_file_metadata(payload_directory)
+        Dir.glob(payload_directory.join("**", "*"), File::FNM_DOTMATCH).filter_map do |name|
+          path = Pathname(name)
+          next if path.basename.to_s.in?(%w[ . .. ]) || path.directory?
+
+          stat = path.lstat
+          raise "Backup payload contains a link or special file" unless stat.file?
+          {
+            path: path.relative_path_from(payload_directory).to_s,
+            bytes: stat.size,
+            sha256: Digest::SHA256.file(path).hexdigest
+          }
+        end.sort_by { _1.fetch(:path) }
+      end
+
+      def verify_staged_files!(staging_directory, manifest, authentication_key:)
+        parsed = JSON.parse(staging_directory.join("manifest.json").read)
+        CampfireBackup::Authentication.verify_manifest!(parsed, key: authentication_key)
+        verify_metadata! staging_directory.join(manifest.dig(:database, :path)), manifest.fetch(:database)
+        manifest.fetch(:files).each do |metadata|
+          verify_metadata! staging_directory.join("payload", metadata.fetch(:path)), metadata
+        end
+      end
+
+      def verify_metadata!(path, metadata)
+        unless path.file? && path.size == metadata.fetch(:bytes) &&
+            Digest::SHA256.file(path).hexdigest == metadata.fetch(:sha256)
+          raise "Backup bytes changed after validation: #{path}"
+        end
+      end
+
+      def publish_latest(destination_directory, generation_name)
+        validate_latest_pointer! destination_directory
+        temporary_link = destination_directory.join(".latest-#{SecureRandom.hex(8)}")
+        File.symlink generation_name, temporary_link
+        File.rename temporary_link, destination_directory.join("latest")
+        flush_directory destination_directory
+      ensure
+        FileUtils.rm_f temporary_link if defined?(temporary_link)
+      end
+
+      def validate_latest_pointer!(destination_directory)
+        latest = destination_directory.join("latest")
+        return unless latest.exist? || latest.symlink?
+        raise "Backup latest path is not a symbolic link" unless latest.symlink?
+
+        target = Pathname(File.readlink(latest))
+        unless !target.absolute? && target.each_filename.to_a.length == 1 &&
+            target.basename.to_s.match?(GENERATION_PATTERN)
+          raise "Backup latest pointer is invalid"
+        end
+        generation = destination_directory.join(target)
+        unless generation.directory? && !generation.symlink?
+          raise "Backup latest pointer does not identify a recovery generation"
+        end
+      end
+
+      def ensure_capacity!(destination_directory, persistent_file_bytes)
+        database = Room.connection.raw_connection
+        source_size = database.get_first_value("PRAGMA page_count").to_i * database.get_first_value("PRAGMA page_size").to_i
+        available = available_bytes(destination_directory)
+        required = source_size + persistent_file_bytes + 16.megabytes
+        raise "Insufficient free space for a verified backup" if available < required
+      end
+
+      def cleanup_staging_directories(destination_directory)
+        staging = destination_directory.children.select { _1.basename.to_s.match?(STAGING_PATTERN) }
+        return if staging.empty?
+
+        raise "Incomplete backup staging was preserved; inspect and remove only the exact disposable path before retrying: " \
+          "#{staging.map(&:to_s).sort.join(', ')}"
+      end
+
+      def available_bytes(path)
+        output, status = CampfireBackup::Subprocess.capture2("df", "-Pk", path.to_s)
+        raise "Could not determine backup filesystem capacity" unless status.success?
+
+        output.lines.last.split.fetch(3).to_i * 1024
+      end
+
+      def write_json(path, value)
+        File.write path, JSON.pretty_generate(value) << "\n"
+        flush_file path
+      end
+
+      def flush_file(path)
+        File.open(path, "rb", &:fsync)
+      end
+
+      def flush_directory(path)
+        File.open(path, &:fsync)
+      end
+
+
+      def flush_directory_tree(path)
+        directories = Dir.glob(path.join("**", "*"), File::FNM_DOTMATCH).filter_map do |name|
+          candidate = Pathname(name)
+          candidate if candidate.directory? && !candidate.symlink?
+        end
+        directories.sort_by { _1.each_filename.count }.reverse_each { flush_directory(_1) }
+        flush_directory path
+      end
+
+      def backup_directory
+        Rails.root.join("storage", "backups")
       end
   end
 end
 
-Backup.create
+Backup.create if $PROGRAM_NAME == __FILE__

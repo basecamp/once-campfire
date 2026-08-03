@@ -8,12 +8,12 @@ class SearchesController < ApplicationController
   end
 
   def create
-    Current.user.searches.record(query)
+    Search.record_for! Current.user, query
     redirect_to searches_url(q: query)
   end
 
   def clear
-    Current.user.searches.destroy_all
+    Search.clear_for! Current.user
     redirect_to searches_url
   end
 

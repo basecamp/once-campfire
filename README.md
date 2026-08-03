@@ -10,6 +10,11 @@ expect, including:
 - Notifications (via Web Push)
 - @mentions
 - API, with support for bot integrations
+- OpenID Connect single sign-on
+
+See [browser support and local recovery](docs/browser-support.md) for the
+enforced browser versions, draft/retry behavior, and current device-testing
+limits.
 
 ## Running your own Campfire instance
 
@@ -42,6 +47,9 @@ once deploy ghcr.io/basecamp/once-campfire --host chat.example.com
 ### Deploying with Docker
 
 If you'd rather run the Docker image yourself, you can read more about that in the [self-hosting guide](docs/self-hosting.md).
+
+Campfire can use an OpenID Connect identity provider for single sign-on. See the
+[SSO guide](docs/sso.md) for provider requirements, configuration, and a safe rollout procedure.
 
 > [!TIP]
 > When you start Campfire for the first time, you'll be guided through a wizard to create an admin account.

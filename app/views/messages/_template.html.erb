@@ -1,8 +1,9 @@
 <script type="text/template" data-messages-target="template">
   <div class="message message--me $messageClasses$"
-      id="message_$clientMessageId$"
+      id="$messageDomId$"
       data-format-message-target="message"
       data-user-id="<%= Current.user.id %>"
+      data-client-message-id="$clientMessageId$"
       data-message-timestamp="$messageTimestamp$"
       data-messages-target="message">
     <div class="message__day-separator"><time class="message__timestamp" datetime="$messageDatetime$" data-local-time-target="date"></time></div>
@@ -28,6 +29,14 @@
           </div>
         </div>
         $body$
+        <div class="message__delivery-failure flex align-center gap flex-wrap" role="alert" aria-atomic="true"
+            data-client-message-failure hidden>
+          <strong data-client-message-status>Message was not sent.</strong>
+          <button type="button" class="btn" data-action="messages#requestPendingMessageRetry"
+              data-client-message-id="$clientMessageId$" data-client-message-retry>
+            Retry sending
+          </button>
+        </div>
       </div>
     </div>
   </div>

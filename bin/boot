@@ -1,17 +1,31 @@
 #!/usr/bin/env ruby
 
-require "json"
+require "fileutils"
 require "yaml"
+require_relative "../lib/campfire_backup/operation_lock"
+require_relative "../lib/campfire_backup/recovery_markers"
+require_relative "../lib/campfire_backup/upgrade_recovery_guard"
+
+UpgradeRecoveryGuard = CampfireBackup::UpgradeRecoveryGuard unless defined?(UpgradeRecoveryGuard)
 
 class ProcessMonitor
-  SIGNALS = %w[ INT TERM CLD ]
+  POLL_INTERVAL = 0.05
+  DEFAULT_SHUTDOWN_TIMEOUT = 25
+  DEFAULT_KILL_TIMEOUT = 5
 
-  def initialize(procfile)
+  def initialize(procfile, shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+      kill_timeout: DEFAULT_KILL_TIMEOUT, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+      sleeper: ->(duration) { sleep duration })
     @procs = process_list(procfile)
+    @shutdown_timeout = shutdown_timeout
+    @kill_timeout = kill_timeout
+    @clock = clock
+    @sleeper = sleeper
     handle_signals
 
-    @procs.each &:start
-    @procs.each &:wait
+    start_processes
+    monitor_processes
+    validate_shutdown!
   end
 
   private
@@ -20,35 +34,181 @@ class ProcessMonitor
       config.map { |name, cmd| MonitoredProcess.new(name, cmd) }
     end
 
-    def handle_signals
-      SIGNALS.each do |signal|
-        Signal.trap(signal) do
-          @procs.each &:terminate
-        end
+    def start_processes
+      @procs.each do |process|
+        break if @shutdown_requested
+
+        process.start
+        process.terminate if @shutdown_requested
       end
+    end
+
+    def monitor_processes
+      loop do
+        @procs.each(&:reap_nonblock)
+        if !@shutdown_requested && @procs.any?(&:exited?)
+          @unexpected_child_exit = true
+          shut_down
+        end
+        break if @procs.all?(&:finished?)
+
+        enforce_shutdown_deadline if @shutdown_requested
+        if @kill_deadline && @clock.call >= @kill_deadline
+          @kill_timeout_expired = true
+          break
+        end
+
+        @sleeper.call POLL_INTERVAL
+      end
+    end
+
+    def handle_signals
+      %w[ INT TERM ].each do |signal|
+        Signal.trap(signal) { shut_down }
+      end
+    end
+
+    def shut_down
+      return if @shutdown_requested
+
+      @shutdown_requested = true
+      @shutdown_deadline = @clock.call + @shutdown_timeout
+      @procs.each(&:terminate)
+    end
+
+    def enforce_shutdown_deadline
+      return if @kill_deadline || @clock.call < @shutdown_deadline
+
+      @forced_shutdown = true
+      @procs.each(&:kill)
+      @kill_deadline = @clock.call + @kill_timeout
+    end
+
+    def validate_shutdown!
+      abort "A Campfire process exited unexpectedly" if @unexpected_child_exit
+      if @kill_timeout_expired || !@procs.all?(&:finished?)
+        abort "Campfire process groups did not stop after forced termination"
+      end
+      if @forced_shutdown
+        abort "Campfire graceful shutdown timed out and required forced termination"
+      end
+
+      redis = @procs.find { _1.name == "redis" }
+      unless redis&.status&.success?
+        abort "Redis did not exit successfully; clean shutdown was not recorded"
+      end
+      true
     end
 end
 
 class MonitoredProcess
+  attr_reader :name, :status
+
   def initialize(name, cmd)
-    @name, @cmd = name, cmd
+    @name, @cmd = name.to_s, cmd
   end
 
   def start
-    @pid = Process.spawn(@cmd)
+    @pid = Process.spawn(@cmd, pgroup: true)
   end
 
-  def wait
-    Process.wait @pid
+  def reap_nonblock
+    return unless @pid && !@reaped
+
+    result = Process.waitpid2(@pid, Process::WNOHANG)
+    if result
+      _, @status = result
+      @reaped = true
+    end
   rescue Errno::ECHILD
-    nil
+    @reaped = true
+  end
+
+  def exited?
+    @reaped
+  end
+
+  def finished?
+    !@pid || (@reaped && !process_group_alive?)
   end
 
   def terminate
-    Process.kill "TERM", @pid
-  rescue Errno::ESRCH
-    nil
+    signal_group "TERM"
   end
+
+  def kill
+    signal_group "KILL"
+  end
+
+  private
+    def process_group_alive?
+      Process.kill 0, -@pid
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def signal_group(signal)
+      Process.kill signal, -@pid if @pid
+    rescue Errno::ESRCH
+      nil
+    end
 end
 
-ProcessMonitor.new("Procfile")
+if $PROGRAM_NAME == __FILE__
+  runtime_lock = nil
+  begin
+    storage_directory = File.expand_path("../storage", __dir__)
+    runtime_lock = CampfireBackup::OperationLock.acquire(storage_directory, purpose: "runtime", shared: true)
+    storage_directory = runtime_lock.directory
+    runtime_lock.assert_current!
+    guard = UpgradeRecoveryGuard.from_environment
+    begin
+      CampfireBackup::RecoveryMarkers.assert_restore_complete! storage_directory
+    rescue StandardError => error
+      abort "Campfire startup blocked: #{error.message}"
+    end
+    if ARGV.first == "authorize-upgrade"
+      abort "Usage: bin/boot authorize-upgrade ARCHIVE AUTHENTICATION_STATEMENT" unless ARGV.length == 3
+
+      guard.authorize!(archive_path: ARGV.fetch(1), authentication_path: ARGV.fetch(2))
+      exit
+    elsif ARGV.any?
+      abort "Unknown bin/boot command: #{ARGV.first}"
+    end
+
+    boot_id = CampfireBackup::RecoveryMarkers.new_boot_id
+    begin
+      CampfireBackup::RecoveryMarkers.invalidate_clean_shutdown! storage_directory
+    rescue StandardError => error
+      abort "Campfire startup blocked: #{error.message}"
+    end
+
+    begin
+      guard.verify_before_prepare!
+    rescue StandardError => error
+      abort "Database preparation blocked: #{error.message}"
+    end
+    runtime_lock.assert_current!
+    prepared = runtime_lock.with_inheritable_shared_lock do |lock_environment|
+      system(lock_environment, "./bin/rails", "db:prepare", close_others: false)
+    end
+    abort "Database preparation failed" unless prepared
+    runtime_lock.assert_current!
+    ENV.delete CampfireBackup::Authentication::KEY_ENVIRONMENT_VARIABLE
+    guard.complete!
+    FileUtils.mkdir_p storage_directory.join("redis")
+    runtime_lock.assert_current!
+    ProcessMonitor.new("Procfile")
+    runtime_lock.assert_current!
+    begin
+      CampfireBackup::RecoveryMarkers.publish_clean_shutdown!(storage_directory, boot_id:)
+    rescue StandardError => error
+      abort "Campfire clean shutdown could not be recorded: #{error.message}"
+    end
+  ensure
+    runtime_lock&.release
+  end
+end

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, "release/**" ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, "release/**" ]
 
 permissions: {}
 
@@ -29,6 +29,9 @@ jobs:
       - name: Scan for security vulnerabilities
         run: bin/brakeman
 
+      - name: Audit Ruby dependencies
+        run: bin/bundler-audit check --update
+
   lint:
     runs-on: ubuntu-latest
     permissions:
@@ -47,6 +50,19 @@ jobs:
 
       - name: Lint code for consistent style
         run: bin/rubocop
+
+      - name: Verify release dependency pins
+        run: script/ci/verify-release-policy
+
+      - name: Verify vendored axe-core checksum
+        working-directory: test/support/axe
+        run: sha256sum --check axe-4.12.1.min.js.sha256
+
+      - name: Verify manual AT record template
+        run: ruby test/support/accessibility/verify_manual_at_template.rb
+
+      - name: Parse application JavaScript
+        run: script/ci/verify-javascript
 
   lint-actions:
     name: GitHub Actions audit
@@ -71,15 +87,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      PARALLEL_WORKERS: 2
     services:
       redis:
-        image: redis # zizmor: ignore[unpinned-images] -- version tag is fine for service containers
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
         ports:
           - 6379:6379
         options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 libvips curl ffmpeg
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
 
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -97,19 +115,41 @@ jobs:
       - name: Run tests
         run: bin/rails db:setup test
 
+      - name: Run OIDC-enabled production stack test
+        env:
+          OIDC_MODE: optional
+          OIDC_ISSUER: https://idp.example.com
+          OIDC_CLIENT_ID: campfire
+          OIDC_CLIENT_SECRET: test-secret
+          OIDC_REDIRECT_URI: https://campfire.example.com/auth/openid_connect/callback
+          TLS_DOMAIN: campfire.example.com
+        run: bin/rails test test/integration/oidc_full_stack_test.rb
+
   test_system:
+    name: System (${{ matrix.browser }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        browser: [ headless_chrome, headless_firefox ]
+    env:
+      PARALLEL_WORKERS: 2
+      RAILS_ENV: test
+      REDIS_URL: redis://localhost:6379/0
+      SYSTEM_TEST_BROWSER: ${{ matrix.browser }}
     services:
       redis:
-        image: redis # zizmor: ignore[unpinned-images] -- version tag is fine for service containers
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
         ports:
           - 6379:6379
         options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 libvips curl ffmpeg
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
 
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -118,11 +158,130 @@ jobs:
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
-        env:
-          REDIS_URL: redis://localhost:6379/0
         with:
           ruby-version: .ruby-version
           bundler-cache: true
 
-      - name: Run tests
-        run: bin/rails db:setup test:system
+      - name: Report browser version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$SYSTEM_TEST_BROWSER" == "headless_firefox" ]]; then
+            firefox --version
+          else
+            google-chrome --version
+          fi
+
+      - name: Run full system suite
+        run: bin/rails db:setup && bin/rails test:system
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: system-${{ matrix.browser }}-screenshots
+          path: tmp/screenshots
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test_system_mobile:
+    name: System (Chrome mobile emulation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      PARALLEL_WORKERS: 1
+      RAILS_ENV: test
+      REDIS_URL: redis://localhost:6379/0
+      SYSTEM_TEST_BROWSER: headless_chrome_mobile
+    services:
+      redis:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
+
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - name: Report browser version
+        run: google-chrome --version
+
+      - name: Run mobile browser and accessibility contracts
+        run: bin/rails db:setup && bin/rails test test/system/browser_contracts_test.rb test/system/accessibility_audit_test.rb
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: system-chrome-mobile-screenshots
+          path: tmp/screenshots
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test_system_safari:
+    name: System (Safari contracts)
+    runs-on: macos-15
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      PARALLEL_WORKERS: 1
+      RAILS_ENV: test
+      REDIS_URL: redis://localhost:6379/0
+      SYSTEM_TEST_BROWSER: safari
+    steps:
+      - name: Install packages and start Redis
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install redis vips
+          redis-server --daemonize yes
+          for _ in {1..30}; do
+            if redis-cli ping; then
+              break
+            fi
+            sleep 1
+          done
+          redis-cli ping
+
+      - name: Enable SafariDriver
+        run: sudo safaridriver --enable
+
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - name: Report browser version
+        run: safaridriver --version
+
+      - name: Run Safari browser contracts
+        run: bin/rails db:setup && bin/rails test test/system/browser_contracts_test.rb
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: system-safari-screenshots
+          path: tmp/screenshots
+          if-no-files-found: ignore
+          retention-days: 7

@@ -8,8 +8,14 @@ class FirstRunsController < ApplicationController
   end
 
   def create
-    user = FirstRun.create!(user_params)
-    start_new_session_for user
+    attributes = user_params.to_h.symbolize_keys
+    avatar = attributes.delete(:avatar)
+    StagedUpload.with(avatar) do |blob|
+      Account.transaction do
+        user = FirstRun.create!(attributes.merge(avatar: blob).compact)
+        start_new_session_for user
+      end
+    end
 
     redirect_to root_url
   rescue ActiveRecord::RecordNotUnique

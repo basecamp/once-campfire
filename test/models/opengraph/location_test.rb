@@ -2,6 +2,10 @@ require "test_helper"
 require "restricted_http/private_network_guard"
 
 class Opengraph::LocationTest < ActiveSupport::TestCase
+  setup do
+    Resolv.stubs(:getaddresses).with("www.example.com").returns([ "93.184.216.34" ])
+  end
+
   test "url validations" do
     assert Opengraph::Location.new("https://www.example.com").valid?
     assert Opengraph::Location.new("http://www.example.com").valid?
@@ -9,12 +13,13 @@ class Opengraph::LocationTest < ActiveSupport::TestCase
     assert_not Opengraph::Location.new("~/etc/password").valid?
     assert_not Opengraph::Location.new("ftp://speedtest.tele2.net").valid?
     assert_not Opengraph::Location.new("httpfake").valid?
+    assert_not Opengraph::Location.new("http:/missing-host").valid?
     assert_not Opengraph::Location.new(" foo").valid?
     assert_not Opengraph::Location.new("https/incorrect").valid?
   end
 
   test "private network urls" do
-    Resolv.stubs(:getaddress).with("www.example.com").returns("172.16.0.0")
+    Resolv.stubs(:getaddresses).with("www.example.com").returns([ "172.16.0.0" ])
 
     location = Opengraph::Location.new("https://www.example.com")
     assert_not location.valid?
@@ -22,7 +27,7 @@ class Opengraph::LocationTest < ActiveSupport::TestCase
   end
 
   test "link-local addresses are blocked" do
-    Resolv.stubs(:getaddress).with("metadata.internal").returns("169.254.169.254")
+    Resolv.stubs(:getaddresses).with("metadata.internal").returns([ "169.254.169.254" ])
 
     location = Opengraph::Location.new("https://metadata.internal")
     assert_not location.valid?
@@ -30,13 +35,13 @@ class Opengraph::LocationTest < ActiveSupport::TestCase
   end
 
   test "IPv6 addresses mapped to IPv4 addresses are blocked" do
-    Resolv.stubs(:getaddress).with("metadata.internal").returns("::ffff:192.168.1.1")
+    Resolv.stubs(:getaddresses).with("metadata.internal").returns([ "::ffff:192.168.1.1" ])
 
     location = Opengraph::Location.new("https://metadata.internal")
     assert_not location.valid?
     assert_equal [ "is not public" ], location.errors[:url]
 
-    Resolv.stubs(:getaddress).with("metadata.internal").returns("::ffff:c0a8:0101")
+    Resolv.stubs(:getaddresses).with("metadata.internal").returns([ "::ffff:c0a8:0101" ])
 
     location = Opengraph::Location.new("https://metadata.internal")
     assert_not location.valid?

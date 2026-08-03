@@ -24,6 +24,6 @@ class WebPush::Notification
     end
 
     def icon_path
-      Rails.application.routes.url_helpers.account_logo_path
+      ActionController::Base.helpers.asset_path("campfire-icon.png")
     end
 end

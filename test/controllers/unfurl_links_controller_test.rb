@@ -3,6 +3,9 @@ require "test_helper"
 class UnfurlLinksControllerTest < ActionDispatch::IntegrationTest
   setup do
     sign_in :david
+    Resolv.stubs(:getaddresses).with("www.example.com").returns([ "93.184.216.34" ])
+    Resolv.stubs(:getaddresses).with("example.com").returns([ "93.184.216.34" ])
+    Resolv.stubs(:getaddresses).with("fxtwitter.com").returns([ "93.184.216.34" ])
   end
 
   test "create" do

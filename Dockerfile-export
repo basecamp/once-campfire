@@ -1,8 +1,7 @@
-# syntax = docker/dockerfile:1
+# syntax = docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
-# Make sure it matches the Ruby version in .ruby-version and Gemfile
-ARG RUBY_VERSION=3.4.7
-FROM ruby:$RUBY_VERSION-slim as base
+# Make sure it matches the Ruby version in .ruby-version
+FROM docker.io/library/ruby:3.4.5-slim@sha256:f1cca61013f823406e5ec23d3b8804ee0ba916febbfee089e647db93e8e749c7 AS base
 
 # Install the tools we need
 RUN apt update && apt install -y zip

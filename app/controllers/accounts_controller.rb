@@ -9,7 +9,7 @@ class AccountsController < ApplicationController
   end
 
   def update
-    @account.update!(account_params)
+    @account.update_with_staged_logo! account_params, actor: Current.user
     redirect_to edit_account_url, notice: "✓"
   end
 

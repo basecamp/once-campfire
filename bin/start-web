@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${DISABLE_SSL:-}" ]; then
+  unset CAMPFIRE_INTERNAL_TLS_PROXY
+  export PORT=80
+  exec bin/start-app
+else
+  export CAMPFIRE_INTERNAL_TLS_PROXY=true
+  exec bundle exec thrust bin/start-app
+fi

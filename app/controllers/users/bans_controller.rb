@@ -3,12 +3,12 @@ class Users::BansController < ApplicationController
   before_action :set_user
 
   def create
-    @user.ban
+    @user.ban_by! actor: Current.user
     redirect_to @user
   end
 
   def destroy
-    @user.unban
+    @user.unban_by! actor: Current.user
     redirect_to @user
   end
 

@@ -1,5 +1,5 @@
 <div class="flex flex-column align-center gap">
-  <% url = join_url(Current.account.join_code) %>
+  <% url = join_url(anchor: "token=#{Current.account.join_code}") %>
 
   <label class="flex flex-column gap full-width" style="--row-gap: 0.5em">
     <strong id="invite_label" class="invite-label">Share to invite more people</strong>

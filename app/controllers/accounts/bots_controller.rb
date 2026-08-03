@@ -11,7 +11,7 @@ class Accounts::BotsController < ApplicationController
   end
 
   def create
-    User.create_bot! bot_params
+    User.create_bot! bot_params, actor: Current.user
     redirect_to account_bots_url
   end
 
@@ -19,12 +19,12 @@ class Accounts::BotsController < ApplicationController
   end
 
   def update
-    @bot.update_bot! bot_params
+    @bot.update_bot! bot_params, actor: Current.user
     redirect_to account_bots_url
   end
 
   def destroy
-    @bot.deactivate
+    @bot.deactivate_by! actor: Current.user
     redirect_to account_bots_url
   end
 

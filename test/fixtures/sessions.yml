@@ -3,3 +3,21 @@ david_safari:
   token: AxJs94fteQ5Autv2VrKsH68c
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/537.36 (KHTML, like Gecko) HEY/1.0.4 Chrome/83.0.4103.100 Electron/9.0.3 Safari/537.36"
   last_active_at: <%= 2.hours.ago %>
+
+jason_chrome:
+  user: jason
+  token: BxJs94fteQ5Autv2VrKsH68c
+  user_agent: "Mozilla/5.0 Chrome"
+  last_active_at: <%= 2.hours.ago %>
+
+jz_chrome:
+  user: jz
+  token: CxJs94fteQ5Autv2VrKsH68c
+  user_agent: "Mozilla/5.0 Chrome"
+  last_active_at: <%= 2.hours.ago %>
+
+kevin_chrome:
+  user: kevin
+  token: DxJs94fteQ5Autv2VrKsH68c
+  user_agent: "Mozilla/5.0 Chrome"
+  last_active_at: <%= 2.hours.ago %>

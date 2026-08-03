@@ -17,7 +17,7 @@ class Rooms::OpensController < RoomsController
   end
 
   def create
-    room = Rooms::Open.create_for(room_params, users: Current.user)
+    room = Rooms::Open.create_for(room_params, users: Current.user, actor: Current.user)
 
     broadcast_create_room(room)
     redirect_to room_url(room)
@@ -28,7 +28,7 @@ class Rooms::OpensController < RoomsController
   end
 
   def update
-    @room.update! room_params
+    @room.update_as_open! room_params, actor: Current.user
 
     broadcast_update_room
     redirect_to room_url(@room)

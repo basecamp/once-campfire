@@ -1,0 +1,415 @@
+require "test_helper"
+require "fileutils"
+require "open3"
+require "tmpdir"
+
+class ReleasePolicyTest < ActiveSupport::TestCase
+  self.fixture_table_names = []
+
+  SCRIPT = Rails.root.join("script/ci/verify-release-policy")
+  DIGEST = "sha256:#{'a' * 64}"
+
+  test "repository release dependencies are pinned" do
+    stdout, stderr, status = Open3.capture3(SCRIPT.to_s)
+
+    assert status.success?, stderr
+    assert_equal "Release and container policy verified\n", stdout
+  end
+
+  test "policy rejects mutable Docker workflow and action references" do
+    Dir.mktmpdir("campfire-release-policy") do |directory|
+      root = Pathname(directory)
+      root.join(".github/workflows").mkpath
+      root.join("Dockerfile").write <<~DOCKERFILE
+        # syntax = docker/dockerfile:1
+        FROM ruby:3.4-slim AS base
+        FROM base
+      DOCKERFILE
+      root.join(".github/workflows/ci.yml").write <<~YAML
+        jobs:
+          test:
+            services:
+              redis:
+                image: redis:7-alpine
+            steps:
+              - uses: actions/checkout@v4
+      YAML
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "frontend must use a verified sha256 manifest digest", stderr
+      assert_match "external base image is not digest-pinned", stderr
+      assert_match "workflow image is not digest-pinned", stderr
+      assert_match "action is not pinned to a full commit", stderr
+    end
+  end
+
+  test "policy accepts digest-pinned external dependencies and internal stages" do
+    Dir.mktmpdir("campfire-release-policy") do |directory|
+      root = Pathname(directory)
+      root.join(".github/workflows").mkpath
+      root.join("Dockerfile").write <<~DOCKERFILE
+        # syntax = docker/dockerfile:1@#{DIGEST}
+        FROM ruby:3.4-slim@#{DIGEST} AS base
+        FROM base
+      DOCKERFILE
+      root.join(".github/workflows/ci.yml").write <<~YAML
+        jobs:
+          test:
+            services:
+              redis:
+                image: redis:7-alpine@#{DIGEST}
+            steps:
+              - uses: actions/checkout@#{'b' * 40}
+      YAML
+
+      stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert status.success?, stderr
+      assert_equal "Release and container policy verified\n", stdout
+    end
+  end
+
+  test "policy rejects a skipped container architecture" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub("          - arch: arm64\n", "          - arch: s390x\n")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "validation matrix must contain exactly linux/amd64 and linux/arm64", stderr
+    end
+  end
+
+  test "policy rejects an unpinned legacy recovery image" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub(
+        %r{ghcr\.io/basecamp/once-campfire@sha256:[0-9a-f]{64}},
+        "ghcr.io/basecamp/once-campfire:latest"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "LEGACY_IMAGE is not digest-pinned", stderr
+      assert_match "legacy recovery image must be an explicit sha256 digest", stderr
+    end
+  end
+
+  test "policy rejects mutable QEMU BuildKit and SBOM scanner images" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      source = workflow.read
+        .sub(%r{docker\.io/tonistiigi/binfmt:[^\s]+@sha256:[0-9a-f]{64}}, "docker.io/tonistiigi/binfmt:latest")
+        .sub(%r{docker\.io/moby/buildkit:[^\s]+@sha256:[0-9a-f]{64}}, "docker.io/moby/buildkit:latest")
+        .sub(%r{docker\.io/docker/buildkit-syft-scanner:[^\s]+@sha256:[0-9a-f]{64}}, "docker.io/docker/buildkit-syft-scanner:latest")
+      workflow.write source
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "workflow image is not digest-pinned", stderr
+      assert_match "BUILDKIT_IMAGE is not digest-pinned", stderr
+      assert_match "SBOM_SCANNER_IMAGE is not digest-pinned", stderr
+    end
+  end
+
+  test "policy rejects release publication without recovery and signed provenance evidence" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      source = workflow.read
+        .sub("recovery_receipts:", "recovery_records:")
+        .gsub('--source-digest "$RELEASE_SHA"', '--source-digest "$GITHUB_SHA"')
+      workflow.write source
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "required release evidence control is missing: recovery_receipts:", stderr
+      assert_match 'required release evidence control is missing: --source-digest "$RELEASE_SHA"', stderr
+    end
+  end
+
+  test "policy accepts parsed nonce-bound durable release evidence wiring" do
+    with_repository_policy_fixture do |root|
+      stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert status.success?, stderr
+      assert_equal "Release and container policy verified\n", stdout
+    end
+  end
+
+  test "policy rejects parsed nonce workflow contract mismatches" do
+    mutations = [
+      [
+        ->(source) { source.sub("        type: string\n\nconcurrency:", "        type: boolean\n\nconcurrency:") },
+        "workflow_dispatch inputs must be exact required strings"
+      ],
+      [
+        ->(source) { source.sub("run-name: Campfire release ${{ inputs.release_tag }} ${{ inputs.release_sha }} ${{ inputs.operation_nonce }}", "run-name: Campfire release") },
+        "run-name must bind the exact release tag, SHA, and operation nonce"
+      ],
+      [
+        ->(source) { source.sub('[[ "$OPERATION_NONCE" =~ ^[0-9a-f]{64}$ ]]', '[[ -n "$OPERATION_NONCE" ]]') },
+        "parsed release authorization must validate the exact operation nonce input"
+      ],
+      [
+        ->(source) { source.sub(/(  manifest:.*?      OPERATION_NONCE:) \$\{\{ inputs\.operation_nonce \}\}/m, '\\1 static') },
+        "manifest job must bind OPERATION_NONCE to the exact dispatch input"
+      ]
+    ]
+
+    mutations.each do |mutation, expected_error|
+      with_repository_policy_fixture do |root|
+        workflow = root.join(".github/workflows/publish-image.yml")
+        workflow.write mutation.call(workflow.read)
+
+        _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+        assert_not status.success?, expected_error
+        assert_match expected_error, stderr
+      end
+    end
+  end
+
+  test "policy rejects extra or nested final release evidence uploads" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      source = workflow.read.sub(
+        "            ${{ runner.temp }}/release-evidence/runnable-provenance-verification-arm64.json\n",
+        "            ${{ runner.temp }}/release-evidence/runnable-provenance-verification-arm64.json\n" \
+          "            ${{ runner.temp }}/release-evidence/nested/unexpected.json\n"
+      )
+      workflow.write source
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "release evidence upload must be the exact flat inventory", stderr
+    end
+  end
+
+  test "policy rejects stale plaintext backup references in recovery CI paths" do
+    [ ".tar.gz", ".authentication.json", "BACKUP_AUTHENTICATION_FILE" ].each do |reference|
+      with_repository_policy_fixture do |root|
+        workflow = root.join(".github/workflows/publish-image.yml")
+        workflow.write workflow.read.sub(".campfire-backup", reference)
+
+        _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+        assert_not status.success?
+        assert_match "stale plaintext backup reference is forbidden: #{reference}", stderr
+      end
+    end
+  end
+
+  test "policy rejects a reused CI backup encryption key" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      source = workflow.read
+      authentication_key = source[/^\s*backup_authentication_key='([^']+)'$/, 1]
+      workflow.write source.sub(
+        /^\s*backup_encryption_key='[^']+'$/,
+        "          backup_encryption_key='#{authentication_key}'"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "CI backup encryption key must be separate from its authentication key", stderr
+    end
+  end
+
+  test "policy rejects pull request validation with registry mutation authority" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub("      contents: read\n", "      contents: read\n      packages: write\n")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "pull-request validation may not contain packages: write", stderr
+    end
+  end
+
+  test "policy rejects an independently rebuilt runtime recovery candidate" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub(
+        '          docker load --input "$evidence_directory/campfire.runtime.tar"',
+        "          docker buildx build --load --tag detached-runtime .\n" \
+          '          docker load --input "$evidence_directory/campfire.runtime.tar"'
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "runtime and OCI evidence must come from exactly one Buildx build", stderr
+    end
+  end
+
+  test "policy rejects recovery evidence detached from validated manifest records" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub("TARGET_MANIFEST_PATH", "UNVALIDATED_MANIFEST_PATH")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "required container control is missing: TARGET_MANIFEST_PATH", stderr
+    end
+  end
+
+  test "policy rejects container branch scope that differs from application CI" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub('[ main, "release/**" ]', "[ main ]")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "push and pull-request branches must match application CI", stderr
+    end
+  end
+
+  test "policy rejects an incomplete shared JavaScript verifier" do
+    with_repository_policy_fixture do |root|
+      verifier = root.join("script/ci/verify-javascript")
+      verifier.write verifier.read.sub("app/views/pwa/service_worker.js", "app/views/pwa/ignored.js")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "missing JavaScript verification contract: app/views/pwa/service_worker.js", stderr
+    end
+  end
+
+  test "policy rejects conditional manual AT template validation" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/ci.yml")
+      workflow.write workflow.read.sub(
+        "      - name: Verify manual AT record template\n",
+        "      - name: Verify manual AT record template\n        if: startsWith(github.ref, 'refs/heads/release/')\n"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "manual AT template structure validation must run unconditionally", stderr
+    end
+  end
+
+  test "policy rejects divergent release and publication executable checks" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      workflow.write workflow.read.sub("            script/admin/generate-backup-encryption-key\n", "")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "complete aligned entrypoint set", stderr
+    end
+  end
+
+  test "policy executes the four-field release identity contract" do
+    with_repository_policy_fixture do |root|
+      release = root.join("bin/release")
+      release.write release.read.sub(
+        '"workflow_run" => JSON.parse(JSON.generate(workflow_run)),',
+        '"release" => JSON.parse(JSON.generate(workflow_run)),'
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "executable immutable-release contract failed", stderr
+    end
+  end
+
+  test "policy executes the production AWS endpoint policy" do
+    with_repository_policy_fixture do |root|
+      anchors = root.join("lib/release_object_lock_anchors.rb")
+      anchors.write anchors.read.sub('provider == "aws"', 'provider == "disabled"')
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "executable anchor-set contract failed", stderr
+    end
+  end
+
+  test "policy rejects disabling configured endpoint suppression" do
+    with_repository_policy_fixture do |root|
+      anchors = root.join("lib/release_object_lock_anchors.rb")
+      anchors.write anchors.read.sub(
+        '@anchor_set.fetch("ignore_configured_endpoint_urls").to_s',
+        '"false"'
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "executable anchor-set contract failed", stderr
+    end
+  end
+
+  test "policy rejects a post-workflow freshness check that drops reconciliation mode" do
+    with_repository_policy_fixture do |root|
+      release = root.join("bin/release")
+      release.write release.read.sub(
+        "signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:\n",
+        "signer_fingerprint: TAG_SIGNER_FINGERPRINT\n"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "every post-workflow source revalidation", stderr
+    end
+  end
+
+  test "policy rejects removal of pending evidence and authenticated publication controls" do
+    [
+      [ "workflow_evidence_pending", "workflow_evidence_untracked" ],
+      [ "authenticated_github_release_state!", "unchecked_github_release_state!" ]
+    ].each do |control, replacement|
+      with_repository_policy_fixture do |root|
+        release = root.join("bin/release")
+        release.write release.read.gsub(control, replacement)
+
+        _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+        assert_not status.success?
+        assert_match "durable release transition control is missing: #{control}", stderr
+      end
+    end
+  end
+
+  private
+    def with_repository_policy_fixture
+      Dir.mktmpdir("campfire-container-policy") do |directory|
+        root = Pathname(directory)
+        %w[
+          .ruby-version .dockerignore Dockerfile Dockerfile-export
+          .github/workflows/ci.yml .github/workflows/container.yml .github/workflows/publish-image.yml
+          config/ci.rb bin/load bin/setup bin/boot bin/start-web bin/release
+          script/admin/prepare-backup script/admin/verify-backup
+          script/admin/archive-backup script/admin/extract-backup
+          script/admin/install-backup script/admin/generate-backup-encryption-key
+          script/ci/validate-container-image script/ci/verify-image-recovery
+          script/ci/verify-release-policy script/ci/verify-javascript
+          test/support/accessibility/verify_manual_at_template.rb
+           lib/campfire_backup/build_identity.rb lib/release_object_lock_anchors.rb docs/releasing.md
+        ].each do |relative|
+          source = Rails.root.join(relative)
+          destination = root.join(relative)
+          destination.dirname.mkpath
+          FileUtils.cp source, destination
+        end
+        yield root
+      end
+    end
+end

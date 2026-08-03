@@ -3,17 +3,27 @@ class PresenceChannel < RoomChannel
   on_unsubscribe :absent,  unless: :subscription_rejected?
 
   def present
-    membership.present
+    @presence = membership&.present(replacing: @presence)
 
-    broadcast_read_room
+    if @presence
+      broadcast_read_room
+    else
+      reject
+    end
   end
 
   def absent
-    membership.disconnected
+    membership&.absent @presence
+    @presence = nil
   end
 
   def refresh
-    membership.refresh_connection
+    if refreshed = membership&.refresh_presence(@presence)
+      @presence = refreshed
+    elsif @presence
+      @presence = nil
+      connection.close reason: "Presence expired", reconnect: true
+    end
   end
 
   private

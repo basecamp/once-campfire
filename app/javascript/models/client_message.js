@@ -4,9 +4,11 @@ const SOUND_NAMES = [ "56k", "ballmer", "bell", "bezos", "bueller", "butts", "cl
 
 export default class ClientMessage {
   #template
+  #roomId
 
-  constructor(template) {
+  constructor(template, roomId) {
     this.#template = template
+    this.#roomId = roomId
   }
 
   render(clientMessageId, node) {
@@ -15,6 +17,7 @@ export default class ClientMessage {
 
     return this.#createFromTemplate({
       clientMessageId,
+      messageDomId: this.#messageDomId(clientMessageId),
       body,
       messageTimestamp: Math.floor(now.getTime()),
       messageDatetime: now.toISOString(),
@@ -23,23 +26,94 @@ export default class ClientMessage {
   }
 
   update(clientMessageId, body) {
-    const element = this.#findWithId(clientMessageId).querySelector(".message__body-content")
+    const element = this.#findWithId(clientMessageId)?.querySelector(".message__pending-upload")
 
     if (element) {
-      element.innerHTML = body
+      element.outerHTML = body
     }
   }
 
-  failed(clientMessageId) {
+  failed(clientMessageId, { kind = "message", permanent = false, retryable = true, status: statusCode, uncertain = false } = {}) {
     const element = this.#findWithId(clientMessageId)
+    const status = element?.querySelector("[data-client-message-status]")
+    const retryButton = element?.querySelector("[data-client-message-retry]")
 
-    if (element) {
+    if (element && status && retryButton) {
       element.classList.add("message--failed")
+      status.closest("[data-client-message-failure]").hidden = false
+      this.#removeDiscardButton(element)
+
+      if (permanent) {
+        status.textContent = this.#permanentFailureMessage(kind, statusCode)
+        this.#configureAction(retryButton, kind == "file" ? "Restore attachment" : "Restore message", "restore")
+        retryButton.after(this.#discardButton(clientMessageId, kind))
+      } else if (uncertain) {
+        status.textContent = "Upload outcome is unknown. Retry to confirm whether the file was sent."
+        this.#configureAction(retryButton, "Retry to confirm", "retry")
+      } else {
+        status.textContent = retryable ? "Message was not sent." : "File was not uploaded. It remains selected for retry."
+        this.#configureAction(retryButton, "Retry sending", "retry", { hidden: !retryable })
+      }
+    }
+  }
+
+  retrying(clientMessageId, { kind = "message" } = {}) {
+    const element = this.#findWithId(clientMessageId)
+    const status = element?.querySelector("[data-client-message-status]")
+    const retryButton = element?.querySelector("[data-client-message-retry]")
+
+    if (element && status && retryButton) {
+      element.classList.remove("message--failed")
+      status.textContent = kind == "file" ? "Checking upload…" : "Retrying message…"
+      this.#removeDiscardButton(element)
+      this.#configureAction(retryButton, "Retry sending", "retry")
+      retryButton.disabled = true
+    }
+  }
+
+  #configureAction(button, label, action, { hidden = false } = {}) {
+    button.textContent = label
+    button.dataset.clientMessageAction = action
+    button.hidden = hidden
+    button.disabled = hidden
+  }
+
+  #discardButton(clientMessageId, kind) {
+    const button = document.createElement("button")
+    button.type = "button"
+    button.className = "btn"
+    button.dataset.action = "messages#requestPendingMessageRetry"
+    button.dataset.clientMessageAction = "discard"
+    button.dataset.clientMessageId = clientMessageId
+    button.dataset.clientMessageDiscard = ""
+    button.textContent = kind == "file" ? "Discard attachment" : "Discard message"
+    return button
+  }
+
+  #removeDiscardButton(element) {
+    element.querySelector("[data-client-message-discard]")?.remove()
+  }
+
+  #permanentFailureMessage(kind, statusCode) {
+    const item = kind == "file" ? "File" : "Message"
+
+    switch (Number(statusCode)) {
+      case 403:
+      case 404:
+        return `${item} cannot be sent because access is no longer available.`
+      case 413:
+        return `${item} is too large to send.`
+      default:
+        return `${item} cannot be sent in its current form.`
     }
   }
 
   #findWithId(clientMessageId) {
-    return document.querySelector(`#message_${clientMessageId}`)
+    return document.getElementById(this.#messageDomId(clientMessageId))
+  }
+
+  #messageDomId(clientMessageId) {
+    return `message_${this.#roomId}_${clientMessageId}`
   }
 
   #contentFromNode(node) {

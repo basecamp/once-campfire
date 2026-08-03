@@ -94,7 +94,7 @@
   <% end %>
 
   <div class="margin-block pad-inline pad-block-start fill-shade border-radius">
-    <%= render "accounts/invite" %>
+    <%= render "accounts/invite" unless Oidc.required? %>
 
     <hr class="margin-block separator full-width" style="--border-style: solid">
 

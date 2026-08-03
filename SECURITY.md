@@ -15,8 +15,7 @@ network path held by the Campfire process but not by the operator's own shell.
 
 ## Intentional behavior
 
-Bot webhook URLs are unrestricted: an administrator can point one at any address,
-including internal ones, because operators legitimately wire bots to their own services.
-Link unfurling is different because any member can trigger it by pasting a URL, so it
-validates destinations through `RestrictedHTTP::PrivateNetworkGuard`. The difference is who
-picks the destination.
+Bot webhook URLs are administrator-configured, but Campfire still restricts them to public
+HTTPS on port 443 and pins each connection to a validated DNS result. This limits the impact
+of a compromised administrator session or imported configuration. Link unfurling is also
+destination-restricted because any member can trigger it by pasting a URL.

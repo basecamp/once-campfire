@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+
+require "base64"
+require "securerandom"
+require "time"
+require File.expand_path("../../lib/campfire_backup/backup_encryption", __dir__)
+
+key_id = ARGV.first || "campfire-#{Time.now.utc.strftime('%Y%m%d')}-#{SecureRandom.hex(8)}"
+key_id = CampfireBackup::BackupEncryption.validate_key_id!(key_id)
+key = SecureRandom.random_bytes(CampfireBackup::BackupEncryption::KEY_BYTES)
+
+puts "BACKUP_ENCRYPTION_KEY_ID=#{key_id}"
+puts "BACKUP_ENCRYPTION_KEY=#{Base64.strict_encode64(key)}"

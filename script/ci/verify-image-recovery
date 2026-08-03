@@ -1,0 +1,643 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target_image=${1:?target image reference is required}
+legacy_image=${2:?legacy image digest is required}
+suffix=${3:-local}
+target_revision=${RELEASE_SHA:?RELEASE_SHA is required}
+target_build_identity=${TARGET_BUILD_IDENTITY:?TARGET_BUILD_IDENTITY is required}
+container_platform=${CONTAINER_PLATFORM:?CONTAINER_PLATFORM is required}
+legacy_revision=${LEGACY_REVISION:?LEGACY_REVISION is required}
+architecture=${ARCHITECTURE:-${container_platform#linux/}}
+target_digest=${TARGET_DIGEST:-${target_image##*@}}
+release_tag=${RELEASE_TAG:-}
+recovery_evidence_path=${RECOVERY_EVIDENCE_PATH:-}
+target_manifest_path=${TARGET_MANIFEST_PATH:-}
+container_validation_evidence=${CONTAINER_VALIDATION_EVIDENCE:-}
+backup_authentication_key='YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI='
+backup_encryption_key='Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M='
+backup_encryption_key_id='ci-recovery-v1'
+current_source_volume="campfire-current-source-${suffix}"
+current_restore_volume="campfire-current-restore-${suffix}"
+legacy_source_volume="campfire-legacy-source-${suffix}"
+legacy_restore_volume="campfire-legacy-restore-${suffix}"
+containers=()
+retained_upgrade_receipt_temporary=""
+
+case "$container_platform" in
+  linux/amd64) [[ "$architecture" == amd64 ]] ;;
+  linux/arm64) [[ "$architecture" == arm64 ]] ;;
+  *) printf 'Unsupported container platform: %s\n' "$container_platform" >&2; exit 64 ;;
+esac
+[[ "$legacy_image" =~ @sha256:[0-9a-f]{64}$ ]] || {
+  printf 'Legacy image must use an immutable sha256 digest: %s\n' "$legacy_image" >&2
+  exit 64
+}
+[[ "$legacy_revision" =~ ^[0-9a-f]{40}$ ]]
+[[ "$target_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+work_directory=$(mktemp -d "${RUNNER_TEMP:-/tmp}/campfire-recovery.XXXXXX")
+
+docker_run() {
+  docker run --platform "$container_platform" "$@"
+}
+
+runtime_env=(
+  --env DISABLE_SSL=true
+  --env SKIP_TELEMETRY=true
+  --env SECRET_KEY_BASE=recovery-smoke-secret-key-base-recovery-smoke-secret-key-base
+  --env VAPID_PUBLIC_KEY=recovery-smoke-public-key
+  --env VAPID_PRIVATE_KEY=recovery-smoke-private-key
+  --env WEB_CONCURRENCY=1
+)
+
+cleanup() {
+  for container in "${containers[@]}"; do
+    docker rm --force "$container" >/dev/null 2>&1 || true
+  done
+  docker volume rm \
+    "$current_source_volume" "$current_restore_volume" \
+    "$legacy_source_volume" "$legacy_restore_volume" >/dev/null 2>&1 || true
+  [[ -z "$retained_upgrade_receipt_temporary" ]] || rm -f "$retained_upgrade_receipt_temporary"
+  rm -rf "$work_directory"
+}
+trap cleanup EXIT
+
+wait_for_http() {
+  curl --fail --retry 30 --retry-all-errors --retry-delay 1 "$1"
+}
+
+start_container() {
+  local image=$1 volume=$2 port=$3
+  shift 3
+  local container
+  container=$(docker_run --detach --publish "$port:80" \
+    --mount "type=volume,src=$volume,dst=/rails/storage" \
+    "${runtime_env[@]}" "$@" "$image")
+  containers+=("$container")
+  wait_for_http "http://127.0.0.1:$port/up"
+  STARTED_CONTAINER=$container
+}
+
+stop_container() {
+  local container=$1
+  docker stop --timeout 35 "$container" >/dev/null
+  [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == false ]]
+  STOPPED_EXIT_CODE=$(docker inspect --format '{{.State.ExitCode}}' "$container")
+  [[ "$STOPPED_EXIT_CODE" == 0 ]]
+  docker rm "$container" >/dev/null
+  local retained=()
+  for candidate in "${containers[@]}"; do
+    [[ "$candidate" == "$container" ]] || retained+=("$candidate")
+  done
+  containers=("${retained[@]}")
+}
+
+backup_and_install() {
+  local source_volume=$1 restore_volume=$2 archive_directory=$3 source_format=${4:-current}
+  local legacy_exit_code=${5:-}
+  local shutdown_evidence=()
+  if [[ "$source_format" == legacy ]]; then
+    [[ "$legacy_exit_code" == 0 ]]
+    shutdown_evidence+=(
+      --env LEGACY_CAMPFIRE_EXIT_CODE="$legacy_exit_code"
+      --env CONFIRM_LEGACY_QUIESCED_BACKUP='LEGACY CAMPFIRE EXITED 0'
+    )
+  elif [[ "$source_format" != current ]]; then
+    printf 'Unknown source format: %s\n' "$source_format" >&2
+    return 1
+  fi
+  mkdir -m 700 "$archive_directory" "$archive_directory/extracted"
+  local backup_json backup_id fingerprint archive_json
+  backup_json=$(docker_run --rm \
+    --mount "type=volume,src=$source_volume,dst=/rails/storage" \
+    "${runtime_env[@]}" \
+    --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+    --env CONFIRM_QUIESCED_BACKUP='CAMPFIRE IS STOPPED' \
+    "${shutdown_evidence[@]}" \
+    "$target_image" script/admin/prepare-backup)
+  backup_id=$(jq -r '.backup_id' <<< "$backup_json")
+  fingerprint=$(jq -r '.installation_fingerprint' <<< "$backup_json")
+  [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$ ]]
+  [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]]
+
+  docker_run --rm \
+    --mount "type=volume,src=$source_volume,dst=/rails/storage,readonly" \
+    "${runtime_env[@]}" \
+    --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+    --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+    --env EXPECTED_ENVIRONMENT=production \
+    "$target_image" script/admin/verify-backup "/rails/storage/backups/$backup_id"
+  archive_json=$(docker_run --rm --user "$(id -u):$(id -g)" \
+    --mount "type=volume,src=$source_volume,dst=/rails/storage,readonly" \
+    --volume "$archive_directory":/archive \
+    "${runtime_env[@]}" \
+    --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+    --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+    --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+    --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+    --env EXPECTED_ENVIRONMENT=production \
+    "$target_image" script/admin/archive-backup "/rails/storage/backups/$backup_id" /archive)
+  [[ "$(jq -r '.status' <<< "$archive_json")" == archived ]]
+  [[ "$(jq -r '.archive' <<< "$archive_json")" == "/archive/campfire-$backup_id.campfire-backup" ]]
+  [[ "$(jq -r '.encryption_key_id' <<< "$archive_json")" == "$backup_encryption_key_id" ]]
+  docker_run --rm --user "$(id -u):$(id -g)" \
+    --volume "$archive_directory":/archive:ro \
+    --volume "$archive_directory/extracted":/restore \
+    --env BACKUP_ID="$backup_id" \
+    --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+    --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+    --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+    --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+    --env EXPECTED_ENVIRONMENT=production \
+    "$target_image" script/admin/extract-backup "/archive/campfire-$backup_id.campfire-backup" /restore
+  docker_run --rm --user root \
+    --mount "type=volume,src=$restore_volume,dst=/rails/storage,volume-nocopy" \
+    --volume "$archive_directory/extracted":/backup:ro \
+    "${runtime_env[@]}" \
+    --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+    --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+    --env EXPECTED_ENVIRONMENT=production \
+    --env RESTORE_UID=1000 --env RESTORE_GID=1000 \
+    "$target_image" script/admin/install-backup "/backup/$backup_id" /rails/storage
+
+  INSTALLATION_FINGERPRINT=$fingerprint
+  BACKUP_SCHEMA_VERSION=$(jq -r '.schema_version' <<< "$backup_json")
+  BACKUP_ID=$backup_id
+  BACKUP_ARTIFACT="$archive_directory/campfire-$backup_id.campfire-backup"
+}
+
+expect_failure() {
+  local expected_message=$1 output
+  shift
+  if output=$("$@" 2>&1); then
+    printf 'Expected command to fail with: %s\n' "$expected_message" >&2
+    return 1
+  fi
+  if ! grep -Fq "$expected_message" <<< "$output"; then
+    printf 'Command failed for the wrong reason:\n%s\n' "$output" >&2
+    return 1
+  fi
+}
+
+rewrite_archive_installation_fingerprint() {
+  local source=$1 destination=$2 staging_directory=$3 fingerprint=$4
+  docker_run --rm --user "$(id -u):$(id -g)" \
+    --volume "$work_directory":/recovery \
+    --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+    --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+    --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+    --env SOURCE_ARCHIVE="$source" \
+    --env DESTINATION_ARCHIVE="$destination" \
+    --env PLAINTEXT_STAGING_DIRECTORY="$staging_directory" \
+    --env REPLACEMENT_INSTALLATION_FINGERPRINT="$fingerprint" \
+    "$target_image" ruby -Ilib \
+    -rcampfire_backup/authentication -rcampfire_backup/backup_encryption -rjson -e '
+      authentication_key = CampfireBackup::Authentication.key_from_env
+      keyring = CampfireBackup::BackupEncryption.keyring_from_env!
+      CampfireBackup::BackupEncryption.with_decrypted_archive(
+        ENV.fetch("SOURCE_ARCHIVE"), keyring:,
+        temporary_directory: ENV.fetch("PLAINTEXT_STAGING_DIRECTORY")
+      ) do |archive, authentication, _envelope|
+        evidence = CampfireBackup::Authentication.verify_statement!(
+          JSON.parse(authentication), key: authentication_key
+        )
+        evidence["installation_fingerprint"] = ENV.fetch("REPLACEMENT_INSTALLATION_FINGERPRINT")
+        statement = CampfireBackup::Authentication.sign_statement(evidence, key: authentication_key)
+        File.open(
+          ENV.fetch("DESTINATION_ARCHIVE"),
+          File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600
+        ) do |destination|
+          CampfireBackup::BackupEncryption.encrypt_archive(
+            archive_io: archive, authentication: JSON.generate(statement),
+            destination_io: destination, keyring:
+          )
+        end
+      end
+    ensure
+      keyring&.clear!
+    '
+}
+
+assert_no_upgrade_receipt() {
+  local volume=$1
+  docker_run --rm \
+    --mount "type=volume,src=$volume,dst=/rails/storage" \
+    "$target_image" test ! -e /rails/storage/upgrade-recovery.json
+}
+
+verify_http_state() {
+  local container=$1 port=$2 email=$3 room_name=$4 message_text=$5 attachment_text=$6
+  local metadata room_path attachment_path session_page csrf_token cookie_jar room_page attachment_file
+  metadata=$(docker exec --env RECOVERY_ROOM_NAME="$room_name" "$container" bin/rails runner '
+    room = Room.find_by!(name: ENV.fetch("RECOVERY_ROOM_NAME"))
+    message = room.messages.order(:id).last!
+    routes = Rails.application.routes.url_helpers
+    print JSON.generate(
+      room_path: routes.room_path(room),
+      attachment_path: routes.room_message_attachment_path(room, message)
+    )
+  ')
+  room_path=$(jq -r '.room_path' <<< "$metadata")
+  attachment_path=$(jq -r '.attachment_path' <<< "$metadata")
+  session_page="$work_directory/session-${port}.html"
+  room_page="$work_directory/room-${port}.html"
+  attachment_file="$work_directory/attachment-${port}"
+  cookie_jar="$work_directory/cookies-${port}"
+
+  curl --fail --silent --show-error --cookie-jar "$cookie_jar" \
+    "http://127.0.0.1:${port}/session/new" --output "$session_page"
+  csrf_token=$(ruby -rcgi -e '
+    token = STDIN.read[/<meta name="csrf-token" content="([^"]+)"/, 1]
+    abort "sign-in page has no CSRF token" unless token
+    puts CGI.unescapeHTML(token)
+  ' < "$session_page")
+  curl --fail --silent --show-error --location \
+    --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
+    --data-urlencode "authenticity_token=$csrf_token" \
+    --data-urlencode "email_address=$email" \
+    --data-urlencode 'password=secret123456' \
+    "http://127.0.0.1:${port}/session" --output /dev/null
+  curl --fail --silent --show-error --cookie "$cookie_jar" \
+    "http://127.0.0.1:${port}${room_path}" --output "$room_page"
+  grep -Fq "$message_text" "$room_page"
+  curl --fail --silent --show-error --cookie "$cookie_jar" \
+    "http://127.0.0.1:${port}${attachment_path}" --output "$attachment_file"
+  [[ "$(<"$attachment_file")" == "$attachment_text" ]]
+}
+
+verify_worker_execution() {
+  local container=$1 room_name=$2 effect_id
+  effect_id=$(docker exec --env RECOVERY_ROOM_NAME="$room_name" "$container" bin/rails runner '
+    message = Room.find_by!(name: ENV.fetch("RECOVERY_ROOM_NAME")).messages.order(:id).last!
+    effect = message.message_effects.create!(
+      effect: "broadcast_destroy", room_id: message.room_id,
+      message_client_id: message.client_message_id,
+      deduplication_key: "worker-recovery-smoke-#{SecureRandom.uuid}"
+    )
+    abort "worker smoke effect was not dispatched" unless effect.dispatch
+    print effect.id
+  ')
+  for _attempt in {1..30}; do
+    if docker exec --env RECOVERY_EFFECT_ID="$effect_id" "$container" bin/rails runner '
+      effect = Message::Effect.find(ENV.fetch("RECOVERY_EFFECT_ID"))
+      exit(effect.completed_at? ? 0 : 1)
+    '; then
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'Worker did not complete recovery smoke effect %s\n' "$effect_id" >&2
+  return 1
+}
+
+for volume in "$current_source_volume" "$current_restore_volume" "$legacy_source_volume" "$legacy_restore_volume"; do
+  docker volume create "$volume" >/dev/null
+done
+
+[[ "$(docker image inspect "$target_image" --format '{{.Os}}/{{.Architecture}}')" == "$container_platform" ]]
+[[ "$(docker image inspect "$legacy_image" --format '{{.Os}}/{{.Architecture}}')" == "$container_platform" ]]
+target_config_digest=$(docker image inspect "$target_image" --format '{{.Id}}')
+[[ "$target_config_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+target_manifest_digest=""
+container_validation_sha256=""
+runtime_binding=""
+if [[ -n "$recovery_evidence_path" ]]; then
+  [[ -n "$target_manifest_path" && -f "$target_manifest_path" ]]
+  [[ -n "$container_validation_evidence" && -f "$container_validation_evidence" ]]
+  target_manifest_digest="sha256:$(sha256sum "$target_manifest_path" | cut -d' ' -f1)"
+  container_validation_sha256=$(sha256sum "$container_validation_evidence" | cut -d' ' -f1)
+  [[ "$target_manifest_digest" == "$target_digest" ]]
+  [[ "$(jq -r '.config.digest' "$target_manifest_path")" == "$target_config_digest" ]]
+  jq -e \
+    --arg architecture "$architecture" \
+    --arg platform "$container_platform" \
+    --arg source_revision "$target_revision" \
+    --arg build_identity "$target_build_identity" \
+    --arg manifest_digest "$target_manifest_digest" \
+    --arg config_digest "$target_config_digest" '
+    .kind == "campfire-container-validation" and
+    .architecture == $architecture and .platform == $platform and
+    .source_revision == $source_revision and .build_identity == $build_identity and
+    .runnable_digest == $manifest_digest and
+    .validated_manifest_digest == $manifest_digest and
+    .config_digest == $config_digest and
+    (.runtime_binding == "single-build-multi-export" or .runtime_binding == "registry-manifest-digest")
+  ' "$container_validation_evidence" >/dev/null
+  [[ "sha256:$(sha256sum "$target_manifest_path" | cut -d' ' -f1)" == "$target_manifest_digest" ]]
+  [[ "$(sha256sum "$container_validation_evidence" | cut -d' ' -f1)" == "$container_validation_sha256" ]]
+  runtime_binding=$(jq -r '.runtime_binding' "$container_validation_evidence")
+elif [[ -n "$target_manifest_path" || -n "$container_validation_evidence" ]]; then
+  printf 'Validated manifest inputs require RECOVERY_EVIDENCE_PATH\n' >&2
+  exit 64
+fi
+legacy_environment=$(docker image inspect "$legacy_image" --format '{{range .Config.Env}}{{println .}}{{end}}')
+grep -Fxq "GIT_REVISION=$legacy_revision" <<< "$legacy_environment"
+target_identity=$(docker_run --rm "$target_image" cat /etc/campfire-build-identity.json)
+jq -e --arg revision "$target_revision" --arg build_identity "$target_build_identity" '
+  (keys | sort) == ["build_identity", "format_version", "revision"] and
+  .format_version == 1 and .revision == $revision and .build_identity == $build_identity
+' <<< "$target_identity" >/dev/null
+[[ "$(docker image inspect "$target_image" --format '{{ index .Config.Labels "com.basecamp.campfire.build-identity" }}')" == "$target_build_identity" ]]
+
+start_container "$target_image" "$current_source_volume" 3101
+current_source=$STARTED_CONTAINER
+docker exec "$current_source" bin/rails runner '
+  Account.create!(name: "Current recovery", join_code: SecureRandom.hex(12)) unless Account.exists?
+  user = User.find_or_create_by!(email_address: "recovery@example.com") { _1.name = "Recovery User"; _1.password = "secret123456" }
+  room = Rooms::Open.find_or_create_by!(name: "Current Recovery Room") { _1.creator = user }
+  room.memberships.find_or_create_by!(user:) { _1.involvement = room.default_involvement }
+  unless room.messages.exists?
+    Current.user = user
+    message = room.messages.create!(creator: user, body: "Current recovery history")
+    message.attachment.attach(io: StringIO.new("current upload"), filename: "current.txt", content_type: "text/plain")
+  end
+  Resque.redis.set("recovery-smoke", "durable")
+'
+stop_container "$current_source"
+backup_and_install "$current_source_volume" "$current_restore_volume" "$work_directory/current"
+current_fingerprint=$INSTALLATION_FINGERPRINT
+current_artifact=$BACKUP_ARTIFACT
+start_container "$target_image" "$current_restore_volume" 3102
+current_restored=$STARTED_CONTAINER
+docker exec --env EXPECTED_INSTALLATION_FINGERPRINT="$current_fingerprint" "$current_restored" bin/rails runner '
+  expected = ENV.fetch("EXPECTED_INSTALLATION_FINGERPRINT")
+  abort "current installation mismatch" unless Digest::SHA256.hexdigest(Account.sole.installation_identifier) == expected
+  abort "current user missing" unless User.exists?(email_address: "recovery@example.com")
+  abort "current upload missing" unless ActiveStorage::Blob.sole.download == "current upload"
+  abort "current Redis state missing" unless Resque.redis.get("recovery-smoke") == "durable"
+'
+verify_http_state "$current_restored" 3102 recovery@example.com \
+  "Current Recovery Room" "Current recovery history" "current upload"
+stop_container "$current_restored"
+
+docker_run --rm \
+  --mount "type=volume,src=$legacy_source_volume,dst=/rails/storage" \
+  "${runtime_env[@]}" "$legacy_image" bin/rails db:prepare
+start_container "$legacy_image" "$legacy_source_volume" 3103
+legacy_source=$STARTED_CONTAINER
+docker exec "$legacy_source" bin/rails runner '
+  Account.create!(name: "Pre-migration recovery", join_code: SecureRandom.hex(12))
+  user = User.create!(name: "Legacy User", email_address: "legacy@example.com", password: "secret123456")
+  room = Rooms::Open.create!(name: "Legacy Recovery Room", creator: user)
+  room.memberships.find_or_create_by!(user:) { _1.involvement = room.default_involvement }
+  Current.user = user
+  message = room.messages.create!(creator: user, body: "Legacy recovery history")
+  message.attachment.attach(io: StringIO.new("legacy upload"), filename: "legacy.txt", content_type: "text/plain")
+'
+stop_container "$legacy_source"
+legacy_exit_code=$STOPPED_EXIT_CODE
+backup_and_install \
+  "$legacy_source_volume" "$legacy_restore_volume" "$work_directory/legacy" \
+  legacy "$legacy_exit_code"
+legacy_fingerprint=$INSTALLATION_FINGERPRINT
+legacy_backup_id=$BACKUP_ID
+legacy_artifact=$BACKUP_ARTIFACT
+[[ "$BACKUP_SCHEMA_VERSION" == "20251212154340" ]]
+
+start_container "$legacy_image" "$legacy_restore_volume" 3103
+legacy_restored=$STARTED_CONTAINER
+docker exec "$legacy_restored" bin/rails runner '
+  abort "legacy account missing" unless Account.sole.name == "Pre-migration recovery"
+  abort "legacy user missing" unless User.exists?(email_address: "legacy@example.com")
+  abort "legacy upload missing" unless ActiveStorage::Blob.sole.download == "legacy upload"
+'
+stop_container "$legacy_restored"
+migration_test_volume=$legacy_restore_volume
+legacy_upgrade_volume=$legacy_source_volume
+
+expect_failure "requires authenticated recovery evidence before migration" \
+  docker_run --rm \
+  --mount "type=volume,src=$migration_test_volume,dst=/rails/storage" \
+  "${runtime_env[@]}" \
+  "$target_image" bin/rails db:prepare
+assert_no_upgrade_receipt "$migration_test_volume"
+
+expect_failure "requires authenticated recovery evidence before migration" \
+  docker_run --rm \
+  --mount "type=volume,src=$migration_test_volume,dst=/rails/storage" \
+  "${runtime_env[@]}" \
+  "$target_image" bin/rails db:migrate
+assert_no_upgrade_receipt "$migration_test_volume"
+
+expect_failure "storage and database paths cannot be overridden" \
+  docker_run --rm \
+  --mount "type=volume,src=$migration_test_volume,dst=/rails/storage" \
+  "${runtime_env[@]}" \
+  --env CAMPFIRE_DATABASE_PATH=/rails/storage/db/divergent.sqlite3 \
+  "$target_image" bin/rails db:migrate
+assert_no_upgrade_receipt "$migration_test_volume"
+
+expect_failure "cannot be migrated outside RAILS_ENV=production" \
+  docker_run --rm \
+  --mount "type=volume,src=$migration_test_volume,dst=/rails/storage" \
+  "${runtime_env[@]}" \
+  --env RAILS_ENV=development \
+  --env DATABASE_URL=sqlite3:/rails/storage/db/production.sqlite3 \
+  "$target_image" bin/rails db:migrate
+assert_no_upgrade_receipt "$migration_test_volume"
+
+current_artifact_container="/recovery/current/${current_artifact##*/}"
+legacy_artifact_container="/recovery/legacy/${legacy_artifact##*/}"
+
+expect_failure "Backup archive ID does not match" \
+  docker_run --rm \
+  --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
+  --volume "$work_directory":/recovery:ro \
+  --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+  --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+  --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+  "$target_image" bin/boot authorize-upgrade \
+  "$current_artifact_container" "$current_artifact_container"
+assert_no_upgrade_receipt "$legacy_upgrade_volume"
+
+foreign_directory="$work_directory/foreign"
+mkdir -m 700 "$foreign_directory" "$foreign_directory/plaintext-stage"
+foreign_artifact_container="/recovery/foreign/${legacy_artifact##*/}"
+rewrite_archive_installation_fingerprint \
+  "$legacy_artifact_container" "$foreign_artifact_container" \
+  /recovery/foreign/plaintext-stage "$(printf '0%.0s' {1..64})"
+expect_failure "Backup archive belongs to a different Campfire installation" \
+  docker_run --rm \
+  --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
+  --volume "$work_directory":/recovery:ro \
+  --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+  --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+  --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+  "$target_image" bin/boot authorize-upgrade \
+  "$foreign_artifact_container" "$foreign_artifact_container"
+assert_no_upgrade_receipt "$legacy_upgrade_volume"
+
+tampered_directory="$work_directory/tampered"
+mkdir -m 700 "$tampered_directory"
+cp "$legacy_artifact" "$tampered_directory/${legacy_artifact##*/}"
+printf 'tampered\n' >> "$tampered_directory/${legacy_artifact##*/}"
+expect_failure "Encrypted backup has trailing bytes" \
+  docker_run --rm \
+  --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
+  --volume "$tampered_directory":/recovery:ro \
+  --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+  --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+  --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+  "$target_image" bin/boot authorize-upgrade \
+  "/recovery/${legacy_artifact##*/}" "/recovery/${legacy_artifact##*/}"
+assert_no_upgrade_receipt "$legacy_upgrade_volume"
+
+docker_run --rm \
+  --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
+  --volume "$work_directory":/recovery:ro \
+  --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+  --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+  --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+  "$target_image" bin/boot authorize-upgrade \
+  "$legacy_artifact_container" "$legacy_artifact_container"
+
+upgrade_receipt_path="$work_directory/upgrade-recovery.json"
+docker_run --rm \
+  --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage,readonly" \
+  "$target_image" cat /rails/storage/upgrade-recovery.json > "$upgrade_receipt_path"
+receipt=$(<"$upgrade_receipt_path")
+[[ "$receipt" != *"$backup_authentication_key"* ]]
+[[ "$receipt" != *"$backup_encryption_key"* ]]
+jq -e --arg fingerprint "$legacy_fingerprint" --arg backup_id "$legacy_backup_id" \
+  --arg target_revision "$target_revision" --arg target_build_identity "$target_build_identity" \
+  --arg artifact_path "$legacy_artifact_container" '
+  (keys | sort) == [
+    "archive_bytes", "archive_path", "archive_sha256", "authentication",
+    "authentication_path", "authentication_sha256", "backup_id", "created_at",
+    "environment", "expires_at", "format_version", "installation_fingerprint",
+    "kind", "migration", "source_manifest_sha256", "source_schema_version",
+    "source_state_sha256", "target_build_identity", "target_revision"
+  ] and
+  (.authentication | keys | sort) == ["algorithm", "key_id", "mac"] and
+  .installation_fingerprint == $fingerprint and
+  .backup_id == $backup_id and
+  .target_revision == $target_revision and
+  .target_build_identity == $target_build_identity and
+  .archive_path == $artifact_path and
+  .authentication_path == $artifact_path and
+  .archive_sha256 == .authentication_sha256
+' <<< "$receipt" >/dev/null
+
+retained_upgrade_receipt_path="$upgrade_receipt_path"
+if [[ -n "$recovery_evidence_path" ]]; then
+  evidence_parent=$(dirname -- "$recovery_evidence_path")
+  mkdir -p "$evidence_parent"
+  retained_upgrade_receipt_path="$evidence_parent/upgrade-recovery.json"
+  retained_upgrade_receipt_temporary="$evidence_parent/.upgrade-recovery.json.tmp.$$"
+  [[ ! -e "$retained_upgrade_receipt_path" && ! -L "$retained_upgrade_receipt_path" ]]
+  [[ ! -e "$retained_upgrade_receipt_temporary" && ! -L "$retained_upgrade_receipt_temporary" ]]
+  cp -- "$upgrade_receipt_path" "$retained_upgrade_receipt_temporary"
+  chmod 600 "$retained_upgrade_receipt_temporary"
+  [[ "$(sha256sum "$retained_upgrade_receipt_temporary" | cut -d' ' -f1)" == \
+    "$(sha256sum "$upgrade_receipt_path" | cut -d' ' -f1)" ]]
+  retained_receipt=$(<"$retained_upgrade_receipt_temporary")
+  [[ "$retained_receipt" != *"$backup_authentication_key"* ]]
+  [[ "$retained_receipt" != *"$backup_encryption_key"* ]]
+  mv "$retained_upgrade_receipt_temporary" "$retained_upgrade_receipt_path"
+  retained_upgrade_receipt_temporary=""
+fi
+
+wrong_revision=0000000000000000000000000000000000000000
+expect_failure "GIT_REVISION does not match the immutable Campfire build identity" \
+  docker_run --rm \
+  --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
+  "${runtime_env[@]}" \
+  --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+  --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+  --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
+  --env GIT_REVISION="$wrong_revision" \
+  "$target_image" bin/boot
+
+start_container "$target_image" "$legacy_upgrade_volume" 3104 \
+  --volume "$work_directory":/recovery:ro \
+  --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
+  --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
+  --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id"
+upgraded=$STARTED_CONTAINER
+docker exec --env EXPECTED_INSTALLATION_FINGERPRINT="$legacy_fingerprint" "$upgraded" bin/rails runner '
+  expected = ENV.fetch("EXPECTED_INSTALLATION_FINGERPRINT")
+  abort "upgrade changed installation identity" unless Digest::SHA256.hexdigest(Account.sole.installation_identifier) == expected
+  abort "upgrade lost user" unless User.exists?(email_address: "legacy@example.com")
+  abort "upgrade lost upload" unless ActiveStorage::Blob.sole.download == "legacy upload"
+'
+docker exec "$upgraded" test ! -e /rails/storage/upgrade-recovery.json
+verify_http_state "$upgraded" 3104 legacy@example.com \
+  "Legacy Recovery Room" "Legacy recovery history" "legacy upload"
+verify_worker_execution "$upgraded" "Legacy Recovery Room"
+stop_container "$upgraded"
+
+if [[ -n "$recovery_evidence_path" ]]; then
+  evidence_parent=$(dirname -- "$recovery_evidence_path")
+  mkdir -p "$evidence_parent"
+  legacy_digest=${legacy_image##*@}
+  upgrade_receipt_sha256=$(sha256sum "$retained_upgrade_receipt_path" | cut -d' ' -f1)
+  [[ "$upgrade_receipt_sha256" == "$(sha256sum "$upgrade_receipt_path" | cut -d' ' -f1)" ]]
+  current_artifact_sha256=$(sha256sum "$current_artifact" | cut -d' ' -f1)
+  legacy_artifact_sha256=$(sha256sum "$legacy_artifact" | cut -d' ' -f1)
+  temporary_evidence="${recovery_evidence_path}.tmp.$$"
+  jq -n \
+    --arg architecture "$architecture" \
+    --arg platform "$container_platform" \
+    --arg source_sha "$target_revision" \
+    --arg release_tag "$release_tag" \
+    --arg target_reference "$target_image" \
+    --arg target_digest "$target_digest" \
+    --arg target_manifest_digest "$target_manifest_digest" \
+    --arg target_config_digest "$target_config_digest" \
+    --arg runtime_binding "$runtime_binding" \
+    --arg container_validation_sha256 "$container_validation_sha256" \
+    --arg target_build_identity "$target_build_identity" \
+    --arg legacy_reference "$legacy_image" \
+    --arg legacy_digest "$legacy_digest" \
+    --arg legacy_revision "$legacy_revision" \
+    --arg source_schema_version "$BACKUP_SCHEMA_VERSION" \
+    --arg upgrade_receipt_sha256 "$upgrade_receipt_sha256" \
+    --arg current_artifact_sha256 "$current_artifact_sha256" \
+    --arg legacy_artifact_sha256 "$legacy_artifact_sha256" \
+    --arg run_id "${GITHUB_RUN_ID:-}" \
+    --arg run_attempt "${GITHUB_RUN_ATTEMPT:-}" '
+    {
+      format_version: 1,
+      kind: "campfire-image-recovery",
+      architecture: $architecture,
+      platform: $platform,
+      source_sha: $source_sha,
+      release_tag: $release_tag,
+      target_reference: $target_reference,
+      target_digest: $target_digest,
+      target_manifest_digest: $target_manifest_digest,
+      target_config_digest: $target_config_digest,
+      runtime_binding: $runtime_binding,
+      container_validation_sha256: $container_validation_sha256,
+      target_build_identity: $target_build_identity,
+      legacy_reference: $legacy_reference,
+      legacy_digest: $legacy_digest,
+      legacy_revision: $legacy_revision,
+      source_schema_version: $source_schema_version,
+      upgrade_receipt_sha256: $upgrade_receipt_sha256,
+      current_recovery: {
+        artifact_kind: "campfire-backup",
+        artifact_sha256: $current_artifact_sha256
+      },
+      legacy_recovery: {
+        artifact_kind: "campfire-backup",
+        artifact_sha256: $legacy_artifact_sha256
+      },
+      checks: {
+        current_restore: "passed",
+        legacy_restore: "passed",
+        migration_denials: "passed",
+        tamper_denials: "passed",
+        authorized_upgrade: "passed",
+        http_history_and_uploads: "passed",
+        worker_execution: "passed"
+      },
+      recovery: "passed",
+      run_id: $run_id,
+      run_attempt: $run_attempt
+    }
+  ' > "$temporary_evidence"
+  mv "$temporary_evidence" "$recovery_evidence_path"
+fi
+
+printf 'Recovery verification passed target=%s legacy=%s\n' "$target_image" "$legacy_image"

@@ -26,7 +26,7 @@ module TranslationsHelper
 
   def translation_button(translation_key)
     tag.details(class: "position-relative", data: { controller: "popup", action: "keydown.esc->popup#close toggle->popup#toggle click@document->popup#closeOnClickOutside", popup_orientation_top_class: "popup-orientation-top" }) do
-      tag.summary(class: "btn", tabindex: -1) do
+      tag.summary(class: "btn") do
         concat image_tag("globe.svg", size: 20, aria: { hidden: "true" }, class: "color-icon")
         concat tag.span("Translate", class: "for-screen-reader")
       end +

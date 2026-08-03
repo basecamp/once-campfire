@@ -12,7 +12,7 @@ class RoomsController < ApplicationController
   end
 
   def destroy
-    @room.destroy
+    @room.destroy_by! actor: Current.user
 
     broadcast_remove_room
     redirect_to root_url

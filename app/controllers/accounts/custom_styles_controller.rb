@@ -5,7 +5,7 @@ class Accounts::CustomStylesController < ApplicationController
   end
 
   def update
-    @account.update!(account_params)
+    @account.update_custom_styles! account_params, actor: Current.user
     redirect_to edit_account_custom_styles_url, notice: "✓"
   end
 

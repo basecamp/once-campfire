@@ -17,7 +17,7 @@ class Rooms::ClosedsController < RoomsController
   end
 
   def create
-    room = Rooms::Closed.create_for(room_params, users: grantees)
+    room = Rooms::Closed.create_for(room_params, users: grantees, actor: Current.user)
 
     broadcast_create_room(room)
     redirect_to room_url(room)
@@ -29,8 +29,7 @@ class Rooms::ClosedsController < RoomsController
   end
 
   def update
-    @room.update! room_params
-    @room.memberships.revise(granted: grantees, revoked: revokees)
+    @room.update_as_closed! room_params, user_ids: grantee_ids, actor: Current.user
 
     broadcast_update_room
     redirect_to room_url(@room)
@@ -44,10 +43,6 @@ class Rooms::ClosedsController < RoomsController
 
     def grantees
       User.where(id: grantee_ids)
-    end
-
-    def revokees
-      @room.users.where.not(id: grantee_ids)
     end
 
     def grantee_ids

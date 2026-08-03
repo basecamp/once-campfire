@@ -3,14 +3,16 @@ class FirstRun
   FIRST_ROOM_NAME = "All Talk"
 
   def self.create!(user_params)
-    account = Account.create!(name: ACCOUNT_NAME)
-    room    = Rooms::Open.new(name: FIRST_ROOM_NAME)
+    Account.transaction do
+      Account.create!(name: ACCOUNT_NAME)
+      room = Rooms::Open.new(name: FIRST_ROOM_NAME)
 
-    administrator = room.creator = User.new(user_params.merge(role: :administrator))
-    room.save!
+      administrator = room.creator = User.new(user_params.merge(role: :administrator))
+      room.save!
 
-    room.memberships.grant_to administrator
+      room.memberships.grant_to administrator
 
-    administrator
+      administrator
+    end
   end
 end

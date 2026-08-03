@@ -10,6 +10,15 @@ export PATH="$app_root/bin:$PATH"
 
 REDIS_PORT=6379
 REDIS_HOST=localhost
+reset=false
+skip_server=false
+
+for argument in "$@"; do
+  case "$argument" in
+    --reset) reset=true ;;
+    --skip-server) skip_server=true ;;
+  esac
+done
 
 if [ "$RAILS_ENV" = "production" ]; then
   echo "RAILS_ENV is production; bailing out"
@@ -82,14 +91,14 @@ bundle config set --local auto_install true
 step "Installing RubyGems" bundle install
 
 # Prepare database
-if [[ $* == *--reset* ]]; then
+if [[ "$reset" == true ]]; then
   rm -rf ./storage/{db,files}
   step "Resetting the database" rails db:reset
 fi
 step "Preparing the database" rails db:prepare
 
 # Start Redis if not running
-if ! redis_running; then
+if [[ "$skip_server" == false ]] && ! redis_running; then
   if command -v docker &>/dev/null; then
     if docker ps -aq -f name=campfire-redis | grep -q .; then
       step "Starting Redis" docker start campfire-redis
@@ -119,6 +128,8 @@ done
 
 step "Cleaning up logs and tempfiles" rails log:clear tmp:clear
 
-step "Restarting services" rails restart
+if [[ "$skip_server" == false ]]; then
+  step "Restarting services" rails restart
+fi
 
 gum style --foreground 46 "✓ Done (${SECONDS} sec)"

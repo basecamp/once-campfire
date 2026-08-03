@@ -1,7 +1,11 @@
-self.addEventListener("push", async (event) => {
-  const data = await event.data.json()
-  event.waitUntil(Promise.all([ showNotification(data), updateBadgeCount(data.options) ]))
+self.addEventListener("push", (event) => {
+  event.waitUntil(handlePush(event))
 })
+
+async function handlePush(event) {
+  const data = event.data.json()
+  await Promise.all([ showNotification(data), updateBadgeCount(data.options) ])
+}
 
 async function showNotification({ title, options }) {
   return self.registration.showNotification(title, options)

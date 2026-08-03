@@ -10,8 +10,12 @@ gemfile do
 end
 
 require "optparse"
+require "digest"
 require "net/http"
+require "open3"
 require "uri"
+
+APP_ROOT = File.expand_path("..", __dir__)
 
 class Load
   include SSHKit::DSL
@@ -65,9 +69,13 @@ class Load
       puts "Running setup..."
       load = self
       os, arch = host_os_and_arch
+      revision = git_revision
+      identity = build_identity(revision:, os:, platform: arch)
 
       on(:local) do
-        execute :docker, :build, "-t", load.campfire_image, "--platform", arch, "."
+        execute :docker, :build, "-t", load.campfire_image, "--platform", arch,
+          "--build-arg", "GIT_REVISION=#{revision}",
+          "--build-arg", "BUILD_IDENTITY=#{identity}", "."
         if load.remote?
           execute :docker, :save, "-o", "tmp/campfire-image.tar", load.campfire_image
         end
@@ -92,7 +100,50 @@ class Load
         os = capture("uname -s").strip
         arch = capture("uname -m").strip == "x86_64" ? "linux/amd64" : "linux/arm64"
       end
-      [os, arch]
+      [ os, arch ]
+    end
+
+    def git_revision
+      git_capture("rev-parse", "--verify", "HEAD^{commit}").strip.tap do |revision|
+        abort "bin/load requires a 40-hex Git revision" unless revision.match?(/\A[0-9a-f]{40}\z/)
+      end
+    end
+
+    def build_identity(revision:, os:, platform:)
+      digest = Digest::SHA256.new
+      [ "campfire-load-build-v1", revision, host, os, platform ].each do |value|
+        update_digest digest, value
+      end
+
+      source_files = git_capture(
+        "ls-files", "-z", "--cached", "--others", "--exclude-standard"
+      ).split("\0").sort
+      source_files.each do |relative_path|
+        path = File.join(APP_ROOT, relative_path)
+        update_digest digest, relative_path
+        if File.symlink?(path)
+          update_digest digest, "symlink"
+          update_digest digest, File.readlink(path)
+        elsif File.file?(path)
+          update_digest digest, format("%o", File.stat(path).mode & 0o777)
+          update_digest digest, Digest::SHA256.file(path).hexdigest
+        else
+          update_digest digest, "missing"
+        end
+      end
+      digest.hexdigest
+    end
+
+    def update_digest(digest, value)
+      bytes = value.to_s.b
+      digest << [ bytes.bytesize ].pack("Q>") << bytes
+    end
+
+    def git_capture(*arguments)
+      stdout, stderr, status = Open3.capture3("git", "-C", APP_ROOT, *arguments)
+      abort "bin/load could not identify the current source: #{stderr}" unless status.success?
+
+      stdout
     end
 
     def start_app

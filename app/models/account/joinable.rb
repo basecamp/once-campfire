@@ -5,8 +5,12 @@ module Account::Joinable
     before_create { self.join_code = generate_join_code }
   end
 
-  def reset_join_code
-    update! join_code: generate_join_code
+  def reset_join_code!(actor:)
+    transaction do
+      User.lock_administrator! actor
+      self.class.lock.find(id).update!(join_code: generate_join_code)
+    end
+    reload
   end
 
   private

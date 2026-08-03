@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <%= page_title_tag %>
 
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, interactive-widget=resizes-content">
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
     <meta name="view-transition" content="same-origin">
     <meta name="color-scheme" content="light dark">
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -29,7 +29,12 @@
     <%= yield :head %>
   </head>
 
-  <body class="<%= body_classes %>" data-controller="local-time lightbox">
+  <% session_expires_at = Current.session&.expires_at %>
+  <body class="<%= body_classes %>" data-controller="local-time lightbox<%= " session-expiration" if session_expires_at %>"
+      <% if session_expires_at %>
+        data-session-expiration-expires-at-value="<%= session_expires_at.to_fs(:epoch) %>"
+        data-session-expiration-server-time-value="<%= Time.current.to_fs(:epoch) %>"
+      <% end %>>
     <a href="#main-content" class="skip-navigation btn">Skip to main content</a>
 
     <nav id="nav">
@@ -37,15 +42,18 @@
     </nav>
 
     <% if notice = flash[:notice] || flash[:alert] %>
-      <div class="flash" data-controller="element-removal" data-action="animationend->element-removal#remove">
-        <div class="flash__inner shadow" style="<%= "--flash-background: var(--color-negative)" if flash[:alert] %>">
+      <% error_flash = flash[:alert].present? %>
+      <div class="flash<%= " flash--error" if error_flash %>" data-controller="element-removal"
+          data-action="<%= "animationend->element-removal#remove" unless error_flash %>">
+        <div class="flash__inner shadow" role="alert" aria-atomic="true" style="<%= "--flash-background: var(--color-negative)" if flash[:alert] %>">
           <% if flash[:alert] %>
-            <%= image_tag "alert.svg", aria: { hidden: true }, size: 24, class: "colorize--white" %></span>
+            <%= image_tag "alert.svg", aria: { hidden: true }, size: 24, class: "colorize--black" %>
           <% else %>
-            <%= image_tag "check.svg", aria: { hidden: true }, size: 24, class: "colorize--white" %></span>
+            <%= image_tag "check.svg", aria: { hidden: true }, size: 24, class: "colorize--black" %>
           <% end %>
+          <span class="flash__message"><%= notice %></span>
+          <button type="button" class="btn" data-action="element-removal#remove">Dismiss notification</button>
         </div>
-        <span class="for-screen-reader" role="alert" aria-atomic="true"><%= notice %></span>
       </div>
     <% end %>
 

@@ -3,6 +3,8 @@ class Messages::ByBotsController < MessagesController
 
   def create
     super
+    return if performed?
+
     head :created, location: message_url(@message)
   end
 
@@ -17,7 +19,12 @@ class Messages::ByBotsController < MessagesController
 
     def reading(io)
       io.rewind
-      yield io.read.force_encoding("UTF-8")
+      ContentLimits.verify! request.content_length.to_i,
+        maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
+      body = ContentLimits.read(
+        io, maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
+      )
+      yield body.force_encoding("UTF-8")
     ensure
       io.rewind
     end

@@ -1,0 +1,165 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "base64"
+require "digest"
+require "json"
+require "time"
+
+STATE_PATH = File.join(ENV.fetch("HOME"), "fake-release-aws.json")
+
+def fail!(state, message = "fake AWS request rejected")
+  File.binwrite(STATE_PATH, JSON.pretty_generate(state) << "\n") if state
+  warn message
+  exit 255
+end
+
+def take_option!(arguments, name, takes_value: true)
+  index = arguments.index(name)
+  return unless index
+
+  arguments.delete_at(index)
+  takes_value ? arguments.delete_at(index) : true
+end
+
+def output(value)
+  STDOUT.write(JSON.generate(value))
+  STDOUT.write("\n")
+end
+
+if ARGV == [ "--version" ]
+  puts "aws-cli/2.31.0 Python/3.13.0 Darwin/25.0 exe/x86_64"
+  exit 0
+end
+
+state = JSON.parse(File.binread(STATE_PATH))
+arguments = ARGV.dup
+profile_name = take_option!(arguments, "--profile")
+take_option!(arguments, "--no-cli-pager", takes_value: false)
+take_option!(arguments, "--output")
+endpoint_url = take_option!(arguments, "--endpoint-url")
+service = arguments.shift
+operation = arguments.shift
+profile = state.fetch("profiles").fetch(profile_name, nil)
+fail!(state, "unknown fake profile") unless profile
+
+state["calls"] ||= []
+state["calls"] << {
+  "profile" => profile_name,
+  "service" => service,
+  "operation" => operation,
+  "arguments" => arguments.dup,
+  "environment_keys" => ENV.keys.sort,
+  "ignore_configured_endpoint_urls" => ENV["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"],
+  "endpoint_url" => endpoint_url
+}
+fail!(state, "fake profile unavailable") if profile["available"] == false
+
+if service == "sts" && operation == "get-caller-identity"
+  output("Account" => profile.fetch("account"), "Arn" => "arn:aws:iam::#{profile.fetch('account')}:role/release")
+  File.binwrite(STATE_PATH, JSON.pretty_generate(state) << "\n")
+  exit 0
+end
+
+fail!(state, "unsupported fake service") unless service == "s3api"
+
+bucket_name = take_option!(arguments, "--bucket")
+expected_owner = take_option!(arguments, "--expected-bucket-owner")
+bucket = state.fetch("buckets").fetch(bucket_name, nil)
+fail!(state, "unknown fake bucket") unless bucket
+unless bucket.fetch("account") == profile.fetch("account") && expected_owner == bucket.fetch("account")
+  fail!(state, "fake bucket owner mismatch")
+end
+if bucket.fetch("unavailable_operations", []).include?(operation)
+  fail!(state, "fake bucket operation unavailable")
+end
+
+case operation
+when "head-bucket"
+  output({})
+when "get-bucket-versioning"
+  output("Status" => bucket.fetch("versioning"))
+when "get-object-lock-configuration"
+  output("ObjectLockEnabled" => bucket.fetch("object_lock"))
+when "list-object-versions"
+  prefix = take_option!(arguments, "--prefix")
+  versions = bucket.fetch("objects", {}).flat_map do |key, entries|
+    next [] unless key.start_with?(prefix)
+
+    entries.map.with_index do |entry, index|
+      {
+        "Key" => key,
+        "VersionId" => entry.fetch("version_id"),
+        "IsLatest" => index == entries.length - 1,
+        "Size" => Base64.strict_decode64(entry.fetch("source")).bytesize
+      }
+    end
+  end
+  markers = bucket.fetch("delete_markers", []).filter_map do |marker|
+    marker if marker.fetch("Key").start_with?(prefix)
+  end
+  output("IsTruncated" => false, "Versions" => versions, "DeleteMarkers" => markers)
+when "put-object"
+  key = take_option!(arguments, "--key")
+  body = take_option!(arguments, "--body")
+  take_option!(arguments, "--content-type")
+  take_option!(arguments, "--checksum-algorithm")
+  requested_checksum = take_option!(arguments, "--checksum-sha256")
+  metadata = take_option!(arguments, "--metadata").split(",").to_h { _1.split("=", 2) }
+  requested_mode = take_option!(arguments, "--object-lock-mode")
+  retain_until = take_option!(arguments, "--object-lock-retain-until-date")
+  if_none_match = take_option!(arguments, "--if-none-match")
+  source = File.binread(body)
+  checksum = Base64.strict_encode64(Digest::SHA256.digest(source))
+  fail!(state, "fake checksum mismatch") unless checksum == requested_checksum
+  entries = (bucket["objects"] ||= {})[key] ||= []
+  fail!(state, "fake precondition failed") if if_none_match == "*" && entries.any?
+
+  sequence = bucket["version_sequence"] = bucket.fetch("version_sequence", 0) + 1
+  entry = {
+    "version_id" => "version-#{sequence}",
+    "source" => Base64.strict_encode64(source),
+    "checksum" => checksum,
+    "metadata" => metadata,
+    "mode" => bucket.fetch("force_retention_mode", requested_mode),
+    "retain_until" => retain_until
+  }
+  entries << entry
+  output("VersionId" => entry.fetch("version_id"), "ChecksumSHA256" => checksum)
+when "head-object", "get-object"
+  key = take_option!(arguments, "--key")
+  version_id = take_option!(arguments, "--version-id")
+  take_option!(arguments, "--checksum-mode")
+  entry = bucket.fetch("objects", {}).fetch(key, []).find { _1.fetch("version_id") == version_id }
+  fail!(state, "fake object not found") unless entry
+  source = Base64.strict_decode64(entry.fetch("source"))
+  File.binwrite(arguments.fetch(0), source) if operation == "get-object"
+  output(
+    "VersionId" => version_id,
+    "ContentLength" => source.bytesize,
+    "ChecksumSHA256" => entry.fetch("checksum"),
+    "Metadata" => entry.fetch("metadata")
+  )
+when "get-object-retention"
+  key = take_option!(arguments, "--key")
+  version_id = take_option!(arguments, "--version-id")
+  entry = bucket.fetch("objects", {}).fetch(key, []).find { _1.fetch("version_id") == version_id }
+  fail!(state, "fake object retention not found") unless entry
+  output("Retention" => { "Mode" => entry.fetch("mode"), "RetainUntilDate" => entry.fetch("retain_until") })
+when "delete-object"
+  key = take_option!(arguments, "--key")
+  version_id = take_option!(arguments, "--version-id")
+  entries = bucket.fetch("objects", {}).fetch(key, [])
+  entry = entries.find { _1.fetch("version_id") == version_id }
+  fail!(state, "fake object not found") unless entry
+  retained = Time.iso8601(entry.fetch("retain_until")) > Time.now.utc
+  if entry.fetch("mode") == "COMPLIANCE" && retained && bucket["allow_compliance_delete"] != true
+    fail!(state, "fake compliance deletion rejected")
+  end
+  entries.delete(entry)
+  output("VersionId" => version_id)
+else
+  fail!(state, "unsupported fake S3 operation #{operation}")
+end
+
+File.binwrite(STATE_PATH, JSON.pretty_generate(state) << "\n")

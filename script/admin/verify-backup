@@ -1,0 +1,189 @@
+#!/usr/bin/env ruby
+require "base64"
+require "digest"
+require "json"
+require "pathname"
+require "sqlite3"
+require File.expand_path("../../lib/campfire_backup/authentication", __dir__)
+require File.expand_path("../../lib/campfire_backup/installation_identity", __dir__)
+require File.expand_path("../../lib/campfire_backup/redis_validator", __dir__)
+require File.expand_path("../../lib/campfire_backup/schema_verifier", __dir__)
+require File.expand_path("../../lib/campfire_backup/source_state_inventory", __dir__)
+
+class BackupVerifier
+  FORMAT_VERSION = 1
+  GENERATION_PATTERN = /\A\d{8}T\d{6}Z-[0-9a-f]{16}\z/
+
+  class << self
+    def verify(generation_path:, expected_installation_fingerprint:, expected_environment:,
+        authentication_key: CampfireBackup::Authentication.key_from_env, output: true)
+      raise "EXPECTED_INSTALLATION_FINGERPRINT is required" if expected_installation_fingerprint.to_s.empty?
+
+      generation_path = Pathname(generation_path).realpath
+      manifest = JSON.parse(safe_child(generation_path, "manifest.json").read)
+      manifest = CampfireBackup::Authentication.verify_manifest!(manifest, key: authentication_key)
+      raise "Unsupported backup manifest version" unless manifest.fetch("format_version") == FORMAT_VERSION
+      backup_id = manifest.fetch("backup_id")
+      unless backup_id.match?(GENERATION_PATTERN) && generation_path.basename.to_s == backup_id
+        raise "Backup generation identity does not match its manifest"
+      end
+      raise "Backup environment does not match" unless manifest.fetch("environment") == expected_environment
+      unless secure_compare(manifest.fetch("installation_fingerprint"), expected_installation_fingerprint)
+        raise "Backup belongs to a different Campfire installation"
+      end
+      CampfireBackup::SourceStateInventory.validate_manifest! manifest
+
+      verify_generation_entries generation_path, manifest
+      verify_database generation_path, manifest
+      verify_files generation_path, manifest.fetch("files")
+      CampfireBackup::RedisValidator.validate! generation_path.join("payload")
+      verify_files generation_path, manifest.fetch("files")
+      puts JSON.generate(status: "verified", backup_id: manifest.fetch("backup_id"), path: generation_path.to_s) if output
+      true
+    end
+
+    private
+      def verify_generation_entries(generation_path, manifest)
+        expected = [ "manifest.json", manifest.dig("database", "path"), "payload" ].sort
+        actual = generation_path.children.map do |path|
+          raise "Backup generation contains a symbolic link" if path.symlink?
+          unless path.file? || path.directory?
+            raise "Backup generation contains a special file"
+          end
+          path.basename.to_s
+        end.sort
+        unless actual == expected
+          raise "Backup generation contains unexpected or missing entries: expected #{expected.join(', ')}, got #{actual.join(', ')}"
+        end
+        raise "Backup payload is not a directory" unless generation_path.join("payload").directory?
+      end
+
+      def verify_database(generation_path, manifest)
+        metadata = manifest.fetch("database")
+        expected_path = "#{manifest.fetch('environment')}.sqlite3"
+        raise "Backup database path does not match its environment" unless metadata.fetch("path") == expected_path
+
+        database_path = safe_child(generation_path, metadata.fetch("path"))
+        verify_file database_path, metadata
+
+        database = SQLite3::Database.new(database_path.to_s, readonly: true)
+        raise "Backup database failed integrity_check" unless database.get_first_value("PRAGMA integrity_check") == "ok"
+        raise "Backup database failed foreign_key_check" if database.execute("PRAGMA foreign_key_check").any?
+        schema_version = database.get_first_value("SELECT MAX(version) FROM schema_migrations").to_i
+        raise "Backup schema does not match its manifest" unless schema_version == manifest.fetch("schema_version")
+        CampfireBackup::SchemaVerifier.verify!(database_path, schema_version:)
+        database.results_as_hash = true
+        account_count = database.get_first_value("SELECT COUNT(*) FROM accounts").to_i
+        raise "Backup database must contain exactly one account" unless account_count == 1
+        marker = CampfireBackup::InstallationIdentity.read!(
+          safe_child(generation_path.join("payload"), CampfireBackup::InstallationIdentity::FILENAME)
+        )
+        if database.execute("PRAGMA table_info(accounts)").any? { _1.fetch("name") == "installation_identifier" }
+          identifier = database.get_first_value("SELECT installation_identifier FROM accounts")
+          raise "Backup installation marker does not match its database" unless identifier == marker
+        end
+        fingerprint = CampfireBackup::InstallationIdentity.fingerprint(marker)
+        unless secure_compare(fingerprint, manifest.fetch("installation_fingerprint"))
+          raise "Backup installation identity does not match its database"
+        end
+        verify_blob_files database, generation_path.join("payload")
+      ensure
+        database&.close
+      end
+
+      def verify_blob_files(database, payload_directory)
+        database.execute("SELECT key, byte_size, checksum FROM active_storage_blobs").each do |blob|
+          relative_path = Pathname("files").join(blob.fetch("key")[0, 2], blob.fetch("key")[2, 2], blob.fetch("key"))
+          path = safe_child(payload_directory, relative_path)
+          unless path.exist? && path.lstat.file? && path.size == blob.fetch("byte_size")
+            raise "Backup is missing uploaded file #{blob.fetch('key')}"
+          end
+          checksum = Base64.strict_encode64(Digest::MD5.file(path).digest)
+          raise "Backup uploaded-file checksum does not match the database" unless checksum == blob.fetch("checksum")
+        end
+      end
+
+      def verify_files(generation_path, files)
+        payload_directory = safe_child(generation_path, "payload")
+        raise "Backup payload directory is missing" unless payload_directory.directory?
+
+        expected_paths = files.map { _1.fetch("path") }
+        raise "Backup manifest contains duplicate file paths" unless expected_paths.uniq.size == expected_paths.size
+
+        actual_paths = payload_files(payload_directory)
+        raise "Backup payload does not match its manifest" unless actual_paths == expected_paths.sort
+        expected_directories = expected_paths.flat_map do |path|
+          parts = Pathname(path).each_filename.to_a
+          (1...parts.length).map { parts.first(_1).join("/") }
+        end.uniq.sort
+        actual_directories = payload_directories(payload_directory)
+        raise "Backup payload contains unexpected directories" unless actual_directories == expected_directories
+
+        files.each do |metadata|
+          verify_file safe_child(payload_directory, metadata.fetch("path")), metadata
+        end
+      end
+
+      def payload_files(payload_directory)
+        Dir.glob(payload_directory.join("**", "*"), File::FNM_DOTMATCH).filter_map do |name|
+          path = Pathname(name)
+          next if %w[ . .. ].include?(path.basename.to_s)
+
+          stat = path.lstat
+          raise "Backup payload contains a symbolic link" if stat.symlink?
+          raise "Backup payload contains a special file" unless stat.file? || stat.directory?
+
+          path.relative_path_from(payload_directory).to_s if stat.file?
+        end.sort
+      end
+
+      def payload_directories(payload_directory)
+        Dir.glob(payload_directory.join("**", "*"), File::FNM_DOTMATCH).filter_map do |name|
+          path = Pathname(name)
+          next if %w[ . .. ].include?(path.basename.to_s)
+
+          stat = path.lstat
+          path.relative_path_from(payload_directory).to_s if stat.directory?
+        end.sort
+      end
+
+      def verify_file(path, metadata)
+        raise "Backup file is missing: #{path}" unless path.exist? && path.lstat.file?
+        raise "Backup file size does not match: #{path}" unless path.size == metadata.fetch("bytes")
+        unless secure_compare(Digest::SHA256.file(path).hexdigest, metadata.fetch("sha256"))
+          raise "Backup checksum does not match: #{path}"
+        end
+      end
+
+      def safe_child(root, relative)
+        path = Pathname(relative)
+        raise "Backup manifest contains an unsafe path" if path.absolute? || path.each_filename.any? { _1 == ".." }
+
+        root.join(path).cleanpath.tap do |candidate|
+          current = root
+          path.each_filename do |component|
+            current = current.join(component)
+            raise "Backup path contains a symbolic link" if current.symlink?
+          end
+        end
+      end
+
+      def secure_compare(left, right)
+        return false unless left.bytesize == right.bytesize
+
+        result = 0
+        left.bytes.zip(right.bytes) { |a, b| result |= a ^ b }
+        result.zero?
+      end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  backup_directory = Pathname(ENV.fetch("BACKUP_DIRECTORY", File.expand_path("../../storage/backups", __dir__)))
+  generation_path = Pathname(ARGV.first || backup_directory.join("latest"))
+  BackupVerifier.verify(
+    generation_path:,
+    expected_installation_fingerprint: ENV["EXPECTED_INSTALLATION_FINGERPRINT"],
+    expected_environment: ENV.fetch("EXPECTED_ENVIRONMENT", "production")
+  )
+end

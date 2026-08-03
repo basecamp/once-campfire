@@ -9,6 +9,7 @@ gem "benchmark"
 
 # Drivers
 gem "sqlite3"
+gem "campfire_sqlite_native", path: "vendor/campfire_sqlite_native", require: false
 gem "redis", "~> 5.4"
 
 # Deployment
@@ -36,6 +37,7 @@ gem "sentry-rails"
 # Other
 gem "bcrypt"
 gem "web-push"
+gem "omniauth_openid_connect", "~> 0.8.0"
 gem "rqrcode"
 gem "rails_autolink"
 gem "geared_pagination"
@@ -43,7 +45,7 @@ gem "jbuilder"
 gem "net-http-persistent"
 gem "kredis"
 gem "platform_agent"
-gem "thruster"
+gem "thruster", "= 0.1.23"
 
 group :development, :test do
   gem "debug"
