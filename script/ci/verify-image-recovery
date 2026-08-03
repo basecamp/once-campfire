@@ -229,6 +229,7 @@ assert_no_upgrade_receipt() {
 verify_http_state() {
   local container=$1 port=$2 email=$3 room_name=$4 message_text=$5 attachment_text=$6
   local metadata room_path attachment_path session_page csrf_token cookie_jar room_page attachment_file
+  local browser_user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   metadata=$(docker exec --env RECOVERY_ROOM_NAME="$room_name" "$container" bin/rails runner '
     room = Room.find_by!(name: ENV.fetch("RECOVERY_ROOM_NAME"))
     message = room.messages.order(:id).last!
@@ -245,7 +246,7 @@ verify_http_state() {
   attachment_file="$work_directory/attachment-${port}"
   cookie_jar="$work_directory/cookies-${port}"
 
-  curl --fail --silent --show-error --cookie-jar "$cookie_jar" \
+  curl --fail --silent --show-error --user-agent "$browser_user_agent" --cookie-jar "$cookie_jar" \
     "http://127.0.0.1:${port}/session/new" --output "$session_page"
   csrf_token=$(ruby -rcgi -e '
     token = STDIN.read[/<meta name="csrf-token" content="([^"]+)"/, 1]
@@ -253,17 +254,24 @@ verify_http_state() {
     puts CGI.unescapeHTML(token)
   ' < "$session_page")
   curl --fail --silent --show-error --location \
+    --user-agent "$browser_user_agent" \
     --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
     --data-urlencode "authenticity_token=$csrf_token" \
     --data-urlencode "email_address=$email" \
     --data-urlencode 'password=secret123456' \
     "http://127.0.0.1:${port}/session" --output /dev/null
-  curl --fail --silent --show-error --cookie "$cookie_jar" \
+  curl --fail --silent --show-error --user-agent "$browser_user_agent" --cookie "$cookie_jar" \
     "http://127.0.0.1:${port}${room_path}" --output "$room_page"
-  grep -Fq "$message_text" "$room_page"
-  curl --fail --silent --show-error --cookie "$cookie_jar" \
+  if ! grep -Fq "$message_text" "$room_page"; then
+    printf 'Recovered room page is missing expected history: %s\n' "$room_name" >&2
+    return 1
+  fi
+  curl --fail --silent --show-error --user-agent "$browser_user_agent" --cookie "$cookie_jar" \
     "http://127.0.0.1:${port}${attachment_path}" --output "$attachment_file"
-  [[ "$(<"$attachment_file")" == "$attachment_text" ]]
+  if [[ "$(<"$attachment_file")" != "$attachment_text" ]]; then
+    printf 'Recovered room attachment does not match: %s\n' "$room_name" >&2
+    return 1
+  fi
 }
 
 verify_worker_execution() {
