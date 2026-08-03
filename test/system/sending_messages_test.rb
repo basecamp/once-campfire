@@ -39,10 +39,10 @@ class SendingMessagesTest < ApplicationSystemTestCase
 
     assert_message_text body, count: 1
     Timeout.timeout(5) do
-      sleep 0.05 until rooms(:designers).messages.count { |message| message.plain_text_body == body } == 1
+      sleep 0.05 until rooms(:designers).messages.reload.any? { |message| message.plain_text_body == body }
     end
 
-    assert_equal 1, rooms(:designers).messages.count { |message| message.plain_text_body == body }
+    assert_equal 1, rooms(:designers).messages.reload.count { |message| message.plain_text_body == body }
     assert_not rooms(:designers).messages.order(:id).last.plain_text_body.blank?
   end
 

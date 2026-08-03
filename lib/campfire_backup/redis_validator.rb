@@ -1,4 +1,6 @@
+require "fileutils"
 require "pathname"
+require "tmpdir"
 require_relative "subprocess"
 
 module CampfireBackup
@@ -87,6 +89,10 @@ module CampfireBackup
         end
 
         def run!(command, path)
+          if command == "redis-check-aof" && !writable_aof_input?(path)
+            return with_writable_aof_copy(path) { run!(command, _1) }
+          end
+
           stdout, stderr, status = CampfireBackup::Subprocess.capture3(command, path.to_s)
           return if status.success?
 
@@ -94,6 +100,29 @@ module CampfireBackup
           raise "Redis backup validation failed: #{details.empty? ? command : details}"
         rescue Errno::ENOENT
           raise "Redis backup validation requires #{command}"
+        end
+
+        def writable_aof_input?(path)
+          paths = path.basename.to_s.end_with?(".manifest") ? path.dirname.children : [ path ]
+          paths.all? do |candidate|
+            File.open(candidate, File::RDWR, &:close)
+            true
+          rescue Errno::EACCES, Errno::EPERM, Errno::EROFS
+            false
+          end
+        end
+
+        def with_writable_aof_copy(path)
+          Dir.mktmpdir("campfire-redis-validation") do |directory|
+            destination_directory = Pathname(directory)
+            sources = path.basename.to_s.end_with?(".manifest") ? path.dirname.children : [ path ]
+            sources.each do |source|
+              destination = destination_directory.join(source.basename)
+              FileUtils.copy_file source, destination
+              File.chmod 0o600, destination
+            end
+            yield destination_directory.join(path.basename)
+          end
         end
     end
   end

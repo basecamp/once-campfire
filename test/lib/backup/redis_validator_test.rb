@@ -18,6 +18,28 @@ class CampfireBackup::RedisValidatorTest < ActiveSupport::TestCase
     end
   end
 
+  test "checks read-only multi-part AOF files through a writable copy" do
+    with_payload do |payload|
+      directory = payload.join("redis", "appendonlydir").tap(&:mkpath)
+      manifest = directory.join("appendonly.aof.manifest")
+      aof = directory.join("appendonly.aof.1.incr.aof")
+      manifest.write "file appendonly.aof.1.incr.aof seq 1 type i\n"
+      aof.write "valid bytes"
+      File.chmod 0o400, manifest
+      File.chmod 0o400, aof
+      status = stub(success?: true)
+      CampfireBackup::Subprocess.expects(:capture3).with do |command, candidate|
+        candidate = Pathname(candidate)
+        command == "redis-check-aof" && candidate != manifest &&
+          candidate.read == manifest.read &&
+          candidate.dirname.join(aof.basename).read == aof.read
+      end.returns([ "valid", "", status ])
+
+      assert_nil CampfireBackup::RedisValidator.validate!(payload)
+      assert_equal "valid bytes", aof.read
+    end
+  end
+
   test "rejects invalid Redis persistence" do
     with_payload do |payload|
       aof = payload.join("redis", "appendonly.aof")
