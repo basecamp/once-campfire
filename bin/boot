@@ -46,7 +46,7 @@ class ProcessMonitor
 
     def monitor_processes
       loop do
-        @procs.each(&:reap_nonblock)
+        reap_children
         if !@shutdown_requested && @procs.any?(&:exited?)
           @unexpected_child_exit = true
           shut_down
@@ -62,6 +62,18 @@ class ProcessMonitor
 
         @sleeper.call POLL_INTERVAL
       end
+    end
+
+    def reap_children
+      # PID 1 adopts orphaned process-group descendants and must reap them too.
+      loop do
+        pid, status = Process.waitpid2(-1, Process::WNOHANG)
+        break unless pid
+
+        @procs.find { _1.pid == pid }&.record_exit(status)
+      end
+    rescue Errno::ECHILD
+      nil
     end
 
     def handle_signals
@@ -117,7 +129,7 @@ class ProcessMonitor
 end
 
 class MonitoredProcess
-  attr_reader :name, :status
+  attr_reader :name, :pid, :status
 
   def initialize(name, cmd)
     @name, @cmd = name.to_s, cmd
@@ -127,15 +139,8 @@ class MonitoredProcess
     @pid = Process.spawn(@cmd, pgroup: true)
   end
 
-  def reap_nonblock
-    return unless @pid && !@reaped
-
-    result = Process.waitpid2(@pid, Process::WNOHANG)
-    if result
-      _, @status = result
-      @reaped = true
-    end
-  rescue Errno::ECHILD
+  def record_exit(status)
+    @status = status
     @reaped = true
   end
 

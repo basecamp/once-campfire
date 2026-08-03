@@ -107,6 +107,22 @@ class ProcessMonitorTest < ActiveSupport::TestCase
     process.kill
   end
 
+  test "reaps adopted descendants without losing direct child status" do
+    monitor = ProcessMonitor.allocate
+    process = MonitoredProcess.new("worker", "worker command")
+    process.instance_variable_set(:@pid, 4321)
+    direct_status = FakeStatus.new(true)
+    adopted_status = FakeStatus.new(false)
+    monitor.instance_variable_set(:@procs, [ process ])
+    Process.expects(:waitpid2).with(-1, Process::WNOHANG).times(3)
+      .returns([ 9876, adopted_status ], [ 4321, direct_status ], nil)
+
+    monitor.send(:reap_children)
+
+    assert process.exited?
+    assert_same direct_status, process.status
+  end
+
   test "a reaped leader is not finished while descendants remain in its process group" do
     process = MonitoredProcess.new("worker", "worker command")
     process.instance_variable_set(:@pid, 4321)
