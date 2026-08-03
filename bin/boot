@@ -51,6 +51,7 @@ class ProcessMonitor
           @unexpected_child_exit = true
           shut_down
         end
+        terminate_redis_if_ready
         break if @procs.all?(&:finished?)
 
         enforce_shutdown_deadline if @shutdown_requested
@@ -74,7 +75,20 @@ class ProcessMonitor
 
       @shutdown_requested = true
       @shutdown_deadline = @clock.call + @shutdown_timeout
-      @procs.each(&:terminate)
+      @procs.reject { _1.name == "redis" }.each(&:terminate)
+      terminate_redis_if_ready
+    end
+
+    def terminate_redis_if_ready
+      return unless @shutdown_requested
+      return if @redis_shutdown_requested
+
+      redis = @procs.find { _1.name == "redis" }
+      return unless redis
+      return unless @procs.all? { _1.equal?(redis) || _1.finished? }
+
+      @redis_shutdown_requested = true
+      redis.terminate unless redis.finished?
     end
 
     def enforce_shutdown_deadline

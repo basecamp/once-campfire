@@ -49,7 +49,13 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
       end
     end
   ensure
-    super
+    begin
+      super
+    rescue Selenium::WebDriver::Error::WebDriverError => error
+      raise unless SYSTEM_TEST_BROWSER == "headless_firefox" && error.message.include?("NS_BINDING_ABORTED")
+
+      page.driver.quit
+    end
   end
 
   private

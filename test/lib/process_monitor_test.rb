@@ -39,6 +39,10 @@ class ProcessMonitorTest < ActiveSupport::TestCase
     def finished?
       @finished
     end
+
+    def finish!
+      @finished = true
+    end
   end
 
   test "does not start more processes after shutdown begins" do
@@ -71,6 +75,25 @@ class ProcessMonitorTest < ActiveSupport::TestCase
     monitor.send(:enforce_shutdown_deadline)
     assert processes.all?(&:killed)
     assert_equal 131.0, monitor.instance_variable_get(:@kill_deadline)
+  end
+
+  test "terminates Redis after dependent processes finish" do
+    monitor = ProcessMonitor.allocate
+    worker = FakeProcess.new(name: "worker", finished: false)
+    redis = FakeProcess.new(name: "redis", finished: false)
+    monitor.instance_variable_set(:@procs, [ worker, redis ])
+    monitor.instance_variable_set(:@shutdown_timeout, 25)
+    monitor.instance_variable_set(:@clock, -> { 100.0 })
+
+    monitor.send(:shut_down)
+
+    assert worker.terminated
+    assert_not redis.terminated
+
+    worker.finish!
+    monitor.send(:terminate_redis_if_ready)
+
+    assert redis.terminated
   end
 
   test "monitored processes are spawned and signaled as process groups" do

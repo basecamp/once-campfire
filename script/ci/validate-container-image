@@ -283,14 +283,16 @@ docker exec "$container" cat /etc/campfire-build-identity.json | jq -e \
 
 request_limit_bytes=106954752
 oversized_request="$evidence_directory/oversized-request.bin"
-truncate --size "$((request_limit_bytes + 1))" "$oversized_request"
+dd if=/dev/zero bs=1M count=102 status=none | tr '\000' a > "$oversized_request"
+printf a >> "$oversized_request"
+[[ "$(wc -c < "$oversized_request")" -eq "$((request_limit_bytes + 1))" ]]
 request_limit_status=$(curl --silent --show-error --http1.1 --max-time 60 \
   --output /dev/null --write-out 'HTTP/%{http_version} %{http_code}' \
-  --header 'Content-Type: application/octet-stream' --header 'Expect:' \
-  --data-binary "@$oversized_request" "http://127.0.0.1:$port/")
+  --header 'Content-Type: application/x-www-form-urlencoded' --header 'Expect:' \
+  --data-binary "@$oversized_request" "http://127.0.0.1:$port/session")
 rm -f "$oversized_request"
-[[ "$request_limit_status" =~ ^HTTP/1\.[01][[:space:]]413$ ]]
 printf '%s\n' "$request_limit_status" > "$evidence_directory/request-limit-response.txt"
+[[ "$request_limit_status" =~ ^HTTP/1\.[01][[:space:]]413$ ]]
 
 docker stop --timeout 35 "$container" >/dev/null
 [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == false ]]
