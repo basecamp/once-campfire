@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require_relative "../config/boot"
 require "fileutils"
 require "yaml"
 require_relative "../lib/campfire_backup/operation_lock"
