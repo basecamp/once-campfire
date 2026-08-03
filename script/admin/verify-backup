@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby
+require_relative "../../config/boot"
 require "base64"
 require "digest"
 require "json"

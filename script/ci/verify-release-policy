@@ -681,6 +681,12 @@ if root.join("bin/release").file?
     path = root.join(relative)
     errors << "#{relative}: required release entrypoint is missing or not executable" unless path.file? && path.executable?
   end
+  %w[ archive-backup verify-backup install-backup ].each do |name|
+    relative = "script/admin/#{name}"
+    unless root.join(relative).read.include?('require_relative "../../config/boot"')
+      errors << "#{relative}: standalone backup entrypoint must activate bundled gems"
+    end
+  end
 
   object_lock_helper = root.join("lib/release_object_lock_anchors.rb")
   if object_lock_helper.file?

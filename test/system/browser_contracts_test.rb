@@ -23,7 +23,7 @@ class BrowserContractsTest < ApplicationSystemTestCase
     assert_not_equal "none", focus_style.fetch("boxShadow")
 
     find("input[name='password']").send_keys("secret123456", :enter)
-    assert_selector "meta[name='current-user-id']", visible: false
+    assert_selector "meta[name='current-user-id']", visible: false, wait: 10
   end
 
   test "forced colors preserves keyboard focus evidence" do

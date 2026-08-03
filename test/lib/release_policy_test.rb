@@ -401,6 +401,18 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     end
   end
 
+  test "policy requires standalone backup tools to activate bundled gems" do
+    with_repository_policy_fixture do |root|
+      verifier = root.join("script/admin/verify-backup")
+      verifier.write verifier.read.sub("require_relative \"../../config/boot\"\n", "")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "standalone backup entrypoint must activate bundled gems", stderr
+    end
+  end
+
   private
     def with_repository_policy_fixture
       Dir.mktmpdir("campfire-container-policy") do |directory|
