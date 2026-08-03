@@ -256,6 +256,26 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     end
   end
 
+  test "policy requires the runtime environment for guarded-upgrade authorization" do
+    with_repository_policy_fixture do |root|
+      recovery = root.join("script/ci/verify-image-recovery")
+      source = recovery.read
+      source.sub!(
+        "  --volume \"$work_directory\":/recovery:ro \\\n" \
+          "  \"${runtime_env[@]}\" \\\n" \
+          "  --env BACKUP_AUTHENTICATION_KEY=\"$backup_authentication_key\" \\\n",
+        "  --volume \"$work_directory\":/recovery:ro \\\n" \
+          "  --env BACKUP_AUTHENTICATION_KEY=\"$backup_authentication_key\" \\\n"
+      )
+      recovery.write source
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "guarded-upgrade authorization must pass the runtime environment", stderr
+    end
+  end
+
   test "policy rejects pull request validation with registry mutation authority" do
     with_repository_policy_fixture do |root|
       workflow = root.join(".github/workflows/container.yml")

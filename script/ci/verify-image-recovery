@@ -458,6 +458,7 @@ expect_failure "Backup archive ID does not match" \
   --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$work_directory":/recovery:ro \
+  "${runtime_env[@]}" \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
   --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
   --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
@@ -477,6 +478,7 @@ expect_failure "Backup archive belongs to a different Campfire installation" \
   --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$work_directory":/recovery:ro \
+  "${runtime_env[@]}" \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
   --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
   --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
@@ -494,6 +496,7 @@ expect_failure "Encrypted backup has trailing bytes" \
   --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$tampered_directory":/recovery:ro \
+  "${runtime_env[@]}" \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
   --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
   --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \
@@ -505,6 +508,7 @@ docker_run --rm \
   --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$work_directory":/recovery:ro \
+  "${runtime_env[@]}" \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
   --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \
   --env BACKUP_ENCRYPTION_KEY_ID="$backup_encryption_key_id" \

@@ -484,6 +484,7 @@ docker run --rm \
   --volumes-from campfire \
   --group-add "$(id -g)" \
   --volume "$PWD":/archives:ro \
+  --env-file /path/to/campfire.env \
   --env BACKUP_AUTHENTICATION_KEY="$BACKUP_AUTHENTICATION_KEY" \
   --env BACKUP_ENCRYPTION_KEY_ID="$BACKUP_ENCRYPTION_KEY_ID" \
   --env BACKUP_ENCRYPTION_KEY="$BACKUP_ENCRYPTION_KEY" \

@@ -508,6 +508,19 @@ if root.join("bin/release").file?
     unless recovery_source.scan('--group-add "$(id -g)"').length == 5
       errors << "script/ci/verify-image-recovery: guarded-upgrade archive consumers must add the host group"
     end
+    recovery_lines = recovery_source.lines
+    authorization_commands = recovery_lines.each_index.filter_map do |line_index|
+      next unless recovery_lines[line_index].include?("bin/boot authorize-upgrade")
+
+      command_start = line_index.downto(0).find do |candidate|
+        recovery_lines[candidate].lstrip.start_with?("docker_run --rm ")
+      end
+      recovery_lines[command_start..line_index].join if command_start
+    end
+    unless authorization_commands.length == 4 &&
+        authorization_commands.all? { _1.include?('"${runtime_env[@]}"') }
+      errors << "script/ci/verify-image-recovery: guarded-upgrade authorization must pass the runtime environment"
+    end
     [
       "Legacy image must use an immutable sha256 digest", "--platform \"$container_platform\"",
       "upgrade_receipt_sha256", "worker_execution", "RECOVERY_EVIDENCE_PATH",
