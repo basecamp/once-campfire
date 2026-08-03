@@ -235,6 +235,21 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     end
   end
 
+  test "policy rejects shared dependency caches in artifact-producing CI" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/ci.yml")
+      workflow.write workflow.read.sub(
+        "          ruby-version: .ruby-version\n",
+        "          ruby-version: .ruby-version\n          bundler-cache: true\n"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "shared dependency caching is forbidden in artifact-producing CI", stderr
+    end
+  end
+
   test "policy rejects an independently rebuilt runtime recovery candidate" do
     with_repository_policy_fixture do |root|
       workflow = root.join(".github/workflows/container.yml")

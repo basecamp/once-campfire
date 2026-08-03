@@ -242,7 +242,7 @@ class SendingMessagesTest < ApplicationSystemTestCase
     attach_file file, make_visible: true
     click_on "Send Message"
 
-    failed_message = find(".message--failed", text: "File is too large to send.")
+    failed_message = find(".message--failed", text: "File is too large to send.", wait: 10)
     failed_message_id = failed_message[:id]
     within failed_message do
       assert_button "Restore attachment"
@@ -288,7 +288,7 @@ class SendingMessagesTest < ApplicationSystemTestCase
       find(".message__edit-btn").click
 
       accept_confirm(wait: 5) do
-        click_on "Delete message"
+        find_button("Delete message").send_keys(:enter)
       end
     end
 

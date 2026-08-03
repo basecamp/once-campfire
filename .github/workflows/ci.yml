@@ -24,10 +24,8 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: ${{ github.event_name == 'pull_request' }}
 
       - name: Install dependencies without a shared cache
-        if: github.event_name == 'push'
         run: bundle install --jobs 4 --retry 3
 
       - name: Scan for security vulnerabilities
@@ -50,10 +48,8 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: ${{ github.event_name == 'pull_request' }}
 
       - name: Install dependencies without a shared cache
-        if: github.event_name == 'push'
         run: bundle install --jobs 4 --retry 3
 
       - name: Lint code for consistent style
@@ -118,10 +114,8 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
         with:
           ruby-version: .ruby-version
-          bundler-cache: ${{ github.event_name == 'pull_request' }}
 
       - name: Install dependencies without a shared cache
-        if: github.event_name == 'push'
         run: bundle install --jobs 4 --retry 3
 
       - name: Run tests
@@ -163,6 +157,25 @@ jobs:
       - name: Install packages
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
 
+      - name: Install pinned GeckoDriver
+        if: matrix.browser == 'headless_firefox'
+        env:
+          GECKODRIVER_ARCHIVE: https://github.com/mozilla/geckodriver/releases/download/v0.37.1/geckodriver-v0.37.1-linux64.tar.gz
+          GECKODRIVER_SHA256: e815130ea95983e162ae91843b48d3a3ce991735635fce83a647afde21e09f7e
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/geckodriver-v0.37.1-linux64.tar.gz"
+          directory="$RUNNER_TEMP/geckodriver-v0.37.1"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors \
+            --output "$archive" "$GECKODRIVER_ARCHIVE"
+          printf '%s  %s\n' "$GECKODRIVER_SHA256" "$archive" | sha256sum --check -
+          [[ "$(tar --list --gzip --file "$archive")" == "geckodriver" ]]
+          install -d -m 700 "$directory"
+          tar --extract --gzip --file "$archive" --directory "$directory"
+          "$directory/geckodriver" --version | grep -F "geckodriver 0.37.1"
+          printf '%s\n' "$directory" >> "$GITHUB_PATH"
+
       - name: Checkout code
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
@@ -172,10 +185,8 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: ${{ github.event_name == 'pull_request' }}
 
       - name: Install dependencies without a shared cache
-        if: github.event_name == 'push'
         run: bundle install --jobs 4 --retry 3
 
       - name: Report browser version
@@ -184,6 +195,7 @@ jobs:
           set -euo pipefail
           if [[ "$SYSTEM_TEST_BROWSER" == "headless_firefox" ]]; then
             firefox --version
+            geckodriver --version
           else
             google-chrome --version
           fi
@@ -230,10 +242,8 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: ${{ github.event_name == 'pull_request' }}
 
       - name: Install dependencies without a shared cache
-        if: github.event_name == 'push'
         run: bundle install --jobs 4 --retry 3
 
       - name: Report browser version
@@ -289,10 +299,8 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: ${{ github.event_name == 'pull_request' }}
 
       - name: Install dependencies without a shared cache
-        if: github.event_name == 'push'
         run: bundle install --jobs 4 --retry 3
 
       - name: Report browser version

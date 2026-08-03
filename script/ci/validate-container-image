@@ -79,8 +79,34 @@ if [[ -n "$oci_archive" ]]; then
   trap 'rm -rf "$oci_root"' EXIT
   tar --extract --file "$oci_archive" --directory "$oci_root"
   jq -e '.imageLayoutVersion == "1.0.0"' "$oci_root/oci-layout" >/dev/null
-  jq -e '.schemaVersion == 2 and (.manifests | length) >= 2' "$oci_root/index.json" >/dev/null
-  cp "$oci_root/index.json" "$evidence_directory/oci-index.json"
+  layout_index="$oci_root/index.json"
+  jq -e '.schemaVersion == 2 and (.manifests | length) >= 1' "$layout_index" >/dev/null
+  cp "$layout_index" "$evidence_directory/oci-layout-index.json"
+
+  manifest_index="$layout_index"
+  nested_index_digest=$(jq -r '
+    if (.manifests | length) == 1 and
+        (.manifests[0].mediaType == "application/vnd.oci.image.index.v1+json" or
+         .manifests[0].mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")
+    then .manifests[0].digest else "" end
+  ' "$layout_index")
+  if [[ -n "$nested_index_digest" ]]; then
+    [[ "$nested_index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+    manifest_index="$oci_root/blobs/sha256/${nested_index_digest#sha256:}"
+    [[ -f "$manifest_index" ]]
+    [[ "sha256:$(file_sha256 "$manifest_index")" == "$nested_index_digest" ]]
+  fi
+  jq -e '.schemaVersion == 2 and (.manifests | length) >= 2' "$manifest_index" >/dev/null
+  cp "$manifest_index" "$evidence_directory/oci-index.json"
+
+  metadata_digest=$(jq -r '.["containerimage.digest"] // empty' "$build_metadata")
+  [[ "$metadata_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  jq -e --arg digest "$metadata_digest" '
+    .["containerimage.descriptor"].digest == $digest and
+    (.["containerimage.descriptor"].mediaType == "application/vnd.oci.image.index.v1+json" or
+     .["containerimage.descriptor"].mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")
+  ' "$build_metadata" >/dev/null
+  [[ -z "$nested_index_digest" || "$metadata_digest" == "$nested_index_digest" ]]
 
   mapfile -t runnable_digests < <(jq -r \
     --arg architecture "$architecture" '
@@ -88,7 +114,7 @@ if [[ -n "$oci_archive" ]]; then
       select(.annotations["vnd.docker.reference.type"] != "attestation-manifest") |
       select(.platform.os == "linux" and .platform.architecture == $architecture) |
       .digest
-    ' "$oci_root/index.json")
+    ' "$manifest_index")
   [[ ${#runnable_digests[@]} -eq 1 ]]
   runnable_digest=${runnable_digests[0]}
   [[ "$runnable_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -99,7 +125,6 @@ if [[ -n "$oci_archive" ]]; then
 
   oci_config_digest=$(jq -r '.config.digest' "$runnable_manifest")
   [[ "$oci_config_digest" == "$config_digest" ]]
-  [[ "$(jq -r '.["containerimage.config.digest"]' "$build_metadata")" == "$config_digest" ]]
   cp "$oci_root/blobs/sha256/${oci_config_digest#sha256:}" "$evidence_directory/oci-image-config.json"
   cp "$build_metadata" "$evidence_directory/build-metadata.json"
 
@@ -108,7 +133,7 @@ if [[ -n "$oci_archive" ]]; then
     select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") |
     select(.annotations["vnd.docker.reference.digest"] == $digest) |
     .digest
-  ' "$oci_root/index.json")
+  ' "$manifest_index")
   [[ ${#attestation_digests[@]} -ge 1 ]]
 
   sbom_count=0

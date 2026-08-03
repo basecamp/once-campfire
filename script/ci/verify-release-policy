@@ -226,7 +226,9 @@ if root.join("bin/release").file?
     [
       "script/ci/verify-release-policy",
       "axe-4.12.1.min.js.sha256",
-      "script/ci/verify-javascript"
+      "script/ci/verify-javascript",
+      "geckodriver-v0.37.1-linux64.tar.gz",
+      "e815130ea95983e162ae91843b48d3a3ce991735635fce83a647afde21e09f7e"
     ].each do |token|
       errors << "#{relative}: required local policy gate is missing: #{token}" unless application_ci.include?(token)
     end
@@ -238,6 +240,9 @@ if root.join("bin/release").file?
     end
     if application_ci.include?("node --check")
       errors << "#{relative}: JavaScript parsing must use script/ci/verify-javascript"
+    end
+    if application_ci.include?("bundler-cache:")
+      errors << "#{relative}: shared dependency caching is forbidden in artifact-producing CI"
     end
   end
 

@@ -58,16 +58,8 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
         result = page.driver.browser.execute_cdp("Page.addScriptToEvaluateOnNewDocument", source:)
         [ :cdp, result.fetch("identifier") ]
       when "headless_firefox"
-        function_declaration = <<~JAVASCRIPT
-          () => {
-            const script = document.createElement("script");
-            script.textContent = #{source.to_json};
-            document.documentElement.append(script);
-            script.remove();
-          }
-        JAVASCRIPT
         result = page.driver.browser.bidi.send_cmd(
-          "script.addPreloadScript", functionDeclaration: function_declaration
+          "script.addPreloadScript", functionDeclaration: "() => {\n#{source}\n}"
         )
         [ :bidi, result.fetch("script") ]
       else
