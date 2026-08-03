@@ -183,11 +183,12 @@ class MessageSubmissionFailureTest < ApplicationSystemTestCase
         (() => {
           const fetch = window.fetch;
           window.fetch = function(input, options = {}) {
-            const method = input instanceof Request ? input.method : options.method;
-            const url = new URL(input instanceof Request ? input.url : input, window.location.origin);
+            const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
+            const method = String(request?.method || options.method || "GET").toUpperCase();
+            const url = new URL(request ? request.url : String(input), window.location.origin);
             const status = window.nextMessageFailureStatusForTest;
             const composerPath = new URL(document.querySelector("#composer").action).pathname;
-            if (status && method?.toUpperCase() === "POST" && url.pathname === composerPath) {
+            if (status && method === "POST" && url.pathname === composerPath) {
               delete window.nextMessageFailureStatusForTest;
               return Promise.resolve(new Response("", {
                 status,

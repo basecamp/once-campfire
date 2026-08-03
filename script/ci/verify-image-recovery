@@ -321,7 +321,7 @@ if [[ -n "$recovery_evidence_path" ]]; then
     .runnable_digest == $manifest_digest and
     .validated_manifest_digest == $manifest_digest and
     .config_digest == $config_digest and
-    (.runtime_binding == "single-build-multi-export" or .runtime_binding == "registry-manifest-digest")
+    (.runtime_binding == "config-digest-matched-dual-build" or .runtime_binding == "registry-manifest-digest")
   ' "$container_validation_evidence" >/dev/null
   [[ "sha256:$(sha256sum "$target_manifest_path" | cut -d' ' -f1)" == "$target_manifest_digest" ]]
   [[ "$(sha256sum "$container_validation_evidence" | cut -d' ' -f1)" == "$container_validation_sha256" ]]

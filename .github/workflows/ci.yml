@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
@@ -24,7 +24,11 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: true
+          bundler-cache: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install dependencies without a shared cache
+        if: github.event_name == 'push'
+        run: bundle install --jobs 4 --retry 3
 
       - name: Scan for security vulnerabilities
         run: bin/brakeman
@@ -38,7 +42,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
@@ -46,7 +50,11 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: true
+          bundler-cache: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install dependencies without a shared cache
+        if: github.event_name == 'push'
+        run: bundle install --jobs 4 --retry 3
 
       - name: Lint code for consistent style
         run: bin/rubocop
@@ -71,7 +79,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
@@ -100,7 +108,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
 
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
@@ -110,7 +118,11 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
         with:
           ruby-version: .ruby-version
-          bundler-cache: true
+          bundler-cache: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install dependencies without a shared cache
+        if: github.event_name == 'push'
+        run: bundle install --jobs 4 --retry 3
 
       - name: Run tests
         run: bin/rails db:setup test
@@ -152,7 +164,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
 
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
@@ -160,7 +172,11 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: true
+          bundler-cache: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install dependencies without a shared cache
+        if: github.event_name == 'push'
+        run: bundle install --jobs 4 --retry 3
 
       - name: Report browser version
         shell: bash
@@ -206,7 +222,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
 
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
@@ -214,7 +230,11 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: true
+          bundler-cache: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install dependencies without a shared cache
+        if: github.event_name == 'push'
+        run: bundle install --jobs 4 --retry 3
 
       - name: Report browser version
         run: google-chrome --version
@@ -261,7 +281,7 @@ jobs:
         run: sudo safaridriver --enable
 
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
 
@@ -269,7 +289,11 @@ jobs:
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: .ruby-version
-          bundler-cache: true
+          bundler-cache: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install dependencies without a shared cache
+        if: github.event_name == 'push'
+        run: bundle install --jobs 4 --retry 3
 
       - name: Report browser version
         run: safaridriver --version

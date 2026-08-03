@@ -1,4 +1,5 @@
 require "application_system_test_case"
+require "timeout"
 
 class FlashAccessibilityTest < ApplicationSystemTestCase
   test "flash remains dismissible with reduced motion and has readable contrast" do
@@ -38,6 +39,11 @@ class FlashAccessibilityTest < ApplicationSystemTestCase
     click_on "Save changes"
 
     find(".flash").hover
+    Timeout.timeout(5) do
+      sleep 0.05 until page.evaluate_script(
+        "getComputedStyle(document.querySelector('.flash__inner')).animationPlayState"
+      ) == "paused"
+    end
     assert_equal "paused", page.evaluate_script("getComputedStyle(document.querySelector('.flash__inner')).animationPlayState")
   end
 

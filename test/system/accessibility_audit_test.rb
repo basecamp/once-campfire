@@ -38,10 +38,10 @@ class AccessibilityAuditTest < ApplicationSystemTestCase
       (() => {
         const fetchForAccessibilityFailureTest = window.fetch;
         window.fetch = function(input, options = {}) {
-          const request = input instanceof Request ? input : null;
-          const method = request ? request.method : options.method;
-          const url = new URL(request ? request.url : input, window.location.origin);
-          if (method?.toUpperCase() === "POST" && url.pathname.endsWith("/messages")) {
+          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
+          const method = String(request?.method || options.method || "GET").toUpperCase();
+          const url = new URL(request ? request.url : String(input), window.location.origin);
+          if (method === "POST" && url.pathname.endsWith("/messages")) {
             return Promise.resolve(new Response("", {
               status: 503,
               headers: { "Content-Type": "text/vnd.turbo-stream.html" }

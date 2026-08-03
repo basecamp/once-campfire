@@ -247,7 +247,7 @@ class ReleasePolicyTest < ActiveSupport::TestCase
       _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
 
       assert_not status.success?
-      assert_match "runtime and OCI evidence must come from exactly one Buildx build", stderr
+      assert_match "runtime and OCI evidence must use exactly two config-matched Buildx builds", stderr
     end
   end
 

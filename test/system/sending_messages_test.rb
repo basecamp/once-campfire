@@ -321,7 +321,8 @@ class SendingMessagesTest < ApplicationSystemTestCase
     def install_file_upload_interceptor
       error = page.evaluate_async_script <<~JAVASCRIPT
         const done = arguments[0];
-        import("models/file_uploader").then(({ default: FileUploader }) => {
+        const imports = JSON.parse(document.querySelector("script[type='importmap']").textContent).imports;
+        import(imports["models/file_uploader"]).then(({ default: FileUploader }) => {
           const upload = FileUploader.prototype.upload;
           if (!document.querySelector("meta[name=csrf-token]")) {
             const csrfToken = document.createElement("meta");

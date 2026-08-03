@@ -104,8 +104,12 @@ jobs:
             --provenance=mode=max \
             --sbom="generator=$SBOM_SCANNER_IMAGE" \
             --output "type=oci,dest=$evidence_directory/campfire.oci.tar" \
-            --output "type=docker,dest=$evidence_directory/campfire.runtime.tar" \
             --metadata-file "$evidence_directory/build-metadata.json" .
+          docker buildx build "${common[@]}" \
+            --tag "$image" \
+            --provenance=false \
+            --sbom=false \
+            --output "type=docker,dest=$evidence_directory/campfire.runtime.tar" .
           docker load --input "$evidence_directory/campfire.runtime.tar"
 
           {

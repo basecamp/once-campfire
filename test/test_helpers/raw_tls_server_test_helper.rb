@@ -54,13 +54,20 @@ module RawTlsServerTestHelper
       def serve
         Thread.current.report_on_exception = false
         socket = @ssl_server.accept
+        content_length = 0
         while (line = socket.gets)
           break if line == "\r\n"
+
+          if match = line.match(/\AContent-Length:\s*(\d+)\s*\r\n\z/i)
+            content_length = Integer(match[1], 10)
+          end
         end
+        socket.read(content_length) if content_length.positive?
         if @response.respond_to?(:call)
           @response.call socket
         else
           socket.write @response
+          socket.flush
         end
       rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
         nil

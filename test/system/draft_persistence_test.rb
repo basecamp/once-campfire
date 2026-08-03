@@ -108,8 +108,9 @@ class DraftPersistenceTest < ApplicationSystemTestCase
       install_new_document_script <<~JAVASCRIPT
         const originalFetch = window.fetch;
         window.fetch = function(input, options = {}) {
-          const method = (input instanceof Request ? input.method : options.method || "GET").toUpperCase();
-          const url = input instanceof Request ? input.url : input.toString();
+          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
+          const method = String(request?.method || options.method || "GET").toUpperCase();
+          const url = request ? request.url : String(input);
           const path = new URL(url, window.location.origin).pathname;
           if (method === "POST" && path.includes("/rooms/") && path.endsWith("/messages")) {
             return new Promise((_, reject) => setTimeout(() => reject(new TypeError("simulated network failure")), 750));
@@ -124,8 +125,9 @@ class DraftPersistenceTest < ApplicationSystemTestCase
         const originalFetch = window.fetch;
         let droppedMessageResponse = false;
         window.fetch = async function(input, options = {}) {
-          const method = (input instanceof Request ? input.method : options.method || "GET").toUpperCase();
-          const url = input instanceof Request ? input.url : input.toString();
+          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
+          const method = String(request?.method || options.method || "GET").toUpperCase();
+          const url = request ? request.url : String(input);
           const path = new URL(url, window.location.origin).pathname;
           const response = await originalFetch(input, options);
           if (!droppedMessageResponse && method === "POST" && path.includes("/rooms/") && path.endsWith("/messages")) {

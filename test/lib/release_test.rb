@@ -2533,7 +2533,8 @@ class ReleaseTest < ActiveSupport::TestCase
     end
 
     def portable_release_shell(command)
-      command.gsub("mv -T ", "mv ").gsub("ln -T ", "ln ").gsub("stat -c %h", "stat -f %l")
+      command = command.gsub("mv -T ", "mv ").gsub("ln -T ", "ln ")
+      RbConfig::CONFIG.fetch("host_os").match?(/darwin/) ? command.gsub("stat -c %h", "stat -f %l") : command
     end
 
     def local_publisher

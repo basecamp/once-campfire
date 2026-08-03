@@ -125,7 +125,8 @@ class WebShareTest < ApplicationSystemTestCase
         const originalFetch = window.fetch;
         let delayedAttachmentFetch = false;
         window.fetch = async function(input, options = {}) {
-          const url = input instanceof Request ? input.url : input.toString();
+          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
+          const url = request ? request.url : String(input);
           const path = new URL(url, window.location.origin).pathname;
           if (!delayedAttachmentFetch && path.endsWith("/attachment")) {
             delayedAttachmentFetch = true;

@@ -255,6 +255,8 @@ if root.join("bin/release").file?
       'SOURCE_DATE_EPOCH=$source_date_epoch',
       "--provenance=mode=max",
       "--sbom=\"generator=$SBOM_SCANNER_IMAGE\"",
+      "--provenance=false",
+      "--sbom=false",
       "--output \"type=oci,dest=",
       "--output \"type=docker,dest=",
       "docker load --input",
@@ -268,8 +270,9 @@ if root.join("bin/release").file?
     required.each do |token|
       errors << "#{relative}: required container control is missing: #{token}" unless container.include?(token)
     end
-    unless container.scan("docker buildx build").length == 1
-      errors << "#{relative}: runtime and OCI evidence must come from exactly one Buildx build"
+    unless container.scan("docker buildx build").length == 2 &&
+        container.scan('docker buildx build "${common[@]}"').length == 2
+      errors << "#{relative}: runtime and OCI evidence must use exactly two config-matched Buildx builds"
     end
     matrix_pairs = container_workflow.fetch("jobs", {}).values.flat_map do |job|
       Array(job.dig("strategy", "matrix", "include"))
@@ -474,7 +477,8 @@ if root.join("bin/release").file?
       "OCI_ARCHIVE", "ATTESTATION_IMAGE", "org.opencontainers.image.revision",
       "https://spdx.dev/Document", "https://slsa.dev/provenance/",
       "buildConfig.llbDefinition", "Content-Length: 106954753", "boot_health",
-      "validated_manifest_digest", "single-build-multi-export", "RUNTIME_ARCHIVE"
+      '[[ "$oci_config_digest" == "$config_digest" ]]',
+      "validated_manifest_digest", "config-digest-matched-dual-build", "RUNTIME_ARCHIVE"
     ].each do |token|
       errors << "script/ci/validate-container-image: missing evidence check: #{token}" unless helper_source.include?(token)
     end

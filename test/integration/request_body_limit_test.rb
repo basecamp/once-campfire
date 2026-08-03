@@ -80,7 +80,6 @@ class RequestBodyLimitTest < ActiveSupport::TestCase
     def raw_request(port, request)
       TCPSocket.open("127.0.0.1", port) do |socket|
         socket.write request
-        socket.close_write
         socket.read
       end
     end

@@ -10,12 +10,14 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
     result = page.evaluate_async_script <<~JAVASCRIPT
       const done = arguments[0];
       (async () => {
+        const nextTask = () => new Promise((resolve) => window.setTimeout(resolve, 0));
         const area = document.querySelector("#message-area");
         const identifiers = area.dataset.controller.split(/\s+/).filter((identifier) => identifier !== "presence");
         area.dataset.controller = identifiers.join(" ");
-        await new Promise(requestAnimationFrame);
+        await nextTask();
 
-        const { cable } = await import("@hotwired/turbo-rails");
+        const imports = JSON.parse(document.querySelector("script[type='importmap']").textContent).imports;
+        const { cable } = await import(imports["@hotwired/turbo-rails"]);
         const consumer = await cable.getConsumer();
         let callbacks;
         let resolveSubscription;
@@ -41,16 +43,16 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
         });
 
         area.dataset.controller = `${identifiers.join(" ")} presence`;
-        while (!resolveSubscription) await new Promise(requestAnimationFrame);
+        while (!resolveSubscription) await nextTask();
         area.dataset.controller = identifiers.join(" ");
-        await new Promise(requestAnimationFrame);
+        await nextTask();
         resolveSubscription({
           send: () => {},
           unsubscribe: () => unsubscribeCalls += 1
         });
-        await new Promise(requestAnimationFrame);
+        await nextTask();
         callbacks.connected();
-        await new Promise(requestAnimationFrame);
+        await nextTask();
 
         cable.setConsumer(consumer);
         window.setInterval = setInterval;
@@ -68,12 +70,14 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
     result = page.evaluate_async_script <<~JAVASCRIPT
       const done = arguments[0];
       (async () => {
+        const nextTask = () => new Promise((resolve) => window.setTimeout(resolve, 0));
         const area = document.querySelector("#message-area");
         const identifiers = area.dataset.controller.split(/\s+/).filter((identifier) => identifier !== "presence");
         area.dataset.controller = identifiers.join(" ");
-        await new Promise(requestAnimationFrame);
+        await nextTask();
 
-        const { cable } = await import("@hotwired/turbo-rails");
+        const imports = JSON.parse(document.querySelector("script[type='importmap']").textContent).imports;
+        const { cable } = await import(imports["@hotwired/turbo-rails"]);
         const consumer = await cable.getConsumer();
         const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
         const setTimeout = window.setTimeout;
@@ -109,13 +113,13 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
         Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
 
         area.dataset.controller = `${identifiers.join(" ")} presence`;
-        while (!callbacks) await new Promise(requestAnimationFrame);
-        await new Promise(requestAnimationFrame);
+        while (!callbacks) await nextTask();
+        await nextTask();
         callbacks.connected();
         Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
         document.dispatchEvent(new Event("visibilitychange"));
         area.dataset.controller = identifiers.join(" ");
-        await new Promise(requestAnimationFrame);
+        await nextTask();
         delayedVisibilityChange();
 
         cable.setConsumer(consumer);
@@ -139,12 +143,14 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
     result = page.evaluate_async_script <<~JAVASCRIPT
       const done = arguments[0];
       (async () => {
+        const nextTask = () => new Promise((resolve) => window.setTimeout(resolve, 0));
         const area = document.querySelector("#message-area");
         const identifiers = area.dataset.controller.split(/\s+/).filter((identifier) => identifier !== "presence");
         area.dataset.controller = identifiers.join(" ");
-        await new Promise(requestAnimationFrame);
+        await nextTask();
 
-        const { cable } = await import("@hotwired/turbo-rails");
+        const imports = JSON.parse(document.querySelector("script[type='importmap']").textContent).imports;
+        const { cable } = await import(imports["@hotwired/turbo-rails"]);
         const consumer = await cable.getConsumer();
         const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
         const setInterval = window.setInterval;
@@ -173,16 +179,16 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
         Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
 
         area.dataset.controller = `${identifiers.join(" ")} presence`;
-        while (!callbacks) await new Promise(requestAnimationFrame);
-        await new Promise(requestAnimationFrame);
+        while (!callbacks) await nextTask();
+        await nextTask();
         callbacks.connected();
-        await new Promise(requestAnimationFrame);
+        await nextTask();
         callbacks.disconnected();
         callbacks.connected();
-        await new Promise(requestAnimationFrame);
+        await nextTask();
 
         area.dataset.controller = identifiers.join(" ");
-        await new Promise(requestAnimationFrame);
+        await nextTask();
         cable.setConsumer(consumer);
         window.setInterval = setInterval;
         if (visibilityDescriptor) {

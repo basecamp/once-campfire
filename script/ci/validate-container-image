@@ -155,7 +155,7 @@ if [[ -n "$oci_archive" ]]; then
   [[ "$sbom_count" -eq 1 && "$provenance_count" -eq 1 ]]
   oci_archive_sha256=$(file_sha256 "$oci_archive")
   runtime_archive_sha256=$(file_sha256 "$runtime_archive")
-  runtime_binding="single-build-multi-export"
+  runtime_binding="config-digest-matched-dual-build"
   rm -rf "$oci_root"
   trap - EXIT
 elif [[ -n "$attestation_image" ]]; then

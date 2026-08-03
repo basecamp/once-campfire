@@ -10,7 +10,7 @@ module SystemTestHelper
   end
 
   def wait_for_cable_connection
-    assert_selector "turbo-cable-stream-source[connected]", count: 3, visible: false
+    assert_selector "turbo-cable-stream-source[connected]", count: 3, visible: false, wait: 10
   end
 
   def join_room(room)

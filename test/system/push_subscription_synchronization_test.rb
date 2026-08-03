@@ -102,9 +102,9 @@ class PushSubscriptionSynchronizationTest < ApplicationSystemTestCase
         window.pushSynchronizationCountForTest = 0;
         const fetchForPushSynchronizationTest = window.fetch;
         window.fetch = function(input, options = {}) {
-          const request = input instanceof Request ? input : null;
-          const url = new URL(request ? request.url : input, window.location.origin);
-          const method = request ? request.method : options.method;
+          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
+          const url = new URL(request ? request.url : String(input), window.location.origin);
+          const method = String(request?.method || options.method || "GET").toUpperCase();
           if (method === "POST" && url.pathname.endsWith("/push_subscriptions")) {
             window.pushSynchronizationCountForTest += 1;
           }
