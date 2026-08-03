@@ -76,7 +76,14 @@ start_container() {
     --mount "type=volume,src=$volume,dst=/rails/storage" \
     "${runtime_env[@]}" "$@" "$image")
   containers+=("$container")
-  wait_for_http "http://127.0.0.1:$port/up"
+  if ! wait_for_http "http://127.0.0.1:$port/up"; then
+    printf 'Container failed to become healthy: %s\n' "$container" >&2
+    docker inspect --format \
+      'status={{.State.Status}} exit_code={{.State.ExitCode}} error={{json .State.Error}}' \
+      "$container" >&2 || true
+    docker logs "$container" >&2 || true
+    return 1
+  fi
   STARTED_CONTAINER=$container
 }
 

@@ -539,7 +539,8 @@ if root.join("bin/release").file?
       '[[ "$retained_receipt" != *"$backup_authentication_key"* ]]',
       '[[ "$retained_receipt" != *"$backup_encryption_key"* ]]',
       "rewrite_archive_installation_fingerprint", "Backup archive ID does not match",
-      "Backup archive belongs to a different Campfire installation", "Chrome/120.0.0.0"
+      "Backup archive belongs to a different Campfire installation", "Chrome/120.0.0.0",
+      'docker logs "$container" >&2'
     ].each do |token|
       errors << "script/ci/verify-image-recovery: missing recovery receipt control: #{token}" unless recovery_source.include?(token)
     end
