@@ -126,7 +126,10 @@ if [[ -n "$oci_archive" ]]; then
   oci_config_digest=$(jq -r '.config.digest' "$runnable_manifest")
   [[ "$oci_config_digest" == "$config_digest" ]]
   cp "$oci_root/blobs/sha256/${oci_config_digest#sha256:}" "$evidence_directory/oci-image-config.json"
-  cp "$build_metadata" "$evidence_directory/build-metadata.json"
+  retained_build_metadata="$evidence_directory/build-metadata.json"
+  if [[ ! "$build_metadata" -ef "$retained_build_metadata" ]]; then
+    cp "$build_metadata" "$retained_build_metadata"
+  fi
 
   mapfile -t attestation_digests < <(jq -r --arg digest "$runnable_digest" '
     .manifests[] |
