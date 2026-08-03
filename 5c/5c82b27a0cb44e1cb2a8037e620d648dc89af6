@@ -1,0 +1,46 @@
+app/controllers/rooms/closeds_controller.rb
+  s_eba0ee92a6f828::t_b693f5114810e1 45-50
+app/controllers/rooms/opens_controller.rb
+  s_eba0ee92a6f828::t_54f5ea1438a2b7 43-48
+app/controllers/rooms_controller.rb
+  s_eba0ee92a6f828::t_0e88421a4d1520 23,30-33
+  s_f2f54a5f353032::t_d8395b0a9fdeb1 34-35
+test/controllers/rooms/directs_controller_test.rb
+  s_eba0ee92a6f828::t_72a15bbd465424 32-61
+test/controllers/rooms/closeds_controller_test.rb
+  s_eba0ee92a6f828::t_ebbc6df4ceefe4 69-76,79-80
+  s_eba0ee92a6f828::t_5b8fcc93c6568a 77-78
+test/controllers/rooms/opens_controller_test.rb
+  s_eba0ee92a6f828::t_de34a121f3f16b 67-68,76-77
+  s_eba0ee92a6f828::t_a922306227410a 60-66,69-75,78
+app/models/room.rb
+  s_eba0ee92a6f828::t_8681f2b03fb6b4 70-78
+  s_eba0ee92a6f828::t_32577e1468e953 25-26
+app/controllers/rooms/directs_controller.rb
+  s_eba0ee92a6f828::t_f61add65b134cc 32-33,37-39
+  s_f2f54a5f353032::t_8f067b38b53269 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "5c5c82b27a0cb44e1cb2a8037e620d648dc89af6",
+  "prompts": {},
+  "sessions": {
+    "s_eba0ee92a6f828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37e2bc1d-8962-4049-98cc-edf768f74dec",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    },
+    "s_f2f54a5f353032": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc7b59d4-cff4-4888-9ad8-6d8488e75630",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
