@@ -15,6 +15,7 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   when "headless_firefox"
     driven_by :selenium, using: :headless_firefox, screen_size: DESKTOP_SCREEN_SIZE,
       options: { name: :selenium_headless_firefox } do |options|
+        options.unhandled_prompt_behavior = :ignore
         options.web_socket_url = true
       end
   when "safari"

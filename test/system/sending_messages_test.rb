@@ -288,7 +288,7 @@ class SendingMessagesTest < ApplicationSystemTestCase
       find(".message__edit-btn").click
 
       accept_confirm(wait: 5) do
-        find_button("Delete message").send_keys(:enter)
+        click_on "Delete message"
       end
     end
 

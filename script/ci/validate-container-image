@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+report_error() {
+  local status=$1 line=$2 command=$3
+  printf 'Container validation failed at line %s: %s\n' "$line" "$command" >&2
+  exit "$status"
+}
+trap 'report_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 image=${IMAGE:?IMAGE is required}
 platform=${CONTAINER_PLATFORM:?CONTAINER_PLATFORM is required}
@@ -166,14 +173,16 @@ if [[ -n "$oci_archive" ]]; then
           cp "$statement" "$provenance_path"
           jq -e \
             --arg digest "${runnable_digest#sha256:}" \
-            --arg platform "$platform" \
+            --arg architecture "$architecture" \
             --arg revision "$source_revision" '
-            (.predicateType | startswith("https://slsa.dev/provenance/")) and
+            .predicateType == "https://slsa.dev/provenance/v1" and
             any(.subject[]?; .digest.sha256 == $digest) and
-            .predicate.buildType == "https://mobyproject.org/buildkit@v1" and
-            .predicate.invocation.environment.platform == $platform and
-            (.predicate.materials | length) >= 2 and
-            (.predicate.buildConfig.llbDefinition | length) > 0 and
+            .predicate.buildDefinition.buildType ==
+              "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
+            (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
+            (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
+            any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
+              .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
             (.predicate | tostring | contains($revision))
           ' "$statement" >/dev/null
           ;;
