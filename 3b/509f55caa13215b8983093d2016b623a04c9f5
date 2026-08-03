@@ -1,0 +1,29 @@
+app/channels/unread_rooms_channel.rb
+  s_eba0ee92a6f828::t_cbd94e9939507a 2-8,10
+test/channels/unread_rooms_channel_test.rb
+  s_eba0ee92a6f828::t_b7e33319d9c602 11,14,18,28,32,36-40,42,44-45
+  s_eba0ee92a6f828::t_72748164735b73 29
+  s_eba0ee92a6f828::t_ce35679c256408 1-10,12-13,15-17,20-27,30-31,33-35,41,43,46-47
+  s_eba0ee92a6f828::t_f35ae59f6861a1 19
+app/models/message/broadcasts.rb
+  s_eba0ee92a6f828::t_263376cf32aac4 4
+  s_eba0ee92a6f828::t_9e4c597c71afdc 10-18
+test/controllers/messages_controller_test.rb
+  s_eba0ee92a6f828::t_c56f0a908d6da5 60-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "3b509f55caa13215b8983093d2016b623a04c9f5",
+  "prompts": {},
+  "sessions": {
+    "s_eba0ee92a6f828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37e2bc1d-8962-4049-98cc-edf768f74dec",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
