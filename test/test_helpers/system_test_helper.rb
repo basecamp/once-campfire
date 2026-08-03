@@ -1,6 +1,6 @@
 module SystemTestHelper
-  def sign_in(email_address, password = "secret123456")
-    visit root_url
+  def sign_in(email_address, password = "secret123456", navigate: true)
+    visit root_url if navigate
 
     fill_in "email_address", with: email_address
     fill_in "password", with: password

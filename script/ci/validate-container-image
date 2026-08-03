@@ -294,6 +294,8 @@ request_limit_status=$(curl --silent --show-error --http1.1 --max-time 60 \
 rm -f "$oversized_request"
 printf '%s\n' "$request_limit_status" > "$evidence_directory/request-limit-response.txt"
 [[ "$request_limit_status" =~ ^HTTP/1\.[01][[:space:]]413$ ]]
+sleep 1
+curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$port/up" >/dev/null
 
 docker stop --timeout 35 "$container" >/dev/null
 [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == false ]]

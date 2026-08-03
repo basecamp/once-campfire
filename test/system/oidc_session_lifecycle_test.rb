@@ -49,7 +49,7 @@ class OidcSessionLifecycleTest < ApplicationSystemTestCase
 
     assert_text "Your session has expired.", wait: 6
     click_on "Sign in again"
-    sign_in user.email_address
+    sign_in user.email_address, navigate: false
     visit room_url(room)
 
     assert_equal "Draft survives session expiry",

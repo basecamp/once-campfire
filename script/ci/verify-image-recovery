@@ -48,6 +48,7 @@ runtime_env=(
   --env VAPID_PUBLIC_KEY=recovery-smoke-public-key
   --env VAPID_PRIVATE_KEY=recovery-smoke-private-key
   --env WEB_CONCURRENCY=1
+  --env RAILS_LOG_LEVEL=warn
 )
 
 cleanup() {
