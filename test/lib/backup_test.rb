@@ -34,9 +34,11 @@ class BackupTest < ActiveSupport::TestCase
       stored_file = storage.join("files", "room", "attachment.txt")
       stored_file.dirname.mkpath
       stored_file.write "irreplaceable attachment"
+      File.chmod 0o600, stored_file
       redis_file = storage.join("redis", "appendonly.aof")
       redis_file.dirname.mkpath
       redis_file.write "durable queue state"
+      File.chmod 0o600, redis_file
       CampfireBackup::RedisValidator.stubs(:validate!)
 
       output = capture_io do
@@ -56,6 +58,9 @@ class BackupTest < ActiveSupport::TestCase
       assert_equal %w[ files/room/attachment.txt installation-identifier redis/appendonly.aof ], manifest.fetch("files").pluck("path")
       assert_equal "irreplaceable attachment", copied_file.read
       assert_equal "durable queue state", generation.join("payload", "redis", "appendonly.aof").read
+      assert_equal 0o750, generation.stat.mode & 0o777
+      assert_equal 0o640, copied_file.stat.mode & 0o777
+      assert_equal 0o640, generation.join("payload", "redis", "appendonly.aof").stat.mode & 0o777
       stored_file.write "changed after publication"
       capture_io do
         assert BackupVerifier.verify(

@@ -288,7 +288,7 @@ docker run --rm \
 backup_id="20260731T120000Z-0123456789abcdef" # Use the printed value.
 fingerprint="replace-with-printed-installation-fingerprint"
 docker run --rm \
-  --user "$(id -u):$(id -g)" \
+  --user "$(id -u):1000" \
   --volumes-from campfire:ro \
   --volume "$PWD":/archives \
   --tmpfs "/backup-plaintext:rw,nosuid,nodev,noexec,size=8g,uid=$(id -u),gid=$(id -g),mode=0700" \
@@ -301,6 +301,11 @@ docker run --rm \
   "$IMAGE" script/admin/archive-backup \
   "/rails/storage/backups/$backup_id" /archives
 ```
+
+Prepared generations remain owner-writable but grant read and directory
+traversal to the image runtime group. Keep the host UID so the encrypted
+archive is host-owned, and use the image runtime GID `1000` to read the source
+generation without making it world-readable or running the archiver as root.
 
 Size the private tmpfs above the compressed tar plus the extracted verification
 copy; `8g` is only an example and must be adjusted for the installation. If RAM

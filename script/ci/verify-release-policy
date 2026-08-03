@@ -452,6 +452,9 @@ if root.join("bin/release").file?
     required.each do |token|
       errors << "#{relative}: required release evidence control is missing: #{token}" unless publish.include?(token)
     end
+    unless publish.include?('archive_json=$(docker run --rm --user "$(id -u):1000"')
+      errors << "#{relative}: release archive must use the host UID and Campfire runtime GID 1000"
+    end
     matrix_pairs = publish_workflow.fetch("jobs", {}).values.flat_map do |job|
       Array(job.dig("strategy", "matrix", "include"))
     end.filter_map do |entry|
@@ -499,6 +502,9 @@ if root.join("bin/release").file?
     recovery_source = recovery.read
     reject_stale_backup_references.call(recovery_source, "script/ci/verify-image-recovery")
     validate_ci_backup_credentials.call(recovery_source, "script/ci/verify-image-recovery")
+    unless recovery_source.include?('archive_json=$(docker_run --rm --user "$(id -u):1000"')
+      errors << "script/ci/verify-image-recovery: archive must use the host UID and Campfire runtime GID 1000"
+    end
     [
       "Legacy image must use an immutable sha256 digest", "--platform \"$container_platform\"",
       "upgrade_receipt_sha256", "worker_execution", "RECOVERY_EVIDENCE_PATH",

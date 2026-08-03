@@ -221,6 +221,35 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     end
   end
 
+  test "policy requires host-owned archives to use the Campfire runtime group" do
+    mutations = [
+      [
+        ".github/workflows/publish-image.yml",
+        'archive_json=$(docker run --rm --user "$(id -u):1000"',
+        'archive_json=$(docker run --rm --user "$(id -u):$(id -g)"',
+        "release archive must use the host UID and Campfire runtime GID 1000"
+      ],
+      [
+        "script/ci/verify-image-recovery",
+        'archive_json=$(docker_run --rm --user "$(id -u):1000"',
+        'archive_json=$(docker_run --rm --user "$(id -u):$(id -g)"',
+        "archive must use the host UID and Campfire runtime GID 1000"
+      ]
+    ]
+
+    mutations.each do |relative, expected, replacement, error|
+      with_repository_policy_fixture do |root|
+        path = root.join(relative)
+        path.write path.read.sub(expected, replacement)
+
+        _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+        assert_not status.success?
+        assert_match error, stderr
+      end
+    end
+  end
+
   test "policy rejects pull request validation with registry mutation authority" do
     with_repository_policy_fixture do |root|
       workflow = root.join(".github/workflows/container.yml")

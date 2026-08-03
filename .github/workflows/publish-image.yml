@@ -247,7 +247,7 @@ jobs:
             --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
             --env EXPECTED_ENVIRONMENT=production \
             campfire-release-candidate script/admin/verify-backup "/rails/storage/backups/$backup_id"
-          archive_json=$(docker run --rm --user "$(id -u):$(id -g)" \
+          archive_json=$(docker run --rm --user "$(id -u):1000" \
             --volume "$source_volume":/rails/storage:ro \
             --volume "$archive_directory":/archive \
             "${runtime_env[@]}" \

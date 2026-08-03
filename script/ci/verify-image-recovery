@@ -128,7 +128,7 @@ backup_and_install() {
     --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
     --env EXPECTED_ENVIRONMENT=production \
     "$target_image" script/admin/verify-backup "/rails/storage/backups/$backup_id"
-  archive_json=$(docker_run --rm --user "$(id -u):$(id -g)" \
+  archive_json=$(docker_run --rm --user "$(id -u):1000" \
     --mount "type=volume,src=$source_volume,dst=/rails/storage,readonly" \
     --volume "$archive_directory":/archive \
     "${runtime_env[@]}" \

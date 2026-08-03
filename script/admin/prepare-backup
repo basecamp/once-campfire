@@ -192,6 +192,7 @@ class Backup
 
         write_json staging_directory.join("manifest.json"), manifest
         verify_staged_files!(staging_directory, manifest, authentication_key:)
+        make_generation_group_readable! staging_directory
         flush_directory_tree staging_directory
         assert_source_database_semantics! database_path, database_identity, operation_lock
         File.rename staging_directory, generation_directory
@@ -366,6 +367,27 @@ class Backup
         verify_metadata! staging_directory.join(manifest.dig(:database, :path)), manifest.fetch(:database)
         manifest.fetch(:files).each do |metadata|
           verify_metadata! staging_directory.join("payload", metadata.fetch(:path)), metadata
+        end
+      end
+
+      def make_generation_group_readable!(generation_directory)
+        paths = [ generation_directory ] + Dir.glob(
+          generation_directory.join("**", "*"), File::FNM_DOTMATCH
+        ).filter_map do |name|
+          path = Pathname(name)
+          path unless %w[ . .. ].include?(path.basename.to_s)
+        end
+        paths.each do |path|
+          stat = path.lstat
+          mode = if stat.directory?
+            (stat.mode & 0o777) | 0o050
+          elsif stat.file?
+            (stat.mode & 0o777) | 0o040
+          else
+            raise "Backup generation contains a link or special file"
+          end
+          File.chmod mode, path
+          flush_file path if stat.file?
         end
       end
 
