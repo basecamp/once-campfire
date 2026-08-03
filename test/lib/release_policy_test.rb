@@ -225,15 +225,21 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     mutations = [
       [
         ".github/workflows/publish-image.yml",
-        'archive_json=$(docker run --rm --user "$(id -u):1000"',
+        'archive_json=$(docker run --rm --user "$(id -u):$(id -g)" --group-add 1000',
         'archive_json=$(docker run --rm --user "$(id -u):$(id -g)"',
-        "release archive must use the host UID and Campfire runtime GID 1000"
+        "release archive must use the host identity with Campfire runtime group access"
       ],
       [
         "script/ci/verify-image-recovery",
-        'archive_json=$(docker_run --rm --user "$(id -u):1000"',
+        'archive_json=$(docker_run --rm --user "$(id -u):$(id -g)" --group-add 1000',
         'archive_json=$(docker_run --rm --user "$(id -u):$(id -g)"',
-        "archive must use the host UID and Campfire runtime GID 1000"
+        "archive must use the host identity with Campfire runtime group access"
+      ],
+      [
+        "script/ci/verify-image-recovery",
+        '--group-add "$(id -g)"',
+        "--group-add 1000",
+        "guarded-upgrade archive consumers must add the host group"
       ]
     ]
 

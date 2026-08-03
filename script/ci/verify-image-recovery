@@ -36,6 +36,7 @@ esac
 [[ "$legacy_revision" =~ ^[0-9a-f]{40}$ ]]
 [[ "$target_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 work_directory=$(mktemp -d "${RUNNER_TEMP:-/tmp}/campfire-recovery.XXXXXX")
+chmod 0710 "$work_directory"
 
 docker_run() {
   docker run --platform "$container_platform" "$@"
@@ -107,7 +108,7 @@ backup_and_install() {
     printf 'Unknown source format: %s\n' "$source_format" >&2
     return 1
   fi
-  mkdir -m 700 "$archive_directory" "$archive_directory/extracted"
+  mkdir -m 750 "$archive_directory" "$archive_directory/extracted"
   local backup_json backup_id fingerprint archive_json
   backup_json=$(docker_run --rm \
     --mount "type=volume,src=$source_volume,dst=/rails/storage" \
@@ -128,7 +129,7 @@ backup_and_install() {
     --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
     --env EXPECTED_ENVIRONMENT=production \
     "$target_image" script/admin/verify-backup "/rails/storage/backups/$backup_id"
-  archive_json=$(docker_run --rm --user "$(id -u):1000" \
+  archive_json=$(docker_run --rm --user "$(id -u):$(id -g)" --group-add 1000 \
     --mount "type=volume,src=$source_volume,dst=/rails/storage,readonly" \
     --volume "$archive_directory":/archive \
     "${runtime_env[@]}" \
@@ -212,6 +213,8 @@ rewrite_archive_installation_fingerprint() {
             archive_io: archive, authentication: JSON.generate(statement),
             destination_io: destination, keyring:
           )
+          destination.chmod 0o640
+          destination.fsync
         end
       end
     ensure
@@ -452,6 +455,7 @@ legacy_artifact_container="/recovery/legacy/${legacy_artifact##*/}"
 
 expect_failure "Backup archive ID does not match" \
   docker_run --rm \
+  --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$work_directory":/recovery:ro \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
@@ -462,13 +466,15 @@ expect_failure "Backup archive ID does not match" \
 assert_no_upgrade_receipt "$legacy_upgrade_volume"
 
 foreign_directory="$work_directory/foreign"
-mkdir -m 700 "$foreign_directory" "$foreign_directory/plaintext-stage"
+mkdir -m 750 "$foreign_directory"
+mkdir -m 700 "$foreign_directory/plaintext-stage"
 foreign_artifact_container="/recovery/foreign/${legacy_artifact##*/}"
 rewrite_archive_installation_fingerprint \
   "$legacy_artifact_container" "$foreign_artifact_container" \
   /recovery/foreign/plaintext-stage "$(printf '0%.0s' {1..64})"
 expect_failure "Backup archive belongs to a different Campfire installation" \
   docker_run --rm \
+  --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$work_directory":/recovery:ro \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
@@ -479,11 +485,13 @@ expect_failure "Backup archive belongs to a different Campfire installation" \
 assert_no_upgrade_receipt "$legacy_upgrade_volume"
 
 tampered_directory="$work_directory/tampered"
-mkdir -m 700 "$tampered_directory"
+mkdir -m 750 "$tampered_directory"
 cp "$legacy_artifact" "$tampered_directory/${legacy_artifact##*/}"
+chmod 0640 "$tampered_directory/${legacy_artifact##*/}"
 printf 'tampered\n' >> "$tampered_directory/${legacy_artifact##*/}"
 expect_failure "Encrypted backup has trailing bytes" \
   docker_run --rm \
+  --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$tampered_directory":/recovery:ro \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
@@ -494,6 +502,7 @@ expect_failure "Encrypted backup has trailing bytes" \
 assert_no_upgrade_receipt "$legacy_upgrade_volume"
 
 docker_run --rm \
+  --group-add "$(id -g)" \
   --mount "type=volume,src=$legacy_upgrade_volume,dst=/rails/storage" \
   --volume "$work_directory":/recovery:ro \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
@@ -560,6 +569,7 @@ expect_failure "GIT_REVISION does not match the immutable Campfire build identit
   "$target_image" bin/boot
 
 start_container "$target_image" "$legacy_upgrade_volume" 3104 \
+  --group-add "$(id -g)" \
   --volume "$work_directory":/recovery:ro \
   --env BACKUP_AUTHENTICATION_KEY="$backup_authentication_key" \
   --env BACKUP_ENCRYPTION_KEY="$backup_encryption_key" \

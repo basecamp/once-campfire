@@ -113,6 +113,7 @@ class BackupArchiver
               archive_io: plaintext_archive, authentication: JSON.generate(statement),
               destination_io: encrypted_archive, keyring: encryption_keyring
             )
+            encrypted_archive.chmod 0o640
             encrypted_archive.fsync
           end
         end

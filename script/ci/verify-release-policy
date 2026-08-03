@@ -452,8 +452,8 @@ if root.join("bin/release").file?
     required.each do |token|
       errors << "#{relative}: required release evidence control is missing: #{token}" unless publish.include?(token)
     end
-    unless publish.include?('archive_json=$(docker run --rm --user "$(id -u):1000"')
-      errors << "#{relative}: release archive must use the host UID and Campfire runtime GID 1000"
+    unless publish.include?('archive_json=$(docker run --rm --user "$(id -u):$(id -g)" --group-add 1000')
+      errors << "#{relative}: release archive must use the host identity with Campfire runtime group access"
     end
     matrix_pairs = publish_workflow.fetch("jobs", {}).values.flat_map do |job|
       Array(job.dig("strategy", "matrix", "include"))
@@ -502,8 +502,11 @@ if root.join("bin/release").file?
     recovery_source = recovery.read
     reject_stale_backup_references.call(recovery_source, "script/ci/verify-image-recovery")
     validate_ci_backup_credentials.call(recovery_source, "script/ci/verify-image-recovery")
-    unless recovery_source.include?('archive_json=$(docker_run --rm --user "$(id -u):1000"')
-      errors << "script/ci/verify-image-recovery: archive must use the host UID and Campfire runtime GID 1000"
+    unless recovery_source.include?('archive_json=$(docker_run --rm --user "$(id -u):$(id -g)" --group-add 1000')
+      errors << "script/ci/verify-image-recovery: archive must use the host identity with Campfire runtime group access"
+    end
+    unless recovery_source.scan('--group-add "$(id -g)"').length == 5
+      errors << "script/ci/verify-image-recovery: guarded-upgrade archive consumers must add the host group"
     end
     [
       "Legacy image must use an immutable sha256 digest", "--platform \"$container_platform\"",

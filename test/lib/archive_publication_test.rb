@@ -35,6 +35,7 @@ class ArchivePublicationTest < ActiveSupport::TestCase
         report.fetch("authentication_key_id")
       assert_equal [ CampfireBackup::OperationLock::SHARED_FILENAME, archive.basename.to_s ].sort,
         destination.children.map { _1.basename.to_s }.sort
+      assert_equal 0o640, archive.stat.mode & 0o777
       refute_includes envelope, "manifest.json"
       refute_includes envelope, "proof.txt"
       refute_includes envelope, FINGERPRINT
