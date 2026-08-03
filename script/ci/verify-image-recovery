@@ -357,8 +357,9 @@ docker exec "$current_source" bin/rails runner '
   room.memberships.find_or_create_by!(user:) { _1.involvement = room.default_involvement }
   unless room.messages.exists?
     Current.user = user
-    message = room.messages.create!(creator: user, body: "Current recovery history")
-    message.attachment.attach(io: StringIO.new("current upload"), filename: "current.txt", content_type: "text/plain")
+    room.messages.create!(creator: user, body: "Current recovery history")
+    upload = room.messages.create!(creator: user, body: "Current recovery upload")
+    upload.attachment.attach(io: StringIO.new("current upload"), filename: "current.txt", content_type: "text/plain")
   end
   Resque.redis.set("recovery-smoke", "durable")
 '
@@ -390,8 +391,9 @@ docker exec "$legacy_source" bin/rails runner '
   room = Rooms::Open.create!(name: "Legacy Recovery Room", creator: user)
   room.memberships.find_or_create_by!(user:) { _1.involvement = room.default_involvement }
   Current.user = user
-  message = room.messages.create!(creator: user, body: "Legacy recovery history")
-  message.attachment.attach(io: StringIO.new("legacy upload"), filename: "legacy.txt", content_type: "text/plain")
+  room.messages.create!(creator: user, body: "Legacy recovery history")
+  upload = room.messages.create!(creator: user, body: "Legacy recovery upload")
+  upload.attachment.attach(io: StringIO.new("legacy upload"), filename: "legacy.txt", content_type: "text/plain")
 '
 stop_container "$legacy_source"
 legacy_exit_code=$STOPPED_EXIT_CODE
