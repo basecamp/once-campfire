@@ -68,6 +68,15 @@ wait_for_http() {
   curl --fail --retry 30 --retry-all-errors --retry-delay 1 "$1"
 }
 
+report_container_failure() {
+  local message=$1 container=$2
+  printf '%s: %s\n' "$message" "$container" >&2
+  docker inspect --format \
+    'status={{.State.Status}} exit_code={{.State.ExitCode}} error={{json .State.Error}}' \
+    "$container" >&2 || true
+  docker logs "$container" >&2 || true
+}
+
 start_container() {
   local image=$1 volume=$2 port=$3
   shift 3
@@ -77,22 +86,24 @@ start_container() {
     "${runtime_env[@]}" "$@" "$image")
   containers+=("$container")
   if ! wait_for_http "http://127.0.0.1:$port/up"; then
-    printf 'Container failed to become healthy: %s\n' "$container" >&2
-    docker inspect --format \
-      'status={{.State.Status}} exit_code={{.State.ExitCode}} error={{json .State.Error}}' \
-      "$container" >&2 || true
-    docker logs "$container" >&2 || true
+    report_container_failure "Container failed to become healthy" "$container"
     return 1
   fi
   STARTED_CONTAINER=$container
 }
 
 stop_container() {
-  local container=$1
-  docker stop --timeout 35 "$container" >/dev/null
-  [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == false ]]
+  local container=$1 running
+  if ! docker stop --timeout 35 "$container" >/dev/null; then
+    report_container_failure "Container failed to stop" "$container"
+    return 1
+  fi
+  running=$(docker inspect --format '{{.State.Running}}' "$container")
   STOPPED_EXIT_CODE=$(docker inspect --format '{{.State.ExitCode}}' "$container")
-  [[ "$STOPPED_EXIT_CODE" == 0 ]]
+  if [[ "$running" != false || "$STOPPED_EXIT_CODE" != 0 ]]; then
+    report_container_failure "Container stopped unsuccessfully" "$container"
+    return 1
+  fi
   docker rm "$container" >/dev/null
   local retained=()
   for candidate in "${containers[@]}"; do

@@ -283,11 +283,17 @@ class OperationLockTest < ActiveSupport::TestCase
       lock = CampfireBackup::OperationLock.acquire(target, purpose: "parent", shared: true)
       script = <<~'RUBY'
         require "campfire_backup/operation_lock"
-        2.times do
+        2.times do |attempt|
+          file_descriptor = ENV.fetch(CampfireBackup::OperationLock::INHERITED_FILE_FD_ENV)
+          shared_descriptor = ENV.fetch(CampfireBackup::OperationLock::INHERITED_SHARED_FD_ENV)
+          if attempt == 1
+            file_descriptor = Integer(file_descriptor, 10)
+            shared_descriptor = Integer(shared_descriptor, 10)
+          end
           lock = CampfireBackup::OperationLock.acquire(
             ARGV.fetch(0), purpose: "child", shared: true,
-            inherited_file_fd: ENV.fetch(CampfireBackup::OperationLock::INHERITED_FILE_FD_ENV),
-            inherited_shared_fd: ENV.fetch(CampfireBackup::OperationLock::INHERITED_SHARED_FD_ENV)
+            inherited_file_fd: file_descriptor,
+            inherited_shared_fd: shared_descriptor
           )
           lock.assert_current!
           lock.release

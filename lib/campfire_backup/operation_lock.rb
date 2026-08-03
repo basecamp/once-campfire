@@ -309,7 +309,8 @@ module CampfireBackup
       end
 
       def inherited_file(descriptor)
-        inherited = File.for_fd(Integer(descriptor, 10), autoclose: false)
+        descriptor = Integer(descriptor, 10) unless descriptor.is_a?(Integer)
+        inherited = File.for_fd(descriptor, autoclose: false)
         inherited.close_on_exec = true
         inherited.dup.tap { _1.close_on_exec = true }
       end
