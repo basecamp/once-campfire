@@ -66,6 +66,9 @@ ENV HTTP_WRITE_TIMEOUT=300
 COPY --from=build --chown=rails:rails /usr/local/bundle /usr/local/bundle
 COPY --from=build --chown=rails:rails /rails /rails
 
+# Install ONCE backup/restore hooks
+COPY --chmod=755 hooks /hooks
+
 # Set version and revision
 ARG APP_VERSION
 ENV APP_VERSION=$APP_VERSION
