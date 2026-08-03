@@ -7,7 +7,7 @@ class CampfireBackup::RedisValidatorTest < ActiveSupport::TestCase
     with_payload do |payload|
       manifest = payload.join("redis", "appendonlydir", "appendonly.aof.manifest")
       manifest.dirname.mkpath
-      manifest.write "file appendonly.aof.1.incr.aof seq 1 type i\n"
+      manifest.write "file appendonly.aof.1.incr.aof seq 1 type i startoffset 0 endoffset 123\n"
       manifest.dirname.join("appendonly.aof.1.incr.aof").write "valid"
       status = stub(success?: true)
       CampfireBackup::Subprocess.expects(:capture3)
@@ -42,6 +42,20 @@ class CampfireBackup::RedisValidatorTest < ActiveSupport::TestCase
       error = assert_raises(RuntimeError) { CampfireBackup::RedisValidator.validate!(payload) }
 
       assert_match "orphaned", error.message
+    end
+  end
+
+  test "rejects incomplete multi-part AOF offsets" do
+    with_payload do |payload|
+      directory = payload.join("redis", "appendonlydir").tap(&:mkpath)
+      directory.join("appendonly.aof.manifest").write(
+        "file appendonly.aof.1.incr.aof seq 1 type i endoffset 123\n"
+      )
+      directory.join("appendonly.aof.1.incr.aof").write "valid bytes"
+
+      error = assert_raises(RuntimeError) { CampfireBackup::RedisValidator.validate!(payload) }
+
+      assert_match "invalid AOF manifest entry", error.message
     end
   end
 

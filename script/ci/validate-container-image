@@ -289,6 +289,7 @@ printf a >> "$oversized_request"
 request_limit_status=$(curl --silent --show-error --http1.1 --max-time 60 \
   --output /dev/null --write-out 'HTTP/%{http_version} %{http_code}' \
   --header 'Content-Type: application/x-www-form-urlencoded' --header 'Expect:' \
+  --header 'Transfer-Encoding: chunked' --header 'Content-Length:' \
   --data-binary "@$oversized_request" "http://127.0.0.1:$port/session")
 rm -f "$oversized_request"
 printf '%s\n' "$request_limit_status" > "$evidence_directory/request-limit-response.txt"

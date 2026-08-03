@@ -77,7 +77,10 @@ module CampfireBackup
         end
 
         def parse_manifest_entry!(line)
-          match = line.match(/\Afile ([^\s\/]+) seq [1-9]\d* type [bih]\n?\z/)
+          offset = /(?:0|[1-9]\d*)/
+          match = line.match(
+            /\Afile ([^\s\/]+) seq [1-9]\d* type [bih](?: startoffset #{offset}(?: endoffset #{offset})?)?\n?\z/
+          )
           raise "Redis backup contains an invalid AOF manifest entry" unless match
 
           match[1]
