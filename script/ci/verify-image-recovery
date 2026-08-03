@@ -194,31 +194,34 @@ rewrite_archive_installation_fingerprint() {
     --env REPLACEMENT_INSTALLATION_FINGERPRINT="$fingerprint" \
     "$target_image" ruby -Ilib \
     -rcampfire_backup/authentication -rcampfire_backup/backup_encryption -rjson -e '
-      authentication_key = CampfireBackup::Authentication.key_from_env
-      keyring = CampfireBackup::BackupEncryption.keyring_from_env!
-      CampfireBackup::BackupEncryption.with_decrypted_archive(
-        ENV.fetch("SOURCE_ARCHIVE"), keyring:,
-        temporary_directory: ENV.fetch("PLAINTEXT_STAGING_DIRECTORY")
-      ) do |archive, authentication, _envelope|
-        evidence = CampfireBackup::Authentication.verify_statement!(
-          JSON.parse(authentication), key: authentication_key
-        )
-        evidence["installation_fingerprint"] = ENV.fetch("REPLACEMENT_INSTALLATION_FINGERPRINT")
-        statement = CampfireBackup::Authentication.sign_statement(evidence, key: authentication_key)
-        File.open(
-          ENV.fetch("DESTINATION_ARCHIVE"),
-          File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600
-        ) do |destination|
-          CampfireBackup::BackupEncryption.encrypt_archive(
-            archive_io: archive, authentication: JSON.generate(statement),
-            destination_io: destination, keyring:
+      keyring = nil
+      begin
+        authentication_key = CampfireBackup::Authentication.key_from_env
+        keyring = CampfireBackup::BackupEncryption.keyring_from_env!
+        CampfireBackup::BackupEncryption.with_decrypted_archive(
+          ENV.fetch("SOURCE_ARCHIVE"), keyring:,
+          temporary_directory: ENV.fetch("PLAINTEXT_STAGING_DIRECTORY")
+        ) do |archive, authentication, _envelope|
+          evidence = CampfireBackup::Authentication.verify_statement!(
+            JSON.parse(authentication), key: authentication_key
           )
-          destination.chmod 0o640
-          destination.fsync
+          evidence["installation_fingerprint"] = ENV.fetch("REPLACEMENT_INSTALLATION_FINGERPRINT")
+          statement = CampfireBackup::Authentication.sign_statement(evidence, key: authentication_key)
+          File.open(
+            ENV.fetch("DESTINATION_ARCHIVE"),
+            File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600
+          ) do |destination|
+            CampfireBackup::BackupEncryption.encrypt_archive(
+              archive_io: archive, authentication: JSON.generate(statement),
+              destination_io: destination, keyring:
+            )
+            destination.chmod 0o640
+            destination.fsync
+          end
         end
+      ensure
+        keyring&.clear!
       end
-    ensure
-      keyring&.clear!
     '
 }
 

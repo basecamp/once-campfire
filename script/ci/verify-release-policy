@@ -4,6 +4,7 @@ require "base64"
 require "open3"
 require "pathname"
 require "rbconfig"
+require "ripper"
 require "yaml"
 
 root = Pathname(ARGV.fetch(0, File.expand_path("../..", __dir__))).expand_path
@@ -520,6 +521,12 @@ if root.join("bin/release").file?
     unless authorization_commands.length == 4 &&
         authorization_commands.all? { _1.include?('"${runtime_env[@]}"') }
       errors << "script/ci/verify-image-recovery: guarded-upgrade authorization must pass the runtime environment"
+    end
+    archive_mutation_ruby = recovery_source[
+      /^\s+-rcampfire_backup\/authentication .* -e '\n(?<source>.*?)^\s+'\s*$/m, :source
+    ]
+    unless archive_mutation_ruby && Ripper.sexp(archive_mutation_ruby)
+      errors << "script/ci/verify-image-recovery: archive mutation Ruby must parse"
     end
     [
       "Legacy image must use an immutable sha256 digest", "--platform \"$container_platform\"",

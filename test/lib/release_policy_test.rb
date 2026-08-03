@@ -276,6 +276,18 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     end
   end
 
+  test "policy rejects invalid inline archive mutation Ruby" do
+    with_repository_policy_fixture do |root|
+      recovery = root.join("script/ci/verify-image-recovery")
+      recovery.write recovery.read.sub("      begin\n        authentication_key", "        authentication_key")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "archive mutation Ruby must parse", stderr
+    end
+  end
+
   test "policy rejects pull request validation with registry mutation authority" do
     with_repository_policy_fixture do |root|
       workflow = root.join(".github/workflows/container.yml")
