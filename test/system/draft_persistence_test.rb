@@ -16,9 +16,9 @@ class DraftPersistenceTest < ApplicationSystemTestCase
   test "a newer draft remains persisted when an earlier submission fails" do
     user = users(:jz)
     room = rooms(:designers)
-    reject_message_posts_after_delay
     sign_in user.email_address
     join_room room
+    reject_message_posts_after_delay
     fill_in_rich_text_area "message_body", with: "Earlier submission"
 
     click_on "Send Message"
@@ -59,9 +59,9 @@ class DraftPersistenceTest < ApplicationSystemTestCase
     user = users(:jz)
     room = rooms(:designers)
     body = "Committed before the response disappeared"
-    drop_first_message_response_after_commit
     sign_in user.email_address
     join_room room
+    drop_first_message_response_after_commit
     page.execute_script("document.querySelector('#message-area turbo-cable-stream-source')?.remove()")
     fill_in_rich_text_area "message_body", with: body
 
@@ -105,38 +105,33 @@ class DraftPersistenceTest < ApplicationSystemTestCase
     end
 
     def reject_message_posts_after_delay
-      install_new_document_script <<~JAVASCRIPT
-        const originalFetch = window.fetch;
-        window.fetch = function(input, options = {}) {
-          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
-          const method = String(request?.method || options.method || "GET").toUpperCase();
-          const url = request ? request.url : String(input);
-          const path = new URL(url, window.location.origin).pathname;
-          if (method === "POST" && path.includes("/rooms/") && path.endsWith("/messages")) {
-            return new Promise((_, reject) => setTimeout(() => reject(new TypeError("simulated network failure")), 750));
+      execute_script_in_page_realm <<~JAVASCRIPT
+        document.addEventListener("turbo:before-fetch-request", (event) => {
+          const { fetchOptions, url } = event.detail;
+          if (fetchOptions.method === "POST" && url.pathname.includes("/rooms/") && url.pathname.endsWith("/messages")) {
+            event.detail.fetchRequest = {
+              response: new Promise((_, reject) => setTimeout(() => reject(new TypeError("simulated network failure")), 750))
+            };
           }
-          return originalFetch(input, options);
-        };
+        });
       JAVASCRIPT
     end
 
     def drop_first_message_response_after_commit
-      install_new_document_script <<~JAVASCRIPT
-        const originalFetch = window.fetch;
+      execute_script_in_page_realm <<~JAVASCRIPT
         let droppedMessageResponse = false;
-        window.fetch = async function(input, options = {}) {
-          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
-          const method = String(request?.method || options.method || "GET").toUpperCase();
-          const url = request ? request.url : String(input);
-          const path = new URL(url, window.location.origin).pathname;
-          const response = await originalFetch(input, options);
-          if (!droppedMessageResponse && method === "POST" && path.includes("/rooms/") && path.endsWith("/messages")) {
+        document.addEventListener("turbo:before-fetch-request", (event) => {
+          const { fetchOptions, url } = event.detail;
+          if (!droppedMessageResponse && fetchOptions.method === "POST" && url.pathname.includes("/rooms/") && url.pathname.endsWith("/messages")) {
             droppedMessageResponse = true;
-            await response.text();
-            throw new TypeError("simulated response loss after commit");
+            event.detail.fetchRequest = {
+              response: window.fetch(url.href, fetchOptions).then(async (response) => {
+                await response.text();
+                throw new TypeError("simulated response loss after commit");
+              })
+            };
           }
-          return response;
-        };
+        });
       JAVASCRIPT
     end
 end

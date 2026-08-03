@@ -90,7 +90,6 @@ jobs:
             --file Dockerfile
             --platform "$CONTAINER_PLATFORM"
             --pull
-            --build-arg "BUILDKIT_MULTI_PLATFORM=1"
             --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch"
             --build-arg "OCI_SOURCE=$SOURCE_URL"
             --build-arg "OCI_DESCRIPTION=$IMAGE_DESCRIPTION"
@@ -101,12 +100,14 @@ jobs:
 
           docker buildx build "${common[@]}" \
             --tag "$image" \
+            --build-arg "BUILDKIT_MULTI_PLATFORM=1" \
             --provenance=mode=max \
             --sbom="generator=$SBOM_SCANNER_IMAGE" \
             --output "type=oci,dest=$evidence_directory/campfire.oci.tar" \
             --metadata-file "$evidence_directory/build-metadata.json" .
           docker buildx build "${common[@]}" \
             --tag "$image" \
+            --build-arg "BUILDKIT_MULTI_PLATFORM=0" \
             --provenance=false \
             --sbom=false \
             --output "type=docker,dest=$evidence_directory/campfire.runtime.tar" .

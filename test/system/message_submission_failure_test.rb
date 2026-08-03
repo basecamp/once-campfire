@@ -179,28 +179,22 @@ class MessageSubmissionFailureTest < ApplicationSystemTestCase
     end
 
     def install_message_failure_interceptor
-      install_new_document_script <<~JAVASCRIPT
-        (() => {
-          const fetch = window.fetch;
-          window.fetch = function(input, options = {}) {
-            const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
-            const method = String(request?.method || options.method || "GET").toUpperCase();
-            const url = new URL(request ? request.url : String(input), window.location.origin);
-            const status = window.nextMessageFailureStatusForTest;
-            const composerPath = new URL(document.querySelector("#composer").action).pathname;
-            if (status && method === "POST" && url.pathname === composerPath) {
-              delete window.nextMessageFailureStatusForTest;
-              return Promise.resolve(new Response("", {
+      execute_script_in_page_realm <<~JAVASCRIPT
+        document.addEventListener("turbo:before-fetch-request", (event) => {
+          const { fetchOptions, url } = event.detail;
+          const status = window.nextMessageFailureStatusForTest;
+          const composerPath = new URL(document.querySelector("#composer").action).pathname;
+          if (status && fetchOptions.method === "POST" && url.pathname === composerPath) {
+            delete window.nextMessageFailureStatusForTest;
+            event.detail.fetchRequest = {
+              response: Promise.resolve(new Response("", {
                 status,
                 headers: { "Content-Type": "text/vnd.turbo-stream.html" }
-              }));
-            }
-            return fetch(input, options);
-          };
-        })();
+              }))
+            };
+          }
+        });
       JAVASCRIPT
-      page.refresh
-      wait_for_cable_connection
     end
 
     def pending_submissions(room_id)

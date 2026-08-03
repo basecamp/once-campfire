@@ -7,9 +7,7 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
   end
 
   test "a subscription resolving after disconnect is immediately canceled" do
-    result = page.evaluate_async_script <<~JAVASCRIPT
-      const done = arguments[0];
-      (async () => {
+    result = evaluate_module_script_in_page_realm <<~JAVASCRIPT
         const nextTask = () => new Promise((resolve) => window.setTimeout(resolve, 0));
         const area = document.querySelector("#message-area");
         const identifiers = area.dataset.controller.split(/\s+/).filter((identifier) => identifier !== "presence");
@@ -56,8 +54,7 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
 
         cable.setConsumer(consumer);
         window.setInterval = setInterval;
-        done({ presentEvents, refreshTimers, unsubscribeCalls });
-      })().catch((error) => done({ error: error.message }));
+        return { presentEvents, refreshTimers, unsubscribeCalls };
     JAVASCRIPT
 
     assert_nil result["error"]
@@ -67,9 +64,7 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
   end
 
   test "disconnect clears a pending return to visible" do
-    result = page.evaluate_async_script <<~JAVASCRIPT
-      const done = arguments[0];
-      (async () => {
+    result = evaluate_module_script_in_page_realm <<~JAVASCRIPT
         const nextTask = () => new Promise((resolve) => window.setTimeout(resolve, 0));
         const area = document.querySelector("#message-area");
         const identifiers = area.dataset.controller.split(/\s+/).filter((identifier) => identifier !== "presence");
@@ -130,8 +125,7 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
         } else {
           delete document.visibilityState;
         }
-        done({ cleared, sends });
-      })().catch((error) => done({ error: error.message }));
+        return { cleared, sends };
     JAVASCRIPT
 
     assert_nil result["error"]
@@ -140,9 +134,7 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
   end
 
   test "a hidden initial connection and reconnect immediately become absent without refreshing" do
-    result = page.evaluate_async_script <<~JAVASCRIPT
-      const done = arguments[0];
-      (async () => {
+    result = evaluate_module_script_in_page_realm <<~JAVASCRIPT
         const nextTask = () => new Promise((resolve) => window.setTimeout(resolve, 0));
         const area = document.querySelector("#message-area");
         const identifiers = area.dataset.controller.split(/\s+/).filter((identifier) => identifier !== "presence");
@@ -196,8 +188,7 @@ class PresenceLifecycleTest < ApplicationSystemTestCase
         } else {
           delete document.visibilityState;
         }
-        done({ sends, refreshTimers });
-      })().catch((error) => done({ error: error.message }));
+        return { sends, refreshTimers };
     JAVASCRIPT
 
     assert_nil result["error"]

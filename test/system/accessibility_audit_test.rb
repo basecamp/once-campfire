@@ -34,25 +34,21 @@ class AccessibilityAuditTest < ApplicationSystemTestCase
   end
 
   test "message submission failure has no serious or critical WCAG violations" do
-    install_new_document_script <<~JAVASCRIPT
-      (() => {
-        const fetchForAccessibilityFailureTest = window.fetch;
-        window.fetch = function(input, options = {}) {
-          const request = input && typeof input === "object" && typeof input.url === "string" ? input : null;
-          const method = String(request?.method || options.method || "GET").toUpperCase();
-          const url = new URL(request ? request.url : String(input), window.location.origin);
-          if (method === "POST" && url.pathname.endsWith("/messages")) {
-            return Promise.resolve(new Response("", {
-              status: 503,
-              headers: { "Content-Type": "text/vnd.turbo-stream.html" }
-            }));
-          }
-          return fetchForAccessibilityFailureTest(input, options);
-        };
-      })();
-    JAVASCRIPT
     sign_in users(:jz).email_address
     join_room rooms(:designers)
+    execute_script_in_page_realm <<~JAVASCRIPT
+      document.addEventListener("turbo:before-fetch-request", (event) => {
+        const { fetchOptions, url } = event.detail;
+        if (fetchOptions.method === "POST" && url.pathname.endsWith("/messages")) {
+          event.detail.fetchRequest = {
+            response: Promise.resolve(new Response("", {
+              status: 503,
+              headers: { "Content-Type": "text/vnd.turbo-stream.html" }
+            }))
+          };
+        }
+      });
+    JAVASCRIPT
     fill_in_rich_text_area "message_body", with: "Accessibility failure audit"
     click_on "Send Message"
 

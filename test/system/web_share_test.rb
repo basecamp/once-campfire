@@ -11,9 +11,9 @@ class WebShareTest < ApplicationSystemTestCase
   end
 
   test "shares the authenticated attachment with its original filename" do
-    delay_first_attachment_fetch
     sign_in users(:jz).email_address
     join_room rooms(:designers)
+    delay_first_attachment_fetch
 
     click_on "Share private.txt"
 
@@ -59,9 +59,9 @@ class WebShareTest < ApplicationSystemTestCase
   end
 
   test "expires prepared attachment data before sharing" do
-    capture_prepared_data_expiration
     sign_in users(:jz).email_address
     join_room rooms(:designers)
+    capture_prepared_data_expiration
 
     click_on "Share private.txt"
     assert_button "Share private.txt now", wait: 5
@@ -103,7 +103,7 @@ class WebShareTest < ApplicationSystemTestCase
     end
 
     def capture_prepared_data_expiration
-      install_new_document_script <<~JAVASCRIPT
+      execute_script_in_page_realm <<~JAVASCRIPT
         const setTimeoutForShareExpirationTest = window.setTimeout.bind(window);
         const clearTimeoutForShareExpirationTest = window.clearTimeout.bind(window);
         const preparedShareTimerForTest = 987654321;
@@ -121,7 +121,7 @@ class WebShareTest < ApplicationSystemTestCase
     end
 
     def delay_first_attachment_fetch
-      install_new_document_script <<~JAVASCRIPT
+      execute_script_in_page_realm <<~JAVASCRIPT
         const originalFetch = window.fetch;
         let delayedAttachmentFetch = false;
         window.fetch = async function(input, options = {}) {

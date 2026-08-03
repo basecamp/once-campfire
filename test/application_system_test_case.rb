@@ -1,4 +1,5 @@
 require "test_helper"
+require "securerandom"
 
 WebMock.disable!
 
@@ -57,8 +58,16 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
         result = page.driver.browser.execute_cdp("Page.addScriptToEvaluateOnNewDocument", source:)
         [ :cdp, result.fetch("identifier") ]
       when "headless_firefox"
+        function_declaration = <<~JAVASCRIPT
+          () => {
+            const script = document.createElement("script");
+            script.textContent = #{source.to_json};
+            document.documentElement.append(script);
+            script.remove();
+          }
+        JAVASCRIPT
         result = page.driver.browser.bidi.send_cmd(
-          "script.addPreloadScript", functionDeclaration: "() => {\n#{source}\n}"
+          "script.addPreloadScript", functionDeclaration: function_declaration
         )
         [ :bidi, result.fetch("script") ]
       else
@@ -66,6 +75,60 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
       end
 
       (@new_document_scripts ||= []) << script
+    end
+
+    def execute_script_in_page_realm(source)
+      page.execute_script <<~JAVASCRIPT, source
+        const script = document.createElement("script");
+        script.textContent = arguments[0];
+        document.documentElement.append(script);
+        script.remove();
+      JAVASCRIPT
+    end
+
+    def evaluate_module_script_in_page_realm(source, wait: 10)
+      token = SecureRandom.hex(8)
+      result_attribute = "data-system-test-result-#{token}"
+      script_id = "system-test-module-#{token}"
+      page.execute_script <<~JAVASCRIPT, source, result_attribute, script_id
+        const source = arguments[0];
+        const resultAttribute = arguments[1];
+        const script = document.createElement("script");
+        script.type = "module";
+        script.id = arguments[2];
+        script.textContent = [
+          "(async () => {",
+          "try {",
+          "const value = await (async () => {",
+          source,
+          "})();",
+          `document.documentElement.setAttribute(${JSON.stringify(resultAttribute)}, JSON.stringify({ value: value ?? null }));`,
+          "} catch (error) {",
+          "const detail = error && (error.stack || error.message) || String(error);",
+          `document.documentElement.setAttribute(${JSON.stringify(resultAttribute)}, JSON.stringify({ error: String(detail) }));`,
+          "}",
+          "})();"
+        ].join("\\n");
+        document.documentElement.append(script);
+      JAVASCRIPT
+
+      unless page.has_css?("html[#{result_attribute}]", visible: false, wait:)
+        raise "Page-realm module script did not finish within #{wait} seconds"
+      end
+
+      payload = JSON.parse(page.evaluate_script(
+        "document.documentElement.getAttribute(#{result_attribute.to_json})"
+      ))
+      raise payload.fetch("error") if payload.key?("error")
+
+      payload["value"]
+    ensure
+      if result_attribute && script_id
+        page.execute_script <<~JAVASCRIPT
+          document.documentElement.removeAttribute(#{result_attribute.to_json});
+          document.getElementById(#{script_id.to_json})?.remove();
+        JAVASCRIPT
+      end
     end
 
     def emulate_media(features)

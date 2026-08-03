@@ -252,6 +252,7 @@ if root.join("bin/release").file?
       "docker/setup-buildx-action@",
       '[[ "$host_architecture" == x86_64 ]]',
       'BUILDKIT_MULTI_PLATFORM=1',
+      'BUILDKIT_MULTI_PLATFORM=0',
       'SOURCE_DATE_EPOCH=$source_date_epoch',
       "--provenance=mode=max",
       "--sbom=\"generator=$SBOM_SCANNER_IMAGE\"",

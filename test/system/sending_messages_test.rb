@@ -287,7 +287,7 @@ class SendingMessagesTest < ApplicationSystemTestCase
       reveal_message_actions
       find(".message__edit-btn").click
 
-      accept_confirm do
+      accept_confirm(wait: 5) do
         click_on "Delete message"
       end
     end
@@ -319,67 +319,64 @@ class SendingMessagesTest < ApplicationSystemTestCase
     end
 
     def install_file_upload_interceptor
-      error = page.evaluate_async_script <<~JAVASCRIPT
-        const done = arguments[0];
+      evaluate_module_script_in_page_realm <<~JAVASCRIPT
         const imports = JSON.parse(document.querySelector("script[type='importmap']").textContent).imports;
-        import(imports["models/file_uploader"]).then(({ default: FileUploader }) => {
-          const upload = FileUploader.prototype.upload;
-          if (!document.querySelector("meta[name=csrf-token]")) {
-            const csrfToken = document.createElement("meta");
-            csrfToken.name = "csrf-token";
-            csrfToken.content = "system-test";
-            document.head.append(csrfToken);
+        const { default: FileUploader } = await import(imports["models/file_uploader"]);
+        const upload = FileUploader.prototype.upload;
+        if (!document.querySelector("meta[name=csrf-token]")) {
+          const csrfToken = document.createElement("meta");
+          csrfToken.name = "csrf-token";
+          csrfToken.content = "system-test";
+          document.head.append(csrfToken);
+        }
+        window.fileUploadFailuresForTest = 0;
+        window.fileUploadFailureStatusForTest = null;
+        window.fileUploadProgressForTest = null;
+        window.delayNextFileUploadForTest = false;
+        window.dropNextFileUploadResponseForTest = false;
+
+        FileUploader.prototype.upload = function() {
+          if (window.fileUploadProgressForTest != null) {
+            this.progressCallback(window.fileUploadProgressForTest, this.clientMessageId, this.file);
+            window.fileUploadProgressForTest = null;
           }
-          window.fileUploadFailuresForTest = 0;
-          window.fileUploadFailureStatusForTest = null;
-          window.fileUploadProgressForTest = null;
+          if (window.fileUploadFailureStatusForTest) {
+            const error = new Error("simulated permanent upload failure");
+            error.status = window.fileUploadFailureStatusForTest;
+            window.fileUploadFailureStatusForTest = null;
+            return Promise.reject(error);
+          }
+          if (window.fileUploadFailuresForTest > 0) {
+            window.fileUploadFailuresForTest -= 1;
+            return Promise.reject(new Error("simulated upload failure"));
+          }
+
+          const delayUpload = window.delayNextFileUploadForTest;
+          const dropResponse = window.dropNextFileUploadResponseForTest;
           window.delayNextFileUploadForTest = false;
           window.dropNextFileUploadResponseForTest = false;
+          const performUpload = () => upload.call(this).then((response) => {
+            if (dropResponse) {
+              const error = new Error("simulated response loss after commit");
+              error.outcomeUnknown = true;
+              throw error;
+            }
+            return response;
+          });
 
-          FileUploader.prototype.upload = function() {
-            if (window.fileUploadProgressForTest != null) {
-              this.progressCallback(window.fileUploadProgressForTest, this.clientMessageId, this.file);
-              window.fileUploadProgressForTest = null;
-            }
-            if (window.fileUploadFailureStatusForTest) {
-              const error = new Error("simulated permanent upload failure");
-              error.status = window.fileUploadFailureStatusForTest;
-              window.fileUploadFailureStatusForTest = null;
-              return Promise.reject(error);
-            }
-            if (window.fileUploadFailuresForTest > 0) {
-              window.fileUploadFailuresForTest -= 1;
-              return Promise.reject(new Error("simulated upload failure"));
-            }
-
-            const delayUpload = window.delayNextFileUploadForTest;
-            const dropResponse = window.dropNextFileUploadResponseForTest;
-            window.delayNextFileUploadForTest = false;
-            window.dropNextFileUploadResponseForTest = false;
-            const performUpload = () => upload.call(this).then((response) => {
-              if (dropResponse) {
-                const error = new Error("simulated response loss after commit");
-                error.outcomeUnknown = true;
-                throw error;
-              }
-              return response;
+          if (delayUpload) {
+            return new Promise((resolve, reject) => {
+              window.releaseFileUploadForTest = () => {
+                delete window.releaseFileUploadForTest;
+                performUpload().then(resolve, reject);
+              };
             });
+          }
 
-            if (delayUpload) {
-              return new Promise((resolve, reject) => {
-                window.releaseFileUploadForTest = () => {
-                  delete window.releaseFileUploadForTest;
-                  performUpload().then(resolve, reject);
-                };
-              });
-            }
+          return performUpload();
+        };
 
-            return performUpload();
-          };
-
-          done(null);
-        }, (error) => done(error.message));
+        return null;
       JAVASCRIPT
-      raise error if error
     end
 end
