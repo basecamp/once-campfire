@@ -489,7 +489,7 @@ if root.join("bin/release").file?
     [
       "OCI_ARCHIVE", "ATTESTATION_IMAGE", "org.opencontainers.image.revision",
       "https://spdx.dev/Document", "https://slsa.dev/provenance/",
-      "buildConfig.llbDefinition", "Content-Length: 106954753", "boot_health",
+      "buildConfig.llbDefinition", "request_limit_bytes=106954752", '--data-binary "@$oversized_request"', "boot_health",
       '[[ "$oci_config_digest" == "$config_digest" ]]',
       "validated_manifest_digest", "config-digest-matched-dual-build", "RUNTIME_ARCHIVE"
     ].each do |token|

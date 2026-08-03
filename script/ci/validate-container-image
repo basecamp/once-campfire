@@ -281,15 +281,15 @@ docker exec "$container" cat /etc/campfire-build-identity.json | jq -e \
     .format_version == 1 and .revision == $revision and .build_identity == $build_identity
   ' >/dev/null
 
-exec 3<>"/dev/tcp/127.0.0.1/$port"
-printf 'POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/octet-stream\r\nContent-Length: 106954753\r\nConnection: close\r\n\r\n' >&3
-if ! IFS= read -r -t 30 request_limit_status <&3; then
-  printf 'Timed out waiting for the oversized-request response\n' >&2
-  exit 1
-fi
-exec 3>&-
-request_limit_status=${request_limit_status%$'\r'}
-[[ "$request_limit_status" =~ ^HTTP/1\.[01][[:space:]]413([[:space:]]|$) ]]
+request_limit_bytes=106954752
+oversized_request="$evidence_directory/oversized-request.bin"
+truncate --size "$((request_limit_bytes + 1))" "$oversized_request"
+request_limit_status=$(curl --silent --show-error --http1.1 --max-time 60 \
+  --output /dev/null --write-out 'HTTP/%{http_version} %{http_code}' \
+  --header 'Content-Type: application/octet-stream' --header 'Expect:' \
+  --data-binary "@$oversized_request" "http://127.0.0.1:$port/")
+rm -f "$oversized_request"
+[[ "$request_limit_status" =~ ^HTTP/1\.[01][[:space:]]413$ ]]
 printf '%s\n' "$request_limit_status" > "$evidence_directory/request-limit-response.txt"
 
 docker stop --timeout 35 "$container" >/dev/null
@@ -321,6 +321,7 @@ jq -n \
   --arg oci_archive_sha256 "$oci_archive_sha256" \
   --arg runtime_archive_sha256 "$runtime_archive_sha256" \
   --arg runtime_binding "$runtime_binding" \
+  --arg request_limit_bytes "$request_limit_bytes" \
   --arg request_limit_status "$request_limit_status" \
   --arg exit_code "$exit_code" '
   {
@@ -341,6 +342,7 @@ jq -n \
     buildkit_provenance_sha256: $provenance_sha256,
     oci_archive_sha256: (if $oci_archive_sha256 == "" then null else $oci_archive_sha256 end),
     runtime_archive_sha256: (if $runtime_archive_sha256 == "" then null else $runtime_archive_sha256 end),
+    request_limit_probe_bytes: ($request_limit_bytes | tonumber),
     checks: {
       platform_config: "passed",
       non_root_user: "passed",
