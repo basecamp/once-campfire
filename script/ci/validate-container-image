@@ -261,7 +261,6 @@ container_id=$(docker run --detach \
   --name "$container" \
   --publish 127.0.0.1::80 \
   --mount "type=volume,src=$volume,dst=/rails/storage" \
-  --env DISABLE_SSL=true \
   --env SKIP_TELEMETRY=true \
   --env WEB_CONCURRENCY=1 \
   --env SECRET_KEY_BASE=container-smoke-secret-key-base-container-smoke-secret-key-base \

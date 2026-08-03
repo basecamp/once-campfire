@@ -23,7 +23,7 @@ env:
 jobs:
   validate:
     name: Container validation (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -31,9 +31,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - runner: ubuntu-24.04
+            host_architecture: x86_64
+            arch: amd64
             platform: linux/amd64
-          - arch: arm64
+          - runner: ubuntu-24.04-arm
+            host_architecture: aarch64
+            arch: arm64
             platform: linux/arm64
 
     steps:
@@ -45,6 +49,7 @@ jobs:
       - name: Initialize evidence directory
         env:
           ARCHITECTURE: ${{ matrix.arch }}
+          EXPECTED_HOST_ARCHITECTURE: ${{ matrix.host_architecture }}
           SOURCE_REVISION: ${{ github.sha }}
         shell: bash
         run: |
@@ -52,19 +57,12 @@ jobs:
           evidence_directory="$RUNNER_TEMP/container-evidence-$ARCHITECTURE"
           mkdir -m 700 "$evidence_directory"
           host_architecture=$(uname -m)
-          [[ "$host_architecture" == x86_64 ]]
+          [[ "$host_architecture" == "$EXPECTED_HOST_ARCHITECTURE" ]]
           jq -n --arg architecture "$ARCHITECTURE" --arg host_architecture "$host_architecture" --arg source_revision "$SOURCE_REVISION" \
             '{format_version: 1, architecture: $architecture, host_architecture: $host_architecture, source_revision: $source_revision, status: "started"}' \
             > "$evidence_directory/run.json"
           [[ "$(git rev-parse HEAD)" == "$SOURCE_REVISION" ]]
           [[ -z "$(git status --porcelain --untracked-files=all)" ]]
-
-      - name: Set up pinned QEMU emulation
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-          platforms: arm64
-          cache-image: false
 
       - name: Set up pinned Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1

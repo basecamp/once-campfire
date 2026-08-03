@@ -253,9 +253,10 @@ if root.join("bin/release").file?
       "push:",
       "permissions: {}",
       "name: Container validation (${{ matrix.arch }})",
-      "docker/setup-qemu-action@",
+      'runs-on: ${{ matrix.runner }}',
+      "ubuntu-24.04-arm",
       "docker/setup-buildx-action@",
-      '[[ "$host_architecture" == x86_64 ]]',
+      '[[ "$host_architecture" == "$EXPECTED_HOST_ARCHITECTURE" ]]',
       'BUILDKIT_MULTI_PLATFORM=1',
       'BUILDKIT_MULTI_PLATFORM=0',
       'SOURCE_DATE_EPOCH=$source_date_epoch',
@@ -280,12 +281,18 @@ if root.join("bin/release").file?
         container.scan('docker buildx build "${common[@]}"').length == 2
       errors << "#{relative}: runtime and OCI evidence must use exactly two config-matched Buildx builds"
     end
-    matrix_pairs = container_workflow.fetch("jobs", {}).values.flat_map do |job|
+    matrix_targets = container_workflow.fetch("jobs", {}).values.flat_map do |job|
       Array(job.dig("strategy", "matrix", "include"))
     end.filter_map do |entry|
-      [ entry["arch"], entry["platform"] ] if entry.is_a?(Hash) && entry["arch"] && entry["platform"]
+      if entry.is_a?(Hash) && entry["runner"] && entry["host_architecture"] && entry["arch"] && entry["platform"]
+        [ entry["runner"], entry["host_architecture"], entry["arch"], entry["platform"] ]
+      end
     end.sort
-    unless matrix_pairs == [ [ "amd64", "linux/amd64" ], [ "arm64", "linux/arm64" ] ]
+    expected_targets = [
+      [ "ubuntu-24.04", "x86_64", "amd64", "linux/amd64" ],
+      [ "ubuntu-24.04-arm", "aarch64", "arm64", "linux/arm64" ]
+    ]
+    unless matrix_targets == expected_targets
       errors << "#{relative}: validation matrix must contain exactly linux/amd64 and linux/arm64"
     end
     if application_ci

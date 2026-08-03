@@ -74,7 +74,7 @@ class ReleasePolicyTest < ActiveSupport::TestCase
   test "policy rejects a skipped container architecture" do
     with_repository_policy_fixture do |root|
       workflow = root.join(".github/workflows/container.yml")
-      workflow.write workflow.read.sub("          - arch: arm64\n", "          - arch: s390x\n")
+      workflow.write workflow.read.sub("            arch: arm64\n", "            arch: s390x\n")
 
       _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
 
@@ -99,11 +99,10 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     end
   end
 
-  test "policy rejects mutable QEMU BuildKit and SBOM scanner images" do
+  test "policy rejects mutable BuildKit and SBOM scanner images" do
     with_repository_policy_fixture do |root|
       workflow = root.join(".github/workflows/container.yml")
       source = workflow.read
-        .sub(%r{docker\.io/tonistiigi/binfmt:[^\s]+@sha256:[0-9a-f]{64}}, "docker.io/tonistiigi/binfmt:latest")
         .sub(%r{docker\.io/moby/buildkit:[^\s]+@sha256:[0-9a-f]{64}}, "docker.io/moby/buildkit:latest")
         .sub(%r{docker\.io/docker/buildkit-syft-scanner:[^\s]+@sha256:[0-9a-f]{64}}, "docker.io/docker/buildkit-syft-scanner:latest")
       workflow.write source
@@ -111,7 +110,6 @@ class ReleasePolicyTest < ActiveSupport::TestCase
       _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
 
       assert_not status.success?
-      assert_match "workflow image is not digest-pinned", stderr
       assert_match "BUILDKIT_IMAGE is not digest-pinned", stderr
       assert_match "SBOM_SCANNER_IMAGE is not digest-pinned", stderr
     end
