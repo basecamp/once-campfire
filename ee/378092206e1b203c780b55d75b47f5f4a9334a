@@ -1,0 +1,29 @@
+config/initializers/turbo_streams_authorization.rb
+  s_eba0ee92a6f828::t_787c57ca55f5fc 1-3
+test/channels/room_messages_channel_test.rb
+  s_eba0ee92a6f828::t_a7c505aeb530e4 1-16,18-27,29-40,42-43,45-48,57-60,65,76,85-86
+  s_eba0ee92a6f828::t_51be724acd550f 17,28,41,44,49-56,61-64,66-75,77-84
+app/channels/room_messages_channel.rb
+  s_eba0ee92a6f828::t_d1e61de378238a 11-13,20-41,53
+  s_eba0ee92a6f828::t_2c0d125bb89652 1-10,14-19,42-52,54-55
+app/channels/concerns/room_streams_are_authorized.rb
+  s_eba0ee92a6f828::t_ad94d951b53a7a 1-13
+app/views/rooms/show.html.erb
+  s_eba0ee92a6f828::t_e2dc2ac8cf174a 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "ee378092206e1b203c780b55d75b47f5f4a9334a",
+  "prompts": {},
+  "sessions": {
+    "s_eba0ee92a6f828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37e2bc1d-8962-4049-98cc-edf768f74dec",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
