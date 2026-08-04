@@ -1,5 +1,6 @@
 class Message < ApplicationRecord
   class ClientMessageIdConflict < StandardError; end
+  WEBHOOK_REPLY_MARKER = Object.new.freeze
 
   include Attachment, Broadcasts, Mentionee, Pagination, Searchable
 
@@ -10,6 +11,8 @@ class Message < ApplicationRecord
   has_many :message_effects, class_name: "Message::Effect"
 
   has_rich_text :body
+
+  attr_accessor :webhook_reply
 
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
   before_create :authorize_creator!
@@ -101,7 +104,9 @@ class Message < ApplicationRecord
     def create_reliable_effects
       create_effect! "room_receive", "room_receive"
       create_effect! "broadcast_create", "broadcast_create"
-      create_effect! "webhook_fanout", "webhook_fanout"
+      unless webhook_reply.equal?(WEBHOOK_REPLY_MARKER)
+        create_effect! "webhook_fanout", "webhook_fanout"
+      end
     end
 
     def create_destroy_effect

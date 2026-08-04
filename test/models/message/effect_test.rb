@@ -246,6 +246,7 @@ class Message::EffectTest < ActiveSupport::TestCase
     replies = @room.messages.where(creator: users(:bender), client_message_id: reply_id)
     assert_equal 1, replies.count
     assert_equal 1, replies.sole.message_effects.where(effect: "broadcast_create").count
+    assert_not replies.sole.message_effects.exists?(effect: "webhook_fanout")
   end
 
   test "bot webhook is canceled when room membership was revoked" do

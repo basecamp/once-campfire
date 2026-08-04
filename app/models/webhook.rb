@@ -207,7 +207,7 @@ class Webhook < ApplicationRecord
     def receive_text_reply_to(room, text:, delivery_id:)
       ContentLimits.verify! text.bytesize,
         maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
-      room.messages.create_with_attachment!(
+      room.messages.create_webhook_reply_with_attachment!(
         body: text, creator: user, client_message_id: reply_client_message_id(delivery_id)
       )
     end
@@ -221,7 +221,7 @@ class Webhook < ApplicationRecord
     end
 
     def receive_attachment_reply_to(room, attachment:, delivery_id:)
-      room.messages.create_with_attachment!(
+      room.messages.create_webhook_reply_with_attachment!(
         attachment:, creator: user, client_message_id: reply_client_message_id(delivery_id)
       )
     end

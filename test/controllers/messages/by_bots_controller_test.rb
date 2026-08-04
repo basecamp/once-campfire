@@ -63,6 +63,21 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "an explicit bot message can invoke a different mentioned bot" do
+    recipient = User.create_bot!({
+      name: "Second Bot", webhook_url: "https://example.com/second-bot"
+    }, actor: users(:david))
+    Membership.create!(room: @room, user: recipient)
+    body = "<div>Hey #{mention_attachment_for_user(recipient)}</div>"
+
+    post room_bot_messages_url(@room), params: body, headers: bot_headers
+
+    assert_response :created
+    message = Message.last
+    assert message.message_effects.exists?(effect: "webhook_fanout")
+    assert message.message_effects.exists?(effect: "bot_webhook", recipient_id: recipient.id)
+  end
+
   test "create can't be abused to post messages as any user" do
     user = users(:kevin)
     bot_key = "#{user.id}-"
@@ -92,5 +107,13 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
   private
     def bot_headers
       { "Authorization" => "Bearer #{users(:bender).bot_key}" }
+    end
+
+    def mention_attachment_for_user(user)
+      content = ApplicationController.render partial: "users/mention", locals: { user: }
+      escaped_content = content.gsub('"', "&quot;")
+      "<action-text-attachment sgid=\"#{user.attachable_sgid}\" " \
+        "content-type=\"application/vnd.campfire.mention\" " \
+        "content=\"#{escaped_content}\"></action-text-attachment>"
     end
 end

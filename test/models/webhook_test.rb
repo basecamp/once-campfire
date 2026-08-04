@@ -38,6 +38,9 @@ class WebhookTest < ActiveSupport::TestCase
 
     reply_message = Message.last
     assert_equal "Hello back!", reply_message.body.to_plain_text
+    assert reply_message.message_effects.exists?(effect: "broadcast_create")
+    assert reply_message.message_effects.exists?(effect: "room_receive")
+    assert_not reply_message.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
   end
 
   test "delivery with OK attachment reply" do
@@ -46,6 +49,33 @@ class WebhookTest < ActiveSupport::TestCase
 
     reply_message = Message.last
     assert reply_message.attachment.present?
+    assert reply_message.message_effects.exists?(effect: "broadcast_create")
+    assert reply_message.message_effects.exists?(effect: "room_receive")
+    assert_not reply_message.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
+  end
+
+  test "an explicit bot message still fans out to other webhooks" do
+    message = rooms(:designers).messages.create_with_attachment!(
+      body: "Bot API message", creator: users(:bender), client_message_id: SecureRandom.hex(8), webhook_reply: true
+    )
+
+    assert message.message_effects.exists?(effect: "webhook_fanout")
+  end
+
+  test "a rich text webhook reply cannot invoke another bot" do
+    recipient = User.create_bot!({
+      name: "Second Bot", webhook_url: "https://example.com/second-bot"
+    }, actor: users(:david))
+    Membership.create!(room: rooms(:designers), user: recipient)
+    body = "<div>Automated follow-up #{mention_attachment_for_user(recipient)}</div>"
+    WebMock.stub_request(:post, webhooks(:bender).url).to_return(
+      status: 200, body:, headers: { "Content-Type" => "text/html" }
+    )
+
+    webhooks(:bender).deliver(messages(:first), delivery_id: @delivery_id)
+
+    reply = Message.find_by!(creator: users(:bender), client_message_id: "webhook-reply-#{@delivery_id}")
+    assert_not reply.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
   end
 
   test "delivery with error reply" do
@@ -165,4 +195,13 @@ class WebhookTest < ActiveSupport::TestCase
       assert_instance_of RestrictedHTTP::ResponseHeaderGuard::Exceeded, error.cause
     end
   end
+
+  private
+    def mention_attachment_for_user(user)
+      content = ApplicationController.render partial: "users/mention", locals: { user: }
+      escaped_content = content.gsub('"', "&quot;")
+      "<action-text-attachment sgid=\"#{user.attachable_sgid}\" " \
+        "content-type=\"application/vnd.campfire.mention\" " \
+        "content=\"#{escaped_content}\"></action-text-attachment>"
+    end
 end

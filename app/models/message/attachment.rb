@@ -14,43 +14,51 @@ module Message::Attachment
 
   module ClassMethods
     def create_with_attachment!(attributes)
-      attributes = attributes.to_h.symbolize_keys
-      client_message_id = attributes[:client_message_id]
-      creator = attributes[:creator] || Current.user || new.creator
-      ContentLimits.verify! client_message_id.to_s.bytesize,
-        maximum: ContentLimits::CLIENT_MESSAGE_ID_BYTES, description: "client message ID"
-      ContentLimits.verify! attributes[:body].to_s.bytesize,
-        maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
-      StagedUpload.verify_size! attributes[:attachment] if attributes[:attachment].present?
-      if client_message_id.present? && existing = find_by(client_message_id:)
-        StagedUpload.discard attributes[:attachment]
-        return resolve_client_message_retry(existing, creator)
-      end
+      create_message_with_attachment! attributes, webhook_reply: nil
+    end
 
-      attachment = attributes.delete(:attachment)
-      message = User::MutationFence.with(creator.id) do
-        User.lock_active! creator
-        staged_blob = StagedUpload.stage(attachment, owner_id: creator.id)
-
-        begin
-          transaction(requires_new: true) do
-            create! attributes.merge(attachment: staged_blob)
-          end
-        rescue ActiveRecord::RecordNotUnique
-          StagedUpload.discard staged_blob
-          raise unless client_message_id.present?
-
-          return resolve_client_message_retry(find_by!(client_message_id:), creator)
-        rescue StandardError
-          StagedUpload.discard staged_blob
-          raise
-        end
-      end
-
-      message.tap(&:process_attachment)
+    def create_webhook_reply_with_attachment!(attributes)
+      create_message_with_attachment! attributes, webhook_reply: Message::WEBHOOK_REPLY_MARKER
     end
 
     private
+      def create_message_with_attachment!(attributes, webhook_reply:)
+        attributes = attributes.to_h.symbolize_keys
+        client_message_id = attributes[:client_message_id]
+        creator = attributes[:creator] || Current.user || new.creator
+        ContentLimits.verify! client_message_id.to_s.bytesize,
+          maximum: ContentLimits::CLIENT_MESSAGE_ID_BYTES, description: "client message ID"
+        ContentLimits.verify! attributes[:body].to_s.bytesize,
+          maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
+        StagedUpload.verify_size! attributes[:attachment] if attributes[:attachment].present?
+        if client_message_id.present? && existing = find_by(client_message_id:)
+          StagedUpload.discard attributes[:attachment]
+          return resolve_client_message_retry(existing, creator)
+        end
+
+        attachment = attributes.delete(:attachment)
+        message = User::MutationFence.with(creator.id) do
+          User.lock_active! creator
+          staged_blob = StagedUpload.stage(attachment, owner_id: creator.id)
+
+          begin
+            transaction(requires_new: true) do
+              create! attributes.merge(attachment: staged_blob, webhook_reply:)
+            end
+          rescue ActiveRecord::RecordNotUnique
+            StagedUpload.discard staged_blob
+            raise unless client_message_id.present?
+
+            return resolve_client_message_retry(find_by!(client_message_id:), creator)
+          rescue StandardError
+            StagedUpload.discard staged_blob
+            raise
+          end
+        end
+
+        message.tap(&:process_attachment)
+      end
+
       def resolve_client_message_retry(existing, creator)
         unless existing.creator_id == creator.id
           raise Message::ClientMessageIdConflict, "client message ID is already used in this room"
