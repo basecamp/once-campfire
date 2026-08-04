@@ -170,6 +170,7 @@ Putting it all together, here's a complete `docker run` invocation:
 ```sh
 docker run \
   --name campfire \
+  --stop-timeout 70 \
   --publish 80:80 --publish 443:443 \
   --restart unless-stopped \
   --volume campfire:/rails/storage \
@@ -187,6 +188,7 @@ services:
   web:
     image: ghcr.io/basecamp/once-campfire:latest
     restart: unless-stopped
+    stop_grace_period: 70s
     ports:
       - "80:80"
       - "443:443"
@@ -201,6 +203,15 @@ services:
 volumes:
   campfire:
 ```
+
+Campfire allows up to 60 seconds for in-flight requests and jobs to stop, then
+up to 5 seconds for forced process-group cleanup. Keep the container runtime's
+stop grace period above that total. `CAMPFIRE_SHUTDOWN_TIMEOUT` can raise the
+internal graceful period for installations with longer bounded jobs.
+
+Web and job process defaults use the container's available CPU quota and are
+capped at four processes each. Set `WEB_CONCURRENCY` and `JOB_CONCURRENCY`
+explicitly only after sizing memory and workload on the target host.
 
 ### First run
 

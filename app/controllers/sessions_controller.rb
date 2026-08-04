@@ -17,8 +17,18 @@ class SessionsController < ApplicationController
       email_address:, normalized_email_address: email_address, password: params[:password]
     )
 
-    if user && Oidc.local_authentication_allowed_for?(user)
-      start_new_session_for user
+    new_session = if user && Oidc.local_authentication_allowed_for?(user)
+      User.transaction do
+        locked_user = User.lock_active!(user)
+        digest = user.password_digest.to_s
+        unchanged = digest.bytesize == locked_user.password_digest.to_s.bytesize &&
+          ActiveSupport::SecurityUtils.secure_compare(digest, locked_user.password_digest.to_s)
+        create_new_session_for(locked_user) if unchanged
+      end
+    end
+
+    if new_session
+      authenticated_as new_session
       redirect_to post_authenticating_url
     else
       render_rejection :unauthorized
@@ -28,9 +38,15 @@ class SessionsController < ApplicationController
   end
 
   def destroy
+    transfer_intent = session[Sessions::TransfersController::TRANSFER_INTENT_SESSION_KEY]
     remove_push_subscription
     terminate_current_session
-    redirect_to root_url
+    if CredentialIntent.valid_transfer?(transfer_intent)
+      session[Sessions::TransfersController::TRANSFER_INTENT_SESSION_KEY] = transfer_intent
+      redirect_to session_transfer_url
+    else
+      redirect_to root_url
+    end
   end
 
   private

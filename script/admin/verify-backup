@@ -37,7 +37,10 @@ class BackupVerifier
       verify_generation_entries generation_path, manifest
       verify_database generation_path, manifest
       verify_files generation_path, manifest.fetch("files")
-      CampfireBackup::RedisValidator.validate! generation_path.join("payload")
+      CampfireBackup::RedisValidator.validate!(
+        generation_path.join("payload"),
+        require_aof: manifest.fetch("schema_version").to_i >= CampfireBackup::UpgradeRecoveryGuard::GATED_MIGRATION
+      )
       verify_files generation_path, manifest.fetch("files")
       puts JSON.generate(status: "verified", backup_id: manifest.fetch("backup_id"), path: generation_path.to_s) if output
       true

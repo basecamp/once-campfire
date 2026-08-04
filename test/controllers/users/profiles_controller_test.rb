@@ -120,6 +120,33 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert recovery_user.reload.authenticate_password("new-recovery-password")
   end
 
+  test "changing a password rotates the current session and revokes other credentials" do
+    user = users(:david)
+    stale_user = User.find(user.id)
+    current_session = Session.find_by!(token: parsed_cookies.signed[:session_token])
+    old_token = current_session.token
+    other_session = Session.start!(
+      user:, user_agent: "stolen browser", ip_address: "203.0.113.90", authentication_method: "password"
+    )
+    browser_transfer = CredentialIntent.exchange_transfer!(user.transfer_id)
+    user.transfer_id
+
+    put user_profile_url, params: {
+      user: { current_password: "secret123456", password: "new-password-123456" }
+    }
+
+    assert_redirected_to user_profile_url
+    assert user.reload.authenticate_password("new-password-123456")
+    assert_equal current_session.id, Session.find_by!(token: parsed_cookies.signed[:session_token]).id
+    assert_not_equal old_token, parsed_cookies.signed[:session_token]
+    assert_not Session.exists?(token: old_token)
+    assert_not Session.exists?(id: other_session.id)
+    assert_not CredentialIntent.valid_transfer?(browser_transfer)
+    assert_not CredentialIntent.where(user:, purpose: "transfer_grant").exists?
+    stale_grant = stale_user.transfer_id
+    assert_raises(CredentialIntent::Invalid) { CredentialIntent.exchange_transfer!(stale_grant) }
+  end
+
   test "activated required mode makes the recovery email read only and rejects a forged change" do
     recovery_user = users(:david)
     configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => recovery_user.email_address)

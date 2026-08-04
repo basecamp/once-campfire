@@ -21,13 +21,19 @@ class CredentialIntent < ApplicationRecord
     end
 
     def issue_transfer_grant!(user, expires_in:)
-      issue!(purpose: "transfer_grant", user:, expires_in:)
+      issue!(
+        purpose: "transfer_grant", user:, expires_in:,
+        credential_digest: transfer_credential_digest(user)
+      )
     end
 
     def exchange_transfer!(token)
       consume_record!(token, purpose: "transfer_grant") do |grant|
         user = User.active.find(grant.user_id)
-        issue!(purpose: "transfer", user:)
+        unless secure_compare(grant.credential_digest, transfer_credential_digest(user))
+          raise Invalid, "transfer credential was revoked"
+        end
+        issue!(purpose: "transfer", user:, credential_digest: grant.credential_digest)
       end
     rescue ActiveRecord::RecordNotFound
       raise Invalid, "transfer credential is invalid"
@@ -45,7 +51,11 @@ class CredentialIntent < ApplicationRecord
 
     def consume_transfer!(token)
       consume_record!(token, purpose: "transfer") do |intent|
-        yield User.active.find(intent.user_id)
+        user = User.active.find(intent.user_id)
+        unless secure_compare(intent.credential_digest, transfer_credential_digest(user))
+          raise Invalid, "transfer intent was revoked"
+        end
+        yield user
       end
     rescue ActiveRecord::RecordNotFound
       raise Invalid, "transfer intent is invalid"
@@ -58,7 +68,10 @@ class CredentialIntent < ApplicationRecord
 
     def valid_transfer?(token)
       intent = active_record_for(token, purpose: "transfer")
-      intent && User.active.exists?(intent.user_id)
+      return false unless intent
+
+      user = User.active.find_by(id: intent.user_id)
+      user && secure_compare(intent.credential_digest, transfer_credential_digest(user))
     end
 
     private
@@ -105,6 +118,12 @@ class CredentialIntent < ApplicationRecord
         )
       end
 
+      def transfer_credential_digest(user)
+        Digest::SHA256.hexdigest(
+          [ user.id, user.authorization_generation, user.password_digest ].join("\0")
+        )
+      end
+
       def secure_compare(left, right)
         left.present? && right.present? && left.bytesize == right.bytesize &&
           ActiveSupport::SecurityUtils.secure_compare(left, right)
@@ -121,7 +140,7 @@ class CredentialIntent < ApplicationRecord
       valid = if purpose == "join"
         user_id.nil? && credential_digest.present?
       else
-        user_id.present? && credential_digest.nil?
+        user_id.present? && credential_digest.present?
       end
       errors.add :base, "credential intent attributes do not match its purpose" unless valid
     end

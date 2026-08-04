@@ -142,7 +142,9 @@ class Message < ApplicationRecord
     end
 
     def client_message_id_within_limit
-      if client_message_id && client_message_id.bytesize > ContentLimits::CLIENT_MESSAGE_ID_BYTES
+      if !client_message_id.nil? && client_message_id.empty?
+        errors.add :client_message_id, "cannot be blank"
+      elsif client_message_id && client_message_id.bytesize > ContentLimits::CLIENT_MESSAGE_ID_BYTES
         errors.add :client_message_id,
           "is too long (maximum is #{ContentLimits::CLIENT_MESSAGE_ID_BYTES} bytes)"
       end

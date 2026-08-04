@@ -21,6 +21,42 @@ class Oidc::LogoutTokenVerifierTest < ActiveSupport::TestCase
     assert_requested :get, "https://idp.example.com/jwks"
   end
 
+  test "accepts an absent kid for one usable key and extension event members" do
+    claims = Oidc::LogoutTokenVerifier.new.verify(signed_logout_token(
+      kid: nil,
+      claims: {
+        "events" => {
+          Oidc::LogoutTokenVerifier::BACK_CHANNEL_LOGOUT_EVENT => { "provider_extension" => true }
+        }
+      }
+    ))
+
+    assert_equal "logout-subject", claims.fetch("sub")
+  end
+
+  test "accepts an absent kid when exactly one of multiple usable keys verifies" do
+    second_key = OpenSSL::PKey::RSA.generate(2048)
+    stub_request(:get, "https://idp.example.com/jwks").to_return(
+      status: 200, headers: { "Content-Type" => "application/json" },
+      body: { keys: [ JWK.as_json, JSON::JWK.new(second_key.public_key).as_json ] }.to_json
+    )
+
+    claims = Oidc::LogoutTokenVerifier.new.verify(signed_logout_token(kid: nil))
+
+    assert_equal "logout-subject", claims.fetch("sub")
+  end
+
+  test "rejects weak RSA verification keys" do
+    weak_key = OpenSSL::PKey::RSA.generate(1024)
+    weak_jwk = JSON::JWK.new(weak_key.public_key)
+    stub_request(:get, "https://idp.example.com/jwks").to_return(
+      status: 200, headers: { "Content-Type" => "application/json" },
+      body: { keys: [ weak_jwk.as_json ] }.to_json
+    )
+
+    assert_invalid signed_logout_token(signing_key: weak_key, kid: weak_jwk.thumbprint)
+  end
+
   test "requires the configured algorithm and a valid signature" do
     assert_invalid signed_logout_token(algorithm: :RS384)
 
@@ -302,6 +338,33 @@ class Oidc::LogoutTokenVerifierTest < ActiveSupport::TestCase
     assert_requested :get, "https://idp.example.com/jwks", times: 2
   end
 
+  test "globally throttles repeated invalid signatures without a kid" do
+    verifier = Oidc::LogoutTokenVerifier.new(cache: ActiveSupport::Cache::MemoryStore.new)
+    verifier.verify signed_logout_token
+    attacker_key = OpenSSL::PKey::RSA.generate(2048)
+    invalid = signed_logout_token(signing_key: attacker_key, kid: nil)
+
+    2.times do
+      assert_raises(Oidc::LogoutTokenVerifier::Invalid) { verifier.verify(invalid) }
+    end
+
+    assert_requested :get, "https://idp.example.com/.well-known/openid-configuration", times: 2
+    assert_requested :get, "https://idp.example.com/jwks", times: 2
+  end
+
+  test "verifies a no-kid rollover from the coordinated result without rereading stale keys" do
+    rotated_key = OpenSSL::PKey::RSA.generate(2048)
+    rotated_jwk = JSON::JWK.new(rotated_key.public_key).as_json
+    verifier = Oidc::LogoutTokenVerifier.new
+    verifier.expects(:verification_keys).once.returns([ [ JWK.as_json ], true ])
+    verifier.expects(:coordinated_refresh_verification_keys).once.returns([ rotated_jwk ])
+
+    verifier.send(
+      :verify_signature_without_kid!,
+      signed_logout_token(signing_key: rotated_key, kid: nil)
+    )
+  end
+
   private
     def assert_invalid(token, message: nil)
       expected = [ Oidc::LogoutTokenVerifier::Invalid ]
@@ -320,8 +383,7 @@ class Oidc::LogoutTokenVerifierTest < ActiveSupport::TestCase
     def signed_logout_token(claims: {}, without: [], signing_key: SIGNING_KEY, algorithm: :RS256,
         kid: JWK.thumbprint)
       attributes = logout_claims.stringify_keys.merge(claims.stringify_keys).except(*without)
-      JSON::JWT.new(attributes).tap { _1.kid = kid }
-        .sign(signing_key, algorithm).to_s
+      JSON::JWT.new(attributes).tap { _1.kid = kid if kid }.sign(signing_key, algorithm).to_s
     end
 
     def logout_claims

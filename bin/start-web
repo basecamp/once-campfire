@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+export LOG_REQUESTS=false
+export THRUSTER_LOG_REQUESTS=false
+
 if [ -n "${DISABLE_SSL:-}" ]; then
   unset CAMPFIRE_INTERNAL_TLS_PROXY
   export PORT=80

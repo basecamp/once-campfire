@@ -52,6 +52,7 @@ class ReleasePolicyTest < ActiveSupport::TestCase
       root.join("Dockerfile").write <<~DOCKERFILE
         # syntax = docker/dockerfile:1@#{DIGEST}
         FROM ruby:3.4-slim@#{DIGEST} AS base
+        ENV BUNDLE_WITHOUT="development:test"
         FROM base
       DOCKERFILE
       root.join(".github/workflows/ci.yml").write <<~YAML
@@ -68,6 +69,68 @@ class ReleasePolicyTest < ActiveSupport::TestCase
 
       assert status.success?, stderr
       assert_equal "Release and container policy verified\n", stdout
+    end
+  end
+
+  test "policy rejects production bundles containing test dependencies" do
+    with_repository_policy_fixture do |root|
+      dockerfile = root.join("Dockerfile")
+      dockerfile.write dockerfile.read.sub('BUNDLE_WITHOUT="development:test"', 'BUNDLE_WITHOUT="development"')
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "production bundle must exclude development and test dependencies", stderr
+    end
+  end
+
+  test "policy rejects a later production bundle override" do
+    with_repository_policy_fixture do |root|
+      dockerfile = root.join("Dockerfile")
+      dockerfile.write dockerfile.read.sub(
+        "# Throw-away build stage",
+        "ENV BUNDLE_WITHOUT=\"development\"\n\n# Throw-away build stage"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "production bundle must exclude development and test dependencies", stderr
+    end
+  end
+
+  test "policy rejects a bundle-install command override" do
+    with_repository_policy_fixture do |root|
+      dockerfile = root.join("Dockerfile")
+      dockerfile.write dockerfile.read.sub(
+        "RUN bundle install",
+        "RUN BUNDLE_WITHOUT=development bundle install"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "production bundle must exclude development and test dependencies", stderr
+    end
+  end
+
+  test "policy rejects alternate Docker environment override forms" do
+    [
+      "ENV BUNDLE_WITHOUT development",
+      "RUN env -u BUNDLE_WITHOUT bundle install"
+    ].each do |override|
+      with_repository_policy_fixture do |root|
+        dockerfile = root.join("Dockerfile")
+        dockerfile.write dockerfile.read.sub(
+          "# Throw-away build stage",
+          "#{override}\n\n# Throw-away build stage"
+        )
+
+        _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+        assert_not status.success?, override
+        assert_match "production bundle must exclude development and test dependencies", stderr
+      end
     end
   end
 

@@ -137,7 +137,9 @@ class Backup
         unless persistent_source_entries(storage_directory) == source_entries
           raise "Persistent storage changed while the backup was being prepared; stop Campfire and try again"
         end
-        CampfireBackup::RedisValidator.validate! staging_directory.join("payload")
+        CampfireBackup::RedisValidator.validate!(
+          staging_directory.join("payload"), require_aof: current_storage_format?
+        )
         database_metadata = inspect_snapshot(
           snapshot_path, payload_directory: staging_directory.join("payload"), installation_identifier:
         )
@@ -193,6 +195,7 @@ class Backup
         write_json staging_directory.join("manifest.json"), manifest
         verify_staged_files!(staging_directory, manifest, authentication_key:)
         make_generation_group_readable! staging_directory
+        verify_staged_files!(staging_directory, manifest, authentication_key:)
         flush_directory_tree staging_directory
         assert_source_database_semantics! database_path, database_identity, operation_lock
         File.rename staging_directory, generation_directory
@@ -313,9 +316,6 @@ class Backup
           destination = payload_directory.join(entry.fetch(:path))
           destination.dirname.mkpath
           FileUtils.copy_file source, destination
-          if entry.fetch(:path) == CampfireBackup::InstallationIdentity::FILENAME
-            File.chmod 0o644, destination
-          end
           flush_file destination
 
           current = source.lstat
@@ -371,23 +371,113 @@ class Backup
       end
 
       def make_generation_group_readable!(generation_directory)
-        paths = [ generation_directory ] + Dir.glob(
+        paths = Dir.glob(
           generation_directory.join("**", "*"), File::FNM_DOTMATCH
         ).filter_map do |name|
           path = Pathname(name)
           path unless %w[ . .. ].include?(path.basename.to_s)
         end
+        files = []
+        directories = [ [ generation_directory, generation_directory.lstat ] ]
         paths.each do |path|
           stat = path.lstat
-          mode = if stat.directory?
-            (stat.mode & 0o777) | 0o050
+          if stat.directory?
+            directories << [ path, stat ]
           elsif stat.file?
-            (stat.mode & 0o777) | 0o040
+            files << [ path, stat ]
           else
             raise "Backup generation contains a link or special file"
           end
-          File.chmod mode, path
-          flush_file path if stat.file?
+        end
+        files.each { |path, stat| replace_generation_file!(path, stat) }
+        directories.sort_by { |path, _| path.each_filename.count }.reverse_each do |path, stat|
+          set_generation_directory_permissions!(path, stat)
+        end
+      rescue Errno::ENOENT, Errno::ELOOP, Errno::ENOTDIR, Errno::ENXIO, Errno::ENODEV,
+          Errno::EISDIR, Errno::ENOTEMPTY
+        raise "Backup generation entry changed during permission handoff"
+      end
+
+      def replace_generation_file!(path, expected)
+        raise "No-follow descriptor support is required for backup permissions" unless defined?(File::NOFOLLOW)
+
+        temporary = path.dirname.join(".#{path.basename}.permissions-#{SecureRandom.hex(8)}.tmp")
+        flags = File::RDONLY | File::NOFOLLOW
+        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+        replacement_identity = nil
+        File.open(path, flags) do |source|
+          opened = source.stat
+          unless expected.nlink == 1 && opened.nlink == 1 &&
+              [ opened.dev, opened.ino, opened.ftype ] == [ expected.dev, expected.ino, expected.ftype ]
+            raise "Backup generation entry changed during permission handoff"
+          end
+          source_state = [ opened.dev, opened.ino, opened.ftype, opened.size, opened.mtime.to_i, opened.mtime.nsec ]
+
+          replacement_flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
+          File.open(temporary, replacement_flags, 0o640) do |replacement|
+            created = replacement.stat
+            unless created.file? && created.nlink == 1 && created.gid == Process.gid &&
+                (created.mode & 0o777) == 0o640
+              raise "Backup generation permissions could not be created safely"
+            end
+            IO.copy_stream source, replacement
+            current_source = source.stat
+            current_path = path.lstat
+            unless current_source.nlink == 1 &&
+                [ current_source.dev, current_source.ino, current_source.ftype, current_source.size,
+                  current_source.mtime.to_i, current_source.mtime.nsec ] == source_state &&
+                [ current_path.dev, current_path.ino, current_path.ftype ] == source_state.first(3)
+              raise "Backup generation entry changed during permission handoff"
+            end
+
+            replacement.fsync
+            normalized = replacement.stat
+            unless normalized.file? && normalized.nlink == 1 && normalized.gid == Process.gid &&
+                (normalized.mode & 0o777) == 0o640 && normalized.size == current_source.size
+              raise "Backup generation permissions could not be normalized"
+            end
+            replacement_identity = [ normalized.dev, normalized.ino, normalized.ftype ]
+          end
+
+          current = path.lstat
+          unless current.nlink == 1 &&
+              [ current.dev, current.ino, current.ftype ] == [ opened.dev, opened.ino, opened.ftype ]
+            raise "Backup generation entry changed during permission handoff"
+          end
+          File.rename temporary, path
+        end
+        published = path.lstat
+        unless published.nlink == 1 && published.gid == Process.gid &&
+            (published.mode & 0o777) == 0o640 &&
+            [ published.dev, published.ino, published.ftype ] == replacement_identity
+          raise "Backup generation permissions could not be normalized"
+        end
+        flush_directory path.dirname
+      ensure
+        FileUtils.rm_f temporary if defined?(temporary)
+      end
+
+      def set_generation_directory_permissions!(path, expected)
+        raise "No-follow descriptor support is required for backup permissions" unless defined?(File::NOFOLLOW)
+
+        flags = File::RDONLY | File::NOFOLLOW
+        flags |= File::NONBLOCK if defined?(File::NONBLOCK)
+        flags |= File::DIRECTORY if defined?(File::DIRECTORY)
+        File.open(path, flags) do |entry|
+          opened = entry.stat
+          unless opened.directory? &&
+              [ opened.dev, opened.ino, opened.ftype ] == [ expected.dev, expected.ino, expected.ftype ]
+            raise "Backup generation entry changed during permission handoff"
+          end
+          entry.chown nil, Process.gid
+          entry.chmod 0o750
+          entry.fsync
+          updated = entry.stat
+          current = path.lstat
+          unless updated.gid == Process.gid && (updated.mode & 0o777) == 0o750 &&
+              [ updated.dev, updated.ino, updated.ftype ] == [ current.dev, current.ino, current.ftype ]
+            raise "Backup generation permissions could not be normalized"
+          end
         end
       end
 

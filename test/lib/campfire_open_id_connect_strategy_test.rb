@@ -145,6 +145,33 @@ class CampfireOpenIdConnectStrategyTest < ActiveSupport::TestCase
     assert_not Oidc::Flow.exists?
   end
 
+  test "rejects weak provider RSA signing keys" do
+    configure_oidc
+    signing_key = OpenSSL::PKey::RSA.generate(1024)
+    jwk = JSON::JWK.new(signing_key.public_key)
+    stub_provider_metadata(jwk)
+    token = signed_id_token(signing_key, jwk, nonce: "nonce")
+
+    assert_raises(Oidc::EndpointError) do
+      strategy_for(request_environment({})).send(:decode_id_token, token)
+    end
+  end
+
+  test "rejects recursive SWD discovery redirects without following them" do
+    configure_oidc
+    discovery_url = "https://idp.example.com/.well-known/openid-configuration"
+    stub_request(:get, discovery_url).to_return(
+      status: 200,
+      headers: { "Content-Type" => "application/json" },
+      body: { SWD_service_redirect: { location: discovery_url } }.to_json
+    )
+
+    assert_raises(OpenIDConnect::Discovery::DiscoveryFailed) do
+      strategy_for(request_environment({})).send(:discover!)
+    end
+    assert_requested :get, discovery_url, times: 1
+  end
+
   test "does not let a second browser tab invalidate an active flow" do
     configure_oidc
     signing_key = OpenSSL::PKey::RSA.generate(2048)

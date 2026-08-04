@@ -1,4 +1,5 @@
 require "test_helper"
+require "erb"
 
 load Rails.root.join("bin/boot") unless defined?(ProcessMonitor)
 
@@ -56,6 +57,30 @@ class ProcessMonitorTest < ActiveSupport::TestCase
     assert first.started
     assert first.terminated
     assert_not second.started
+  end
+
+  test "uses a shutdown default long enough for bounded delivery retries" do
+    assert_equal 60, ProcessMonitor::DEFAULT_SHUTDOWN_TIMEOUT
+  end
+
+  test "rejects a nonpositive configured shutdown timeout" do
+    assert_raises(ArgumentError) do
+      ProcessMonitor.new("unused", shutdown_timeout: 0)
+    end
+  end
+
+  test "resque concurrency requires a positive integer" do
+    template = ERB.new(Rails.root.join("config/resque-pool.yml").read)
+    previous = ENV["JOB_CONCURRENCY"]
+
+    %w[ 0 -1 1.5 ].each do |value|
+      ENV["JOB_CONCURRENCY"] = value
+      assert_raises(ArgumentError) { template.result }
+    end
+    ENV["JOB_CONCURRENCY"] = "2"
+    assert_equal({ "default" => 2 }, YAML.safe_load(template.result))
+  ensure
+    previous ? ENV["JOB_CONCURRENCY"] = previous : ENV.delete("JOB_CONCURRENCY")
   end
 
   test "escalates every process group after the graceful deadline" do

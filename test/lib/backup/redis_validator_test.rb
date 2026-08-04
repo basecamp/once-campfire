@@ -54,6 +54,34 @@ class CampfireBackup::RedisValidatorTest < ActiveSupport::TestCase
     end
   end
 
+  test "rejects an RDB-only layout that the configured Redis would ignore" do
+    with_payload do |payload|
+      rdb = payload.join("redis", "dump.rdb")
+      rdb.dirname.mkpath
+      rdb.write "structurally valid but not loadable under appendonly yes"
+      CampfireBackup::Subprocess.expects(:capture3).never
+
+      error = assert_raises(RuntimeError) { CampfireBackup::RedisValidator.validate!(payload) }
+
+      assert_match "requires AOF persistence", error.message
+    end
+  end
+
+  test "requires AOF persistence for current-format backups" do
+    with_payload do |payload|
+      error = assert_raises(RuntimeError) do
+        CampfireBackup::RedisValidator.validate!(payload, require_aof: true)
+      end
+      assert_match "missing required AOF", error.message
+
+      payload.join("redis").mkpath
+      error = assert_raises(RuntimeError) do
+        CampfireBackup::RedisValidator.validate!(payload, require_aof: true)
+      end
+      assert_match "missing required AOF", error.message
+    end
+  end
+
   test "rejects orphaned multi-part AOF files" do
     with_payload do |payload|
       directory = payload.join("redis", "appendonlydir").tap(&:mkpath)

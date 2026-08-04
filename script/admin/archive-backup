@@ -52,22 +52,36 @@ class BackupArchiver
       if archive_path.symlink? || (archive_path.exist? && !archive_path.file?)
         raise "Backup archive publication path must be an independent regular file"
       end
-      raise "Backup archive staging path cannot be a symbolic link" if staging_directory.symlink?
 
       identity = publication_identity(manifest, archive_path, encryption_keyring)
       with_private_plaintext_workspace(
         destination_directory, expected_environment:, plaintext_temporary_directory:,
         mount_identity_resolver:
       ) do |plaintext_workspace|
-        if archive_path.exist? && !staging_directory.exist?
+        if archive_path.exist?
+          detach_staged_final_link! staging_directory, archive_path
           verify_publication!(
             archive_path:, backup_id:, expected_installation_fingerprint:, expected_environment:,
             authentication_key:, encryption_keyring:,
             expected_manifest_sha256: source_manifest_sha256, plaintext_workspace:
           )
           operation_lock.assert_current!
+          if staging_directory.exist? || staging_directory.symlink?
+            begin
+              remove_verified_staging! staging_directory, identity, authentication_key
+            rescue StandardError => error
+              if error.message.include?("ownership cannot be authenticated")
+                warn "Verified final backup archive; preserving suspicious staging for manual inspection: " \
+                  "#{staging_directory} (#{error.message})"
+              else
+                raise
+              end
+            end
+          end
           return report_publication(archive_path, backup_id, authentication_key)
         end
+
+        raise "Backup archive staging path cannot be a symbolic link" if staging_directory.symlink?
 
         reconcile_interrupted_publication!(
           staging_directory:, archive_path:, identity:,
@@ -364,11 +378,44 @@ class BackupArchiver
       end
 
       def remove_owned_staging!(directory, identity, authentication_key)
-        return unless directory.exist?
+        return unless directory.exist? || directory.symlink?
 
         verify_owned_staging! directory, identity, authentication_key
         FileUtils.remove_entry_secure directory
         flush_directory directory.dirname
+      end
+
+      def detach_staged_final_link!(staging_directory, archive_path)
+        return unless archive_path.lstat.nlink > 1
+
+        staging_stat = staging_directory.lstat
+        staged_archive = staging_directory.join(archive_path.basename)
+        allowed_entries = [ STAGING_MARKER, archive_path.basename.to_s ]
+        unless staging_stat.directory? && !staging_directory.symlink? && staging_stat.uid == Process.euid &&
+            (staging_stat.mode & 0o077).zero? &&
+            staging_directory.children.all? { _1.basename.to_s.in?(allowed_entries) } &&
+            staged_archive.file? && !staged_archive.symlink? &&
+            staged_archive.lstat.nlink == 2 && archive_path.lstat.nlink == 2 &&
+            File.identical?(staged_archive, archive_path)
+          raise "Backup archive staging cannot be detached safely; preserve it for manual inspection"
+        end
+
+        staged_archive.unlink
+        flush_directory staging_directory
+        flush_directory staging_directory.dirname
+      rescue Errno::ENOENT, Errno::ELOOP
+        raise "Backup archive staging cannot be detached safely; preserve it for manual inspection"
+      end
+
+      def remove_verified_staging!(directory, identity, authentication_key)
+        stat = directory.lstat
+        if stat.directory? && !directory.symlink? && stat.uid == Process.euid &&
+            (stat.mode & 0o077).zero? && directory.children.empty?
+          Dir.rmdir directory
+          flush_directory directory.dirname
+        else
+          remove_owned_staging! directory, identity, authentication_key
+        end
       end
 
       def verify_publication!(archive_path:, backup_id:,

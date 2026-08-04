@@ -38,9 +38,9 @@ class SecurityEndpointRequestGuard
       endpoint: endpoint.name, remote_ip: request.remote_ip,
       limit: endpoint.request_limit, window: REQUEST_WINDOW, store: @store
     )
-      return error_response(endpoint, :too_many_requests)
+      return error_response(endpoint, :too_many_requests, head: request.head?)
     end
-    return error_response(endpoint, :service_unavailable) unless endpoint.semaphore.try_acquire
+    return error_response(endpoint, :service_unavailable, head: request.head?) unless endpoint.semaphore.try_acquire
 
     begin
       status, headers, body = @app.call(env)
@@ -52,15 +52,20 @@ class SecurityEndpointRequestGuard
       endpoint.semaphore.release
     end
   rescue SecurityEndpointRateLimiter::Unavailable
-    error_response(endpoint, :service_unavailable)
+    error_response(endpoint, :service_unavailable, head: request&.head?)
   end
 
   private
     def restore_security_endpoint_method!(env)
       original_method = env["rack.methodoverride.original_method"]
-      if original_method && endpoint_for(env["PATH_INFO"])
+      if original_method && (endpoint_for(env["PATH_INFO"]) || oidc_authentication_path?(env["PATH_INFO"]))
         env["REQUEST_METHOD"] = original_method
       end
+    end
+
+    def oidc_authentication_path?(path)
+      normalized = path.to_s.downcase.delete_suffix("/")
+      normalized.in?([ SecurityEndpointBodyLimiter::OIDC_PATH, SecurityEndpointBodyLimiter::OIDC_CALLBACK_PATH ])
     end
 
     def endpoint_for(path)
@@ -73,10 +78,10 @@ class SecurityEndpointRequestGuard
       endpoint.scim ? Scim.enabled? : Oidc.enabled?
     end
 
-    def error_response(endpoint, status)
+    def error_response(endpoint, status, head: false)
       return plain_response(status) unless endpoint&.scim
 
-      scim_response status
+      scim_response(status).tap { _1[2] = [] if head }
     end
 
     def plain_response(status)
@@ -110,7 +115,9 @@ end
 
 class SecurityEndpointBodyLimiter
   RAW_BODY_KEY = "campfire.security_endpoint_raw_body"
-  BODY_METHODS = %w[ POST PUT PATCH DELETE ].freeze
+  OIDC_PATH = "/auth/openid_connect"
+  OIDC_CALLBACK_PATH = "/auth/openid_connect/callback"
+  OIDC_BODY_BYTES = 16.kilobytes
 
   def initialize(app)
     @app = app
@@ -118,17 +125,20 @@ class SecurityEndpointBodyLimiter
 
   def call(env)
     endpoint = endpoint_for(env["PATH_INFO"])
-    return @app.call(env) unless endpoint && env["REQUEST_METHOD"].in?(BODY_METHODS)
-    return error_response(endpoint, :content_too_large) if declared_body_too_large?(env, endpoint.fetch(:maximum))
+    return @app.call(env) unless endpoint
+    if declared_body_too_large?(env, endpoint.fetch(:maximum))
+      return request_error_response(env, endpoint, :content_too_large)
+    end
 
-    body = read_body(env.fetch("rack.input"), endpoint.fetch(:maximum))
-    return error_response(endpoint, :content_too_large) unless body
+    input = env["rack.input"] || StringIO.new("")
+    body = read_body(input, endpoint.fetch(:maximum))
+    return request_error_response(env, endpoint, :content_too_large) unless body
 
     env[RAW_BODY_KEY] = body
     env["rack.input"] = StringIO.new(body)
     @app.call(env)
   rescue IOError, SystemCallError
-    error_response(endpoint, :bad_request)
+    request_error_response(env, endpoint, :bad_request)
   end
 
   private
@@ -139,6 +149,10 @@ class SecurityEndpointBodyLimiter
       elsif normalized == SecurityEndpointRequestGuard::SCIM_PATH_PREFIX ||
           normalized.start_with?("#{SecurityEndpointRequestGuard::SCIM_PATH_PREFIX}/")
         { maximum: SecurityEndpointRequestGuard::SCIM_BODY_BYTES, scim: true }
+      elsif normalized == OIDC_PATH
+        { maximum: OIDC_BODY_BYTES, scim: false }
+      elsif normalized == OIDC_CALLBACK_PATH
+        { maximum: 0, scim: false }
       end
     end
 
@@ -183,5 +197,11 @@ class SecurityEndpointBodyLimiter
         },
         [ body ]
       ]
+    end
+
+    def request_error_response(env, endpoint, status)
+      response = error_response(endpoint, status)
+      response[2] = [] if env["REQUEST_METHOD"] == "HEAD"
+      response
     end
 end

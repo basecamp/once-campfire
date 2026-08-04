@@ -68,11 +68,13 @@ class Oidc::FlowTest < ActiveSupport::TestCase
   end
 
   test "retains the initiating session and linking operation" do
+    linking_deadline = 2.minutes.from_now.change(usec: 0)
     flow = start_flow(
       initiating_session_id: sessions(:jz_chrome).id,
       linking_intent: {
         "session_id" => sessions(:jz_chrome).id,
-        "return_to" => "https://campfire.example.com/users/me/profile"
+        "return_to" => "https://campfire.example.com/users/me/profile",
+        "expires_at" => linking_deadline.to_i
       }
     )
 
@@ -82,6 +84,20 @@ class Oidc::FlowTest < ActiveSupport::TestCase
     assert_equal sessions(:jz_chrome).id, consumed.initiating_session_id
     assert_equal sessions(:jz_chrome).id, consumed.linking_session_id
     assert_equal "https://campfire.example.com/users/me/profile", consumed.return_to
+    assert_equal linking_deadline, flow.expires_at
+    assert_equal linking_deadline, consumed.expires_at
+  end
+
+
+  test "does not extend an expired linking authorization" do
+    assert_raises(Oidc::Flow::Invalid) do
+      start_flow(linking_intent: {
+        "session_id" => sessions(:jz_chrome).id,
+        "expires_at" => 1.second.ago.to_i
+      })
+    end
+
+    assert_not Oidc::Flow.exists?
   end
 
   test "an expired flow no longer blocks a new initiation" do

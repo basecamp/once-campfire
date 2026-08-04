@@ -4,6 +4,11 @@
 <section class="txt-align-center">
   <div class="panel <%= "shake" if flash[:alert] %>">
     <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
+    <h1 class="txt-large">Sign in to <%= Current.account.name %></h1>
+
+    <% if flash[:oidc_verified] %>
+      <p role="status">Single sign-on verification is complete. You can close this page while an administrator finishes activation.</p>
+    <% end %>
 
     <% if params[:oidc_retry].present? %>
       <p>The previous single sign-on attempt was canceled. You can start again.</p>

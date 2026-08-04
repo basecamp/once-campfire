@@ -1,1 +1,6 @@
-default: <%= (Concurrent.processor_count * 0.5).ceil %>
+<%
+  default_concurrency = [ (Concurrent.available_processor_count * 0.5).ceil, 4 ].min
+  job_concurrency = Integer(ENV.fetch("JOB_CONCURRENCY", default_concurrency).to_s, 10)
+  raise ArgumentError, "JOB_CONCURRENCY must be positive" unless job_concurrency.positive?
+%>
+default: <%= job_concurrency %>

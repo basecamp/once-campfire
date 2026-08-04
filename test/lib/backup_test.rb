@@ -19,6 +19,7 @@ class BackupTest < ActiveSupport::TestCase
     ENV["BACKUP_AUTHENTICATION_KEY"] = AUTHENTICATION_KEY
     ActiveStorage::Attachment.delete_all
     ActiveStorage::Blob.delete_all
+    CampfireBackup::RedisValidator.stubs(:validate!)
   end
 
   teardown do
@@ -34,7 +35,7 @@ class BackupTest < ActiveSupport::TestCase
       stored_file = storage.join("files", "room", "attachment.txt")
       stored_file.dirname.mkpath
       stored_file.write "irreplaceable attachment"
-      File.chmod 0o600, stored_file
+      File.chmod 0o666, stored_file
       redis_file = storage.join("redis", "appendonly.aof")
       redis_file.dirname.mkpath
       redis_file.write "durable queue state"
@@ -59,7 +60,9 @@ class BackupTest < ActiveSupport::TestCase
       assert_equal "irreplaceable attachment", copied_file.read
       assert_equal "durable queue state", generation.join("payload", "redis", "appendonly.aof").read
       assert_equal 0o750, generation.stat.mode & 0o777
+      assert_equal Process.gid, generation.stat.gid
       assert_equal 0o640, copied_file.stat.mode & 0o777
+      assert_equal Process.gid, copied_file.stat.gid
       assert_equal 0o640, generation.join("payload", "redis", "appendonly.aof").stat.mode & 0o777
       stored_file.write "changed after publication"
       capture_io do
@@ -114,12 +117,18 @@ class BackupTest < ActiveSupport::TestCase
       stored_file.write "standalone verification"
       manifest = backup_manifest(storage, backups)
       generation = backups.join(manifest.fetch("backup_id"))
+      tools = storage.dirname.join("tools").tap(&:mkpath)
+      tools.join("redis-check-aof").tap do |checker|
+        checker.write "#!/bin/sh\nexit 0\n"
+        File.chmod 0o700, checker
+      end
 
       stdout, stderr, status = Open3.capture3(
         {
           "EXPECTED_INSTALLATION_FINGERPRINT" => manifest.fetch("installation_fingerprint"),
           "EXPECTED_ENVIRONMENT" => "test",
-          "BACKUP_AUTHENTICATION_KEY" => AUTHENTICATION_KEY
+          "BACKUP_AUTHENTICATION_KEY" => AUTHENTICATION_KEY,
+          "PATH" => "#{tools}:#{ENV.fetch('PATH')}"
         },
         RbConfig.ruby,
         Rails.root.join("script/admin/verify-backup").to_s,
@@ -211,7 +220,7 @@ class BackupTest < ActiveSupport::TestCase
       copied_marker = backups.join(manifest.fetch("backup_id"), "payload", marker.basename)
 
       assert_equal 0o644, marker.stat.mode & 0o777
-      assert_equal 0o644, copied_marker.stat.mode & 0o777
+      assert_equal 0o640, copied_marker.stat.mode & 0o777
       assert_equal accounts(:signal).installation_identifier, copied_marker.read.strip
       refute_includes copied_marker.read, AUTHENTICATION_KEY
 
@@ -860,11 +869,130 @@ class BackupTest < ActiveSupport::TestCase
     end
   end
 
+  test "generation permission handoff cannot follow a raced symlink" do
+    Dir.mktmpdir("campfire-generation-permission-race") do |directory|
+      root = Pathname(directory)
+      generation = root.join("generation").tap(&:mkpath)
+      victim = generation.join("victim").tap { _1.write "generation bytes" }
+      displaced = root.join("displaced")
+      outside = root.join("outside").tap do |path|
+        path.write "outside bytes"
+        File.chmod 0o666, path
+      end
+      outside_before = outside.lstat
+      original_open = File.method(:open)
+      raced = false
+
+      File.define_singleton_method(:open) do |path, *arguments, **options, &block|
+        if !raced && Pathname(path) == victim && arguments.first.is_a?(Integer)
+          File.rename victim, displaced
+          File.symlink outside, victim
+          raced = true
+        end
+        original_open.call(path, *arguments, **options, &block)
+      end
+
+      error = assert_raises(RuntimeError) do
+        Backup.send(:make_generation_group_readable!, generation)
+      end
+
+      assert raced
+      assert_match "changed during permission handoff", error.message
+      outside_after = outside.lstat
+      assert_equal [ outside_before.gid, outside_before.mode & 0o777 ],
+        [ outside_after.gid, outside_after.mode & 0o777 ]
+    ensure
+      File.define_singleton_method(:open) do |path, *arguments, **options, &block|
+        original_open.call(path, *arguments, **options, &block)
+      end if original_open
+    end
+  end
+
+  test "generation permission handoff cannot modify a hard-linked peer" do
+    Dir.mktmpdir("campfire-generation-hardlink") do |directory|
+      root = Pathname(directory)
+      generation = root.join("generation").tap(&:mkpath)
+      outside = root.join("outside").tap do |path|
+        path.write "outside bytes"
+        File.chmod 0o600, path
+      end
+      File.link outside, generation.join("linked-file")
+      before = outside.stat
+
+      error = assert_raises(RuntimeError) do
+        Backup.send(:make_generation_group_readable!, generation)
+      end
+
+      assert_match "changed during permission handoff", error.message
+      after = outside.stat
+      assert_equal [ before.gid, before.mode & 0o777 ], [ after.gid, after.mode & 0o777 ]
+      assert_equal 2, after.nlink
+    end
+  end
+
+  test "generation permission handoff cannot modify a peer linked during copying" do
+    Dir.mktmpdir("campfire-generation-hardlink-race") do |directory|
+      root = Pathname(directory)
+      generation = root.join("generation").tap(&:mkpath)
+      victim = generation.join("victim").tap do |path|
+        path.write "generation bytes"
+        File.chmod 0o600, path
+      end
+      outside = root.join("outside")
+      original_copy = IO.method(:copy_stream)
+      raced = false
+      IO.define_singleton_method(:copy_stream) do |source, destination, *arguments|
+        original_copy.call(source, destination, *arguments).tap do
+          if !raced && Pathname(source.path) == victim
+            File.link victim, outside
+            raced = true
+          end
+        end
+      end
+
+      error = assert_raises(RuntimeError) do
+        Backup.send(:make_generation_group_readable!, generation)
+      end
+
+      assert raced
+      assert_match "changed during permission handoff", error.message
+      assert_equal "generation bytes", outside.read
+      assert_equal 0o600, outside.stat.mode & 0o777
+      assert_equal 2, outside.stat.nlink
+    ensure
+      IO.define_singleton_method(:copy_stream) do |source, destination, *arguments|
+        original_copy.call(source, destination, *arguments)
+      end if original_copy
+    end
+  end
+
+  test "generation permission handoff fails closed when the umask removes final permissions" do
+    Dir.mktmpdir("campfire-generation-umask") do |directory|
+      generation = Pathname(directory).join("generation").tap(&:mkpath)
+      victim = generation.join("victim").tap do |path|
+        path.write "generation bytes"
+        File.chmod 0o600, path
+      end
+      previous_umask = File.umask(0o077)
+
+      error = assert_raises(RuntimeError) do
+        Backup.send(:make_generation_group_readable!, generation)
+      end
+
+      assert_match "permissions could not be created safely", error.message
+      assert_equal "generation bytes", victim.read
+      assert_equal 0o600, victim.stat.mode & 0o777
+      assert_empty generation.children.select { _1.basename.to_s.include?(".permissions-") }
+    ensure
+      File.umask(previous_umask) if previous_umask
+    end
+  end
+
   private
     def with_storage
       Dir.mktmpdir("campfire-backup") do |directory|
         storage = Pathname(directory).join("storage").tap(&:mkpath)
-        storage.join("redis").mkpath
+        storage.join("redis").tap(&:mkpath).join("appendonly.aof").write("")
         CampfireBackup::RecoveryMarkers.publish_clean_shutdown!(
           storage, boot_id: CampfireBackup::RecoveryMarkers.new_boot_id
         )

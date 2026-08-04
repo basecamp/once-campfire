@@ -351,7 +351,10 @@ class BackupInstaller
             expected_identity: before.fetch(metadata.fetch("path")).fetch(:identity)
         end
 
-        CampfireBackup::RedisValidator.validate! storage_directory
+        CampfireBackup::RedisValidator.validate!(
+          storage_directory,
+          require_aof: manifest.fetch("schema_version").to_i >= CampfireBackup::UpgradeRecoveryGuard::GATED_MIGRATION
+        )
         manifest.fetch("files").each do |metadata|
           path = storage_directory.join(metadata.fetch("path"))
           verify_metadata! path, metadata,

@@ -36,6 +36,7 @@ module User::Bannable
 
     def remove_ban!
       with_lock do
+        ensure_required_oidc_unban_is_safe!
         bans.delete_all
         if identities.where.not(provider_revoked_at: nil).exists?
           send :apply_deactivation!
@@ -49,6 +50,18 @@ module User::Bannable
           next_attempt_at: nil, updated_at: now
         )
       end
+    end
+
+    def ensure_required_oidc_unban_is_safe!
+      return unless Oidc.required_active?
+      return if Oidc.break_glass?(self)
+      return if identities.where(
+        issuer: Oidc.issuer,
+        provider_fingerprint: Oidc.provider_fingerprint,
+        provider_revoked_at: nil
+      ).exists?
+
+      raise User::AuthorizationError, "an unlinked user cannot be unbanned while required single sign-on is active"
     end
 
     def create_bans_from_sessions

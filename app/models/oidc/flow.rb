@@ -7,7 +7,7 @@ class Oidc::Flow < ApplicationRecord
 
   Consumed = Data.define(
     :id, :finalization_token, :nonce, :pkce_verifier, :operation,
-    :initiating_session_id, :linking_session_id, :return_to
+    :initiating_session_id, :linking_session_id, :return_to, :expires_at
   ) do
     def finalize!(&)
       Oidc::Flow.finalize! self, &
@@ -33,6 +33,7 @@ class Oidc::Flow < ApplicationRecord
       operation = linking_intent ? "link" : "authenticate"
       linking_session_id = linking_intent&.fetch("session_id", nil)
       browser_digest = digest("browser", browser_token)
+      expires_at = flow_expiration(linking_intent, now)
 
       transaction(requires_new: true) do
         where("expires_at <= ? OR (consumed_at IS NOT NULL AND state_digest NOT LIKE ?)",
@@ -50,7 +51,7 @@ class Oidc::Flow < ApplicationRecord
           initiating_session_id:,
           linking_session_id:,
           return_to: linking_intent&.fetch("return_to", nil),
-          expires_at: Oidc::FLOW_LIFETIME.from_now
+          expires_at:
         )
       end
     rescue ActiveRecord::RecordNotUnique
@@ -83,7 +84,8 @@ class Oidc::Flow < ApplicationRecord
           operation: flow.operation,
           initiating_session_id: flow.initiating_session_id,
           linking_session_id: flow.linking_session_id,
-          return_to: flow.return_to
+          return_to: flow.return_to,
+          expires_at: flow.expires_at
         )
         flow.update_columns(
           state_digest: processing_state_digest(finalization_token),
@@ -125,6 +127,18 @@ class Oidc::Flow < ApplicationRecord
         where(expires_at: Time.current..).where(
           "consumed_at IS NULL OR state_digest LIKE ?", "#{PROCESSING_STATE_PREFIX}%"
         )
+      end
+
+      def flow_expiration(linking_intent, now)
+        flow_deadline = now + Oidc::FLOW_LIFETIME
+        return flow_deadline unless linking_intent
+
+        linking_deadline = Time.at(Integer(linking_intent.fetch("expires_at")))
+        raise Invalid, "the linking authorization is expired" unless linking_deadline > now
+
+        [ flow_deadline, linking_deadline ].min
+      rescue KeyError, ArgumentError, TypeError
+        raise Invalid, "the linking authorization expiry is invalid"
       end
 
       def processing_flow(consumed, lock:)

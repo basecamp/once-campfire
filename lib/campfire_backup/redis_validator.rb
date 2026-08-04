@@ -6,16 +6,19 @@ require_relative "subprocess"
 module CampfireBackup
   module RedisValidator
     class << self
-      def validate!(payload_directory)
+      def validate!(payload_directory, require_aof: false)
         source = Pathname(payload_directory).join("redis")
-        return unless path_exists?(source)
+        unless path_exists?(source)
+          raise "Redis backup is missing required AOF persistence" if require_aof
+          return
+        end
         raise "Redis backup path is not a directory" unless regular_directory?(source)
 
-        validate_directory! source
+        validate_directory! source, require_aof:
       end
 
       private
-        def validate_directory!(directory)
+        def validate_directory!(directory, require_aof:)
           appendonly_directory = directory.join("appendonlydir")
           manifest = appendonly_directory.join("appendonly.aof.manifest")
           legacy_aof = directory.join("appendonly.aof")
@@ -56,6 +59,12 @@ module CampfireBackup
             run! "redis-check-aof", legacy_aof
           end
 
+          if require_aof && !path_exists?(appendonly_directory) && !path_exists?(legacy_aof)
+            raise "Redis backup is missing required AOF persistence"
+          end
+          if path_exists?(rdb) && !path_exists?(appendonly_directory) && !path_exists?(legacy_aof)
+            raise "Redis backup contains only dump.rdb, but this image requires AOF persistence"
+          end
           run! "redis-check-rdb", rdb if path_exists?(rdb)
         end
 

@@ -43,6 +43,57 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
     end
   end
 
+  test "data in any durable table prevents fresh database classification" do
+    prepare_database = lambda do |database|
+      UpgradeRecoveryGuard::FRESHNESS_TABLES.each do |table|
+        database.execute("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
+      end
+      database.execute("CREATE TABLE memberships (id INTEGER PRIMARY KEY, connections INTEGER)")
+      database.execute("INSERT INTO memberships (connections) VALUES (3)")
+    end
+
+    with_paths(prepare_database:) do |storage, database, _archive, _authentication|
+      error = assert_raises(RuntimeError) { guard(storage, database).verify_before_prepare! }
+
+      assert_match "requires authenticated recovery evidence", error.message
+    end
+  end
+
+  test "regular tables sharing a virtual-table prefix remain durable" do
+    prepare_database = lambda do |database|
+      UpgradeRecoveryGuard::FRESHNESS_TABLES.each do |table|
+        database.execute("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
+      end
+      database.execute("CREATE VIRTUAL TABLE message_search_index USING fts5(body)")
+      database.execute("CREATE TABLE message_search_index_audit (id INTEGER PRIMARY KEY)")
+      database.execute("INSERT INTO message_search_index_audit DEFAULT VALUES")
+    end
+
+    with_paths(prepare_database:) do |storage, database, _archive, _authentication|
+      error = assert_raises(RuntimeError) { guard(storage, database).verify_before_prepare! }
+
+      assert_match "requires authenticated recovery evidence", error.message
+    end
+  end
+
+  test "shadow tables in an attached schema cannot hide main database rows" do
+    with_paths do |storage, database, _archive, _authentication|
+      sqlite = SQLite3::Database.new(database.to_s)
+      UpgradeRecoveryGuard::FRESHNESS_TABLES.each do |table|
+        sqlite.execute("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
+      end
+      sqlite.execute("CREATE TABLE external_fts_content (id INTEGER PRIMARY KEY)")
+      sqlite.execute("INSERT INTO external_fts_content DEFAULT VALUES")
+      sqlite.execute("ATTACH DATABASE ':memory:' AS auxiliary")
+      sqlite.execute("CREATE VIRTUAL TABLE auxiliary.external_fts USING fts5(body)")
+      connection = Struct.new(:raw_connection).new(sqlite)
+
+      assert_not guard(storage, database).send(:fresh_database?, connection:)
+    ensure
+      sqlite&.close
+    end
+  end
+
   test "upgrade authorization rejects unattached legacy blobs without deleting them" do
     prepare_database = ->(database) do
       database.execute <<~SQL
@@ -486,6 +537,173 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
       assert_equal before_versions, schema_versions(database)
       assert_equal before_tables, connection.tables.sort
     end
+  end
+
+  test "migration context authorizes before invoking its selection block" do
+    with_production_connection do |root, _database, _build_identity_path, connection|
+      Rails.stubs(:root).returns(root)
+      CampfireBackup::BuildIdentity.stubs(:read!).returns({
+        "format_version" => 1,
+        "revision" => REVISION,
+        "build_identity" => Digest::SHA256.hexdigest("production-migration-test")
+      })
+      selection_called = false
+
+      error = with_environment("RAILS_ENV" => "production", "DATABASE_URL" => nil) do
+        assert_raises(ActiveRecord::MigrationError) do
+          connection.pool.migration_context.up do
+            selection_called = true
+            connection.create_table(:migration_selection_side_effect)
+            false
+          end
+        end
+      end
+
+      assert_match "requires authenticated recovery evidence", error.message
+      assert_not selection_called
+      assert_not connection.table_exists?(:migration_selection_side_effect)
+    end
+  end
+
+  test "migration selection database side effects are always rolled back" do
+    connection = ActiveRecord::Base.connection
+    table = :migration_selection_side_effect
+    migration = Data.define(:version).new(20_260_803_000_000)
+    context_class = Class.new do
+      attr_reader :migrations, :schema_migration
+
+      def initialize(migrations, schema_migration)
+        @migrations = migrations
+        @schema_migration = schema_migration
+      end
+
+      def up(_target_version = nil)
+        migrations.select { |candidate| yield candidate }
+      end
+    end
+    context_class.prepend CampfireBackup::UpgradeRecoveryGuard::MigrationContextGuard
+    context = context_class.new([ migration ], connection.pool.schema_migration)
+    CampfireBackup::UpgradeRecoveryGuard.stubs(:with_verified_migration).yields
+
+    context.up do
+      connection.create_table(table)
+      false
+    end
+
+    assert_not connection.table_exists?(table)
+  ensure
+    connection&.drop_table(table, if_exists: true)
+  end
+
+  test "production rejects a migration selection block after authorization" do
+    connection = ActiveRecord::Base.connection
+    migration = Data.define(:version).new(20_260_803_000_000)
+    context_class = Class.new do
+      attr_reader :migrations, :schema_migration
+
+      def initialize(migrations, schema_migration)
+        @migrations = migrations
+        @schema_migration = schema_migration
+      end
+
+      def up(_target_version = nil)
+        migrations.select { |candidate| yield candidate }
+      end
+    end
+    context_class.prepend CampfireBackup::UpgradeRecoveryGuard::MigrationContextGuard
+    context = context_class.new([ migration ], connection.pool.schema_migration)
+    CampfireBackup::UpgradeRecoveryGuard.expects(:with_verified_migration).yields
+    selection_called = false
+
+    error = with_environment("RAILS_ENV" => "production") do
+      assert_raises(ActiveRecord::MigrationError) do
+        context.up do
+          selection_called = true
+          false
+        end
+      end
+    end
+
+    assert_match "selection blocks are unsupported", error.message
+    assert_not selection_called
+  end
+
+  test "production rejects a rollback selection block after authorization" do
+    connection = ActiveRecord::Base.connection
+    migration = Data.define(:version).new(20_260_803_000_000)
+    context_class = Class.new do
+      attr_reader :migrations, :schema_migration
+
+      def initialize(migrations, schema_migration)
+        @migrations = migrations
+        @schema_migration = schema_migration
+      end
+
+      def down(_target_version = nil)
+        migrations.select { |candidate| yield candidate }
+      end
+    end
+    context_class.prepend CampfireBackup::UpgradeRecoveryGuard::MigrationContextGuard
+    context = context_class.new([ migration ], connection.pool.schema_migration)
+    CampfireBackup::UpgradeRecoveryGuard.expects(:with_verified_migration).yields
+    selection_called = false
+
+    error = with_environment("RAILS_ENV" => "production") do
+      assert_raises(ActiveRecord::MigrationError) do
+        context.down do
+          selection_called = true
+          false
+        end
+      end
+    end
+
+    assert_match "selection blocks are unsupported", error.message
+    assert_not selection_called
+  end
+
+  test "the database tasks capability permits only its migration selection" do
+    connection = ActiveRecord::Base.connection
+    migration = Data.define(:version)
+    selected = migration.new(20_260_803_000_000)
+    excluded = migration.new(20_260_803_000_001)
+    context_class = Class.new do
+      attr_reader :migrations, :schema_migration, :selected_migrations
+
+      def initialize(migrations, schema_migration)
+        @migrations = migrations
+        @schema_migration = schema_migration
+      end
+
+      def migrate(target_version = nil, &selection)
+        up(target_version, &selection)
+      end
+
+      def up(_target_version = nil)
+        @selected_migrations = migrations.select { |candidate| yield candidate }
+      end
+    end
+    context_class.prepend CampfireBackup::UpgradeRecoveryGuard::MigrationContextGuard
+    context = context_class.new([ selected, excluded ], connection.pool.schema_migration)
+    tasks_class = Class.new do
+      def initialize(context, version)
+        @context = context
+        @version = version
+      end
+
+      def migrate
+        @context.migrate { |migration| migration.version == @version }
+      end
+    end
+    tasks_class.prepend CampfireBackup::UpgradeRecoveryGuard::DatabaseTasksMigrationGuard
+    CampfireBackup::UpgradeRecoveryGuard.expects(:with_verified_migration).yields
+
+    with_environment("RAILS_ENV" => "production") do
+      tasks_class.new(context, selected.version).migrate
+    end
+
+    assert_equal [ selected ], context.selected_migrations
+    assert_not CampfireBackup::UpgradeRecoveryGuard.database_tasks_migration?
+    assert_not CampfireBackup::UpgradeRecoveryGuard.trusted_migration_selection?(context)
   end
 
   test "production migration context contends on the shared storage lock" do

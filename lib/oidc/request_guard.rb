@@ -23,11 +23,14 @@ module Oidc
       recognized_path = recognized_security_path(request.path)
       return response(:not_found, "Not found") if recognized_path && request.path != recognized_path
       authentication_path = recognized_authentication_path(request.path)
+      if authentication_path && !authentication_method_allowed?(request, authentication_path)
+        return method_not_allowed_response(authentication_path)
+      end
       if Oidc.rollback_prepared? && !request.path.in?(HEALTH_PATHS)
         return response(:service_unavailable, "Campfire is prepared for rollback")
       end
       if Oidc.required? && !Activation.ready? && !self.class.maintenance_request?(request)
-        return response(:service_unavailable, "OIDC required mode is not ready")
+        return required_mode_not_ready_response(request)
       end
       install_canonical_authority!(env) if Oidc.proxy_required? && !request.path.in?(HEALTH_PATHS)
       return @app.call(env) unless authentication_path
@@ -46,9 +49,13 @@ module Oidc
 
     private
       def canonical_origin?(request)
-        request.path.in?(HEALTH_PATHS) ||
-          (trusted_transport?(request) && request.host == Oidc.configuration.redirect_host &&
-            public_port(request) == Oidc.configuration.redirect_port)
+        return true if request.path.in?(HEALTH_PATHS)
+
+        external_port = public_port(request)
+        host_port = explicit_host_port(request)
+        trusted_transport?(request) && request.host == Oidc.configuration.redirect_host &&
+          external_port == Oidc.configuration.redirect_port && host_port != :invalid &&
+          (!host_port || host_port == external_port)
       end
 
       def trusted_transport?(request)
@@ -68,6 +75,27 @@ module Oidc
         return unless value.match?(/\A\d+\z/)
 
         Integer(value, 10).presence_in(1..65_535)
+      end
+
+      def explicit_host_port(request)
+        authority = request.get_header("HTTP_HOST").to_s
+        return if authority.blank?
+
+        if authority.start_with?("[")
+          match = authority.match(/\A\[[^\]]+\](?::(\d+))?\z/)
+          return :invalid unless match
+          return Integer(match[1], 10) if match[1]
+
+          return
+        end
+
+        return :invalid if authority.count(":") > 1
+
+        host, separator, port = authority.rpartition(":")
+        return if separator.empty?
+        return :invalid if host.empty? || !port.match?(/\A\d+\z/)
+
+        Integer(port, 10)
       end
 
       def canonical_origin_response(request)
@@ -113,6 +141,65 @@ module Oidc
 
       def response(status, body)
         [ Rack::Utils.status_code(status), { "content-type" => "text/plain", "content-length" => body.bytesize.to_s }, [ body ] ]
+      end
+
+      def required_mode_not_ready_response(request)
+        accept = request.get_header("HTTP_ACCEPT").to_s
+        html_ranges = accept.split(",").filter_map do |entry|
+          type, *parameters = entry.split(";")
+          specificity = { "text/html" => 2, "text/*" => 1, "*/*" => 0 }[type.strip.downcase]
+          next unless specificity
+
+          quality_parameter = parameters.find { _1.strip.match?(/\Aq\s*=/i) }
+          quality = quality_parameter ? Float(quality_parameter.split("=", 2).last) : 1.0
+          [ specificity, quality ] if quality.between?(0.0, 1.0)
+        rescue ArgumentError
+          nil
+        end
+        highest_specificity = html_ranges.map(&:first).max
+        accepts_html = accept.blank? || (highest_specificity && html_ranges
+          .select { _1.first == highest_specificity }
+          .map(&:last).max.positive?)
+        unless (request.get? || request.head?) && accepts_html
+          return response(:service_unavailable, "OIDC required mode is not ready")
+        end
+
+        body = <<~HTML
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Single sign-on setup in progress</title>
+            </head>
+            <body>
+              <main>
+                <h1>Single sign-on setup in progress</h1>
+                <p>Campfire is waiting for account verification before required single sign-on can be activated.</p>
+                <p><a href="/session/new">Continue to single sign-on</a></p>
+              </main>
+            </body>
+          </html>
+        HTML
+        [
+          Rack::Utils.status_code(:service_unavailable),
+          {
+            "cache-control" => "no-store",
+            "content-type" => "text/html; charset=utf-8",
+            "content-length" => body.bytesize.to_s
+          },
+          request.head? ? [] : [ body ]
+        ]
+      end
+
+      def authentication_method_allowed?(request, path)
+        path == AUTHENTICATION_PATHS.first ? request.post? : request.get?
+      end
+
+      def method_not_allowed_response(path)
+        response(:method_not_allowed, "Method not allowed").tap do |_, headers, _|
+          headers["allow"] = path == AUTHENTICATION_PATHS.first ? "POST" : "GET"
+        end
       end
 
 

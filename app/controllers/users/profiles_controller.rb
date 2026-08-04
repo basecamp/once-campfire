@@ -15,8 +15,14 @@ class Users::ProfilesController < ApplicationController
       redirect_to user_profile_path, alert: "The recovery email cannot be changed while required single sign-on is active."
     else
       password_reauthenticated = password_reauthentication_requested?
+      password_changed = password_change_requested?
       @user.update_with_staged_avatar! user_params,
-        actor: Current.user, current_password: params.dig(:user, :current_password)
+        actor: Current.user, current_password: params.dig(:user, :current_password), current_session: Current.session
+      if password_changed
+        Current.session.reload
+        set_authentication_cookie Current.session
+        Current.session.disconnect_remote_connections
+      end
       record_password_reauthentication! @user if password_reauthenticated
       redirect_to user_profile_path, notice: update_notice
     end

@@ -34,10 +34,11 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 # Workers do not work on JRuby or Windows (both of which do not support
 # processes).
 #
-worker_count = (Concurrent.processor_count * 0.666).ceil
+worker_count = [ (Concurrent.available_processor_count * 0.666).ceil, 4 ].min
 workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
-
-ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
+shutdown_timeout = Integer(ENV.fetch("CAMPFIRE_SHUTDOWN_TIMEOUT", "60"), 10)
+raise "CAMPFIRE_SHUTDOWN_TIMEOUT must be positive" unless shutdown_timeout.positive?
+worker_shutdown_timeout shutdown_timeout
 
 # Use the `preload_app!` method when specifying a `workers` number.
 # This directive tells Puma to first boot the application and load code

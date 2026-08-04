@@ -79,7 +79,7 @@ class CreateIdentities < ActiveRecord::Migration[8.2]
     add_check_constraint :oidc_flows, "operation IN ('authenticate', 'link')", name: "oidc_flows_operation"
     reconcile_legacy_message_ids!
     add_check_constraint :messages,
-      "length(CAST(client_message_id AS BLOB)) <= #{CLIENT_MESSAGE_ID_BYTES}",
+      "length(CAST(client_message_id AS BLOB)) BETWEEN 1 AND #{CLIENT_MESSAGE_ID_BYTES}",
       name: MESSAGE_CLIENT_ID_CONSTRAINT_NAME
     add_index :messages, %i[ room_id client_message_id ], unique: true,
       name: MESSAGE_CLIENT_ID_INDEX_NAME
@@ -358,7 +358,7 @@ class CreateIdentities < ActiveRecord::Migration[8.2]
       rows_requiring_new_ids = select_all(<<~SQL)
         SELECT message.id, message.room_id, message.creator_id
         FROM messages message
-        WHERE length(CAST(message.client_message_id AS BLOB)) > #{CLIENT_MESSAGE_ID_BYTES}
+        WHERE length(CAST(message.client_message_id AS BLOB)) NOT BETWEEN 1 AND #{CLIENT_MESSAGE_ID_BYTES}
           OR EXISTS (
             SELECT 1
             FROM messages earlier

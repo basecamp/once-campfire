@@ -13,6 +13,12 @@ class Oidc::ThrusterPolicyTest < ActiveSupport::TestCase
       Rails.root.join("Gemfile").read)
   end
 
+  test "production launcher disables request logging before Thruster starts" do
+    source = Rails.root.join("bin/start-web").read
+    assert_match(/^export LOG_REQUESTS=false$/, source)
+    assert_match(/^export THRUSTER_LOG_REQUESTS=false$/, source)
+  end
+
   test "Thruster redirects only policy-allowed HTTP hosts" do
     with_thruster do |port|
       canonical = http_request(port, host: "campfire.example.com", path: "/session/new?from=http")

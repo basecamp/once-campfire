@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2026_08_02_010000) do
+ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -145,7 +145,7 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_02_010000) do
     t.index ["expires_at"], name: "index_credential_intents_on_expires_at"
     t.index ["token_digest"], name: "index_credential_intents_on_token_digest", unique: true
     t.index ["user_id"], name: "index_credential_intents_on_user_id"
-    t.check_constraint "(purpose = 'join' AND user_id IS NULL AND credential_digest IS NOT NULL) OR (purpose IN ('transfer_grant', 'transfer') AND user_id IS NOT NULL AND credential_digest IS NULL)", name: "credential_intents_attributes"
+    t.check_constraint "(purpose = 'join' AND user_id IS NULL AND credential_digest IS NOT NULL) OR (purpose IN ('transfer_grant', 'transfer') AND user_id IS NOT NULL AND credential_digest IS NOT NULL)", name: "credential_intents_attributes"
     t.check_constraint "credential_digest IS NULL OR (length(credential_digest) = 64 AND credential_digest NOT GLOB '*[^0-9a-f]*')", name: "credential_intents_credential_digest"
     t.check_constraint "length(token_digest) = 64 AND token_digest NOT GLOB '*[^0-9a-f]*'", name: "credential_intents_token_digest"
     t.check_constraint "purpose IN ('join', 'transfer_grant', 'transfer')", name: "credential_intents_purpose"
@@ -235,7 +235,7 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_02_010000) do
     t.index ["creator_id"], name: "index_messages_on_creator_id"
     t.index ["room_id", "client_message_id"], name: "index_messages_on_room_and_client_message_id", unique: true
     t.index ["room_id"], name: "index_messages_on_room_id"
-    t.check_constraint "length(CAST(client_message_id AS BLOB)) <= 64", name: "messages_client_message_id_bytes"
+    t.check_constraint "length(CAST(client_message_id AS BLOB)) BETWEEN 1 AND 64", name: "messages_client_message_id_bytes"
   end
 
   create_table "oidc_flows", force: :cascade do |t|

@@ -121,8 +121,12 @@ module Authentication
     end
 
     def start_new_session_for(user, identity: nil, authentication_method: nil)
+      authenticated_as create_new_session_for(user, identity:, authentication_method:)
+    end
+
+    def create_new_session_for(user, identity: nil, authentication_method: nil)
       previous_session = find_session_by_cookie
-      new_session = Account.transaction do
+      Account.transaction do
         account = Account.lock.sole
         if account.oidc_transition_state == "rollback_prepared"
           raise Oidc::Activation::Error, "rollback preparation is active"
@@ -132,12 +136,12 @@ module Authentication
           previous_session&.destroy!
         end
       end
-      authenticated_as new_session
     end
 
     def resume_session(session)
       session.resume user_agent: request.user_agent, ip_address: request.remote_ip
-      authenticated_as session
+      Current.session = session
+      set_authenticated_by(:session)
     end
 
     def terminate_current_session

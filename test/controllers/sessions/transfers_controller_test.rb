@@ -77,6 +77,44 @@ class Sessions::TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
   end
 
+  test "a transfer cannot replace a different signed-in account" do
+    sign_in :david
+    original_token = parsed_cookies.signed[:session_token]
+    exchange_transfer users(:jason).transfer_id
+
+    assert_no_difference -> { Session.where(user: users(:jason), authentication_method: "transfer").count } do
+      put session_transfer_url
+    end
+
+    assert_redirected_to root_url
+    assert_equal "Sign out before transferring a different account to this browser.", flash[:alert]
+    assert_equal original_token, parsed_cookies.signed[:session_token]
+    assert Session.exists?(token: original_token)
+    assert_equal 1, CredentialIntent.where(user: users(:jason), purpose: "transfer").count
+
+    delete session_url
+    assert_redirected_to session_transfer_url
+    put session_transfer_url
+    assert_redirected_to root_url
+    assert_equal users(:jason), Session.find_by!(token: parsed_cookies.signed[:session_token]).user
+  end
+
+  test "a session creation failure preserves the browser transfer for retry" do
+    exchange_transfer users(:david).transfer_id
+    Session.stubs(:start!).raises(ActiveRecord::RecordInvalid.new(Session.new))
+
+    put session_transfer_url
+
+    assert_response :service_unavailable
+    assert_nil parsed_cookies.signed[:session_token]
+
+    Session.unstub(:start!)
+    put session_transfer_url
+
+    assert_redirected_to root_url
+    assert_equal "transfer", Session.find_by!(token: parsed_cookies.signed[:session_token]).authentication_method
+  end
+
   private
     def exchange_transfer(grant)
       post session_transfer_intent_url, params: { token: grant }

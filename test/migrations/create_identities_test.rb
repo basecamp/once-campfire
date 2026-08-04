@@ -216,6 +216,22 @@ class CreateIdentitiesTest < ActiveSupport::TestCase
     end
   end
 
+  test "rekeys empty legacy message IDs before requiring a nonempty value" do
+    with_temporary_database do |connection, context|
+      context.up(PREVIOUS_SCHEMA_VERSION)
+      insert_legacy_user_session_and_push(connection)
+      insert_legacy_message(connection, client_message_id: "")
+
+      context.up
+
+      client_message_id = connection.select_value("SELECT client_message_id FROM messages WHERE id = 1")
+      assert client_message_id.present?
+      assert_raises(ActiveRecord::StatementInvalid) do
+        connection.execute("UPDATE messages SET client_message_id = '' WHERE id = 1")
+      end
+    end
+  end
+
   test "database client message id constraints count bytes and reject without side effects" do
     with_temporary_database do |connection, context|
       context.up
@@ -259,6 +275,9 @@ class CreateIdentitiesTest < ActiveSupport::TestCase
           VALUES
             (1, 1, #{connection.quote(oversized_id)}, 'broadcast_update', 'oversized', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         SQL
+      end
+      assert_raises(ActiveRecord::StatementInvalid) do
+        connection.execute("UPDATE messages SET client_message_id = '' WHERE id = 1")
       end
       assert_equal 1, connection.select_value("SELECT COUNT(*) FROM messages").to_i
       assert_equal 1, connection.select_value("SELECT COUNT(*) FROM message_effects").to_i

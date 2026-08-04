@@ -30,6 +30,24 @@ class Oidc::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_not Oidc::Flow.exists?(flow.id)
   end
 
+  test "required-mode verification lands on an explicit pre-activation success state" do
+    configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => users(:jason).email_address)
+    Identity.create!(user: users(:jz), issuer: Oidc.issuer, subject: "required-verification-subject")
+    Oidc::Activation.stubs(:ready?).returns(false)
+
+    get "/auth/openid_connect/callback", env: {
+      "omniauth.auth" => oidc_auth(
+        subject: "required-verification-subject", email: users(:jz).email_address
+      )
+    }
+
+    assert_redirected_to new_session_url
+    follow_redirect!
+    assert_response :success
+    assert_select "main h1", text: "Sign in to #{accounts(:signal).name}"
+    assert_select "[role='status']", text: /verification is complete/
+  end
+
   test "preserves the originally requested URL" do
     Identity.create!(user: users(:jz), issuer: Oidc.issuer, subject: "oidc-subject")
     get room_url(rooms(:watercooler))

@@ -90,8 +90,49 @@ class Oidc::RequestGuardTest < ActiveSupport::TestCase
     configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => users(:jason).email_address)
     Oidc::Activation.stubs(:ready?).returns(false)
 
-    assert_equal 503, guard.call(environment(method: "GET", path: "/rooms/1")).first
+    status, headers, body = guard.call(environment(method: "GET", path: "/rooms/1"))
+
+    assert_equal 503, status
+    assert_equal "text/html; charset=utf-8", headers.fetch("content-type")
+    assert_includes body.join, "<main>"
+    assert_includes body.join, '<a href="/session/new">Continue to single sign-on</a>'
     assert_equal 0, @calls
+  end
+
+  test "returns maintenance metadata without a body for HEAD" do
+    configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => users(:jason).email_address)
+    Oidc::Activation.stubs(:ready?).returns(false)
+
+    status, headers, body = guard.call(environment(method: "HEAD", path: "/rooms/1"))
+
+    assert_equal 503, status
+    assert_equal "text/html; charset=utf-8", headers.fetch("content-type")
+    assert_empty body
+    assert_operator headers.fetch("content-length").to_i, :positive?
+  end
+
+  test "preserves the plain maintenance response for non-HTML clients" do
+    configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => users(:jason).email_address)
+    Oidc::Activation.stubs(:ready?).returns(false)
+
+    status, headers, body = guard.call(environment(
+      method: "GET", path: "/rooms/1", accept: "application/json"
+    ))
+
+    assert_equal 503, status
+    assert_equal "text/plain", headers.fetch("content-type")
+    assert_equal [ "OIDC required mode is not ready" ], body
+  end
+
+  test "honors an explicit refusal of HTML maintenance content" do
+    configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => users(:jason).email_address)
+    Oidc::Activation.stubs(:ready?).returns(false)
+
+    _status, headers, = guard.call(environment(
+      method: "GET", path: "/rooms/1", accept: "text/html;q=0, */*;q=1"
+    ))
+
+    assert_equal "text/plain", headers.fetch("content-type")
   end
 
   test "permits the OIDC verification surface before required mode activation" do
@@ -128,6 +169,17 @@ class Oidc::RequestGuardTest < ActiveSupport::TestCase
       assert_equal 404, guard.call(environment(path:)).first
     end
 
+    assert_equal 0, @calls
+  end
+
+  test "requires POST initiation and GET callback before OmniAuth" do
+    initiation_status, initiation_headers = guard.call(environment(method: "GET"))
+    callback_status, callback_headers = guard.call(environment(method: "POST", path: "/auth/openid_connect/callback"))
+
+    assert_equal 405, initiation_status
+    assert_equal "POST", initiation_headers.fetch("allow")
+    assert_equal 405, callback_status
+    assert_equal "GET", callback_headers.fetch("allow")
     assert_equal 0, @calls
   end
 
@@ -181,14 +233,27 @@ class Oidc::RequestGuardTest < ActiveSupport::TestCase
     )).first
   end
 
+  test "rejects an explicit Host port that conflicts with the canonical proxy port" do
+    configure_oidc("DISABLE_SSL" => "true", "OIDC_TRUSTED_PROXY_CIDRS" => "10.20.0.0/16")
+
+    status, = guard.call(environment(
+      ip: "10.20.1.2", host: "campfire.example.com:8443", scheme: "http", forwarded_proto: "https"
+    ))
+
+    assert_equal 421, status
+    assert_equal 0, @calls
+  end
+
   private
     def guard(store: ActiveSupport::Cache::MemoryStore.new, semaphore: Concurrent::Semaphore.new(1))
       Oidc::RequestGuard.new(@app, store:, semaphore:)
     end
 
     def environment(ip: "203.0.113.20", host: "campfire.example.com", method: "POST", path: "/auth/openid_connect",
-        scheme: "https", forwarded_proto: nil, forwarded_port: nil)
+        scheme: "https", forwarded_proto: nil, forwarded_port: nil, accept: nil)
       Rack::MockRequest.env_for("#{scheme}://#{host}#{path}", method:, "REMOTE_ADDR" => ip).tap do |env|
+        env["HTTP_HOST"] = host
+        env["HTTP_ACCEPT"] = accept if accept
         env["HTTP_X_FORWARDED_PROTO"] = forwarded_proto if forwarded_proto
         env["HTTP_X_FORWARDED_PORT"] = forwarded_port if forwarded_port
       end

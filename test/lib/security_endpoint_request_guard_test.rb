@@ -40,6 +40,54 @@ class SecurityEndpointRequestGuardTest < ActiveSupport::TestCase
     assert_equal 0, @calls
   end
 
+  test "bounds SCIM bodies on GET and HEAD before parameter parsing" do
+    %w[ GET HEAD ].each do |method|
+      env = environment(
+        "/scim/v2/Users", method:,
+        input: StringIO.new("x" * (SecurityEndpointRequestGuard::SCIM_BODY_BYTES + 1)),
+        content_length: nil
+      )
+
+      status, headers, body = SecurityEndpointBodyLimiter.new(@app).call(env)
+
+      assert_equal 413, status
+      assert_equal Scim::MEDIA_TYPE, headers.fetch("content-type")
+      assert_empty body if method == "HEAD"
+    end
+    assert_equal 0, @calls
+  end
+
+  test "restores the original OIDC method before request admission" do
+    oidc_guard = Oidc::RequestGuard.new(
+      @app, store: ActiveSupport::Cache::MemoryStore.new,
+      semaphore: Concurrent::Semaphore.new(1)
+    )
+    env = environment(SecurityEndpointBodyLimiter::OIDC_CALLBACK_PATH, method: "GET")
+    env["rack.methodoverride.original_method"] = "POST"
+
+    status, headers = SecurityEndpointRequestGuard.new(oidc_guard).call(env)
+
+    assert_equal 405, status
+    assert_equal "GET", headers.fetch("allow")
+    assert_equal 0, @calls
+  end
+
+  test "bounds OIDC initiation and rejects callback request bodies" do
+    initiation = environment(
+      SecurityEndpointBodyLimiter::OIDC_PATH,
+      input: StringIO.new("x" * (SecurityEndpointBodyLimiter::OIDC_BODY_BYTES + 1)),
+      content_length: nil
+    )
+    callback = environment(
+      SecurityEndpointBodyLimiter::OIDC_CALLBACK_PATH, method: "GET",
+      input: StringIO.new("x"), content_length: nil
+    )
+
+    assert_equal 413, SecurityEndpointBodyLimiter.new(@app).call(initiation).first
+    assert_equal 413, SecurityEndpointBodyLimiter.new(@app).call(callback).first
+    assert_equal 0, @calls
+  end
+
   test "preserves a bounded raw form for duplicate logout-token detection" do
     raw_body = "logout_token=first&hint=value&logout_token=second"
     env = environment(
@@ -82,6 +130,28 @@ class SecurityEndpointRequestGuardTest < ActiveSupport::TestCase
   ensure
     logout_semaphore&.release
     scim_semaphore&.release
+  end
+
+  test "SCIM HEAD guard errors contain no response body" do
+    rate_limited = guard(store: stub(increment: SecurityEndpointRequestGuard::SCIM_REQUEST_LIMIT + 1))
+    rate_status, rate_headers, rate_body = rate_limited.call(
+      environment("/scim/v2/Users", method: "HEAD")
+    )
+
+    semaphore = Concurrent::Semaphore.new(1)
+    semaphore.acquire
+    busy = guard(store: stub(increment: 1), scim_semaphore: semaphore)
+    busy_status, busy_headers, busy_body = busy.call(environment("/scim/v2/Users", method: "HEAD"))
+
+    assert_equal 429, rate_status
+    assert_operator rate_headers.fetch("content-length").to_i, :positive?
+    assert_empty rate_body
+    assert_equal 503, busy_status
+    assert_operator busy_headers.fetch("content-length").to_i, :positive?
+    assert_empty busy_body
+    assert_equal 0, @calls
+  ensure
+    semaphore&.release
   end
 
   private

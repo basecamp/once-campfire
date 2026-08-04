@@ -49,6 +49,13 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "an oidc_verified query parameter cannot forge verification success" do
+    get new_session_url(oidc_verified: 1)
+
+    assert_response :success
+    assert_select "[role='status']", text: /verification is complete/, count: 0
+  end
+
   test "new redirects to first run when no users exist" do
     User.destroy_all
 
@@ -74,6 +81,24 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to root_url
     assert parsed_cookies.signed[:session_token]
+  end
+
+  test "create rechecks a stale password match after locking the user" do
+    stale_user = User.find(users(:david).id)
+    active_users = User.active
+    active_users.stubs(:authenticate_by).returns(stale_user)
+    User.stubs(:active).returns(active_users)
+    users(:david).update!(password: "rotated-password-123456")
+
+    assert_no_difference -> { Session.count } do
+      post session_url, params: {
+        email_address: stale_user.email_address,
+        password: "secret123456"
+      }
+    end
+
+    assert_response :unauthorized
+    assert_nil parsed_cookies.signed[:session_token]
   end
 
   test "create normalizes the email lookup" do

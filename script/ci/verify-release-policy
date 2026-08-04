@@ -99,6 +99,17 @@ dockerfiles.each do |path|
   if ruby_version && !source.include?("docker.io/library/ruby:#{ruby_version}-slim@sha256:")
     errors << "#{relative}: Ruby base tag must match .ruby-version and use a sha256 digest"
   end
+  if relative.to_s == "Dockerfile"
+    bundle_without_references = source.each_line.reject { _1.lstrip.start_with?("#") }
+      .select { _1.match?(/\bBUNDLE_WITHOUT\b/) }
+    bundle_without_assignments = bundle_without_references.filter_map do |line|
+      match = line.match(/^\s*(?:ENV\s+)?BUNDLE_WITHOUT=(?:"([^"]*)"|'([^']*)'|([^\s\\]+))/)
+      match&.captures&.compact&.first
+    end
+    unless bundle_without_references.one? && bundle_without_assignments == [ "development:test" ]
+      errors << "#{relative}: production bundle must exclude development and test dependencies"
+    end
+  end
 
   stages = []
   source.each_line.with_index(1) do |line, line_number|

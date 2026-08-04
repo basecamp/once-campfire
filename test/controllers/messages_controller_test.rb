@@ -136,6 +136,16 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :content_too_large
   end
 
+  test "rejects a blank client message id without creating durable records" do
+    assert_no_difference [ -> { @room.messages.count }, -> { Message::Effect.count } ] do
+      post room_messages_url(@room, format: :turbo_stream), params: {
+        message: { body: "Blank ID", client_message_id: "" }
+      }
+    end
+
+    assert_response :unprocessable_entity
+  end
+
   test "rejects a message without text or an attachment" do
     assert_no_difference -> { @room.messages.count } do
       post room_messages_url(@room, format: :turbo_stream), params: {

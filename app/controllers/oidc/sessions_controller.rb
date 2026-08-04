@@ -52,7 +52,12 @@ class Oidc::SessionsController < ApplicationController
 
     reset_session
     authenticated_as new_session
-    redirect_to return_to
+    if Oidc.required? && !Oidc::Activation.ready?
+      flash[:oidc_verified] = true
+      redirect_to new_session_url
+    else
+      redirect_to return_to
+    end
   rescue Identity::AuthenticationError, Oidc::Flow::Invalid, ActiveRecord::ActiveRecordError => error
     fail_authentication error
   end

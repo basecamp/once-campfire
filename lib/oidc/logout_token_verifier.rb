@@ -12,6 +12,7 @@ module Oidc
     MAXIMUM_AGE = 5.minutes.to_i
     MAXIMUM_IDENTIFIER_LENGTH = 255
     MAXIMUM_TOKEN_BYTES = 16.kilobytes
+    RSA_KEY_BITS = (2048..8192).freeze
     VERIFICATION_CACHE_LIFETIME = 5.minutes
     VERIFICATION_REFRESH_INTERVAL = 5.seconds
     VERIFICATION_REFRESH_LEASE = (Oidc::HTTPAdapter::MAXIMUM_REQUEST_TIME * 2) + 5.seconds
@@ -38,7 +39,7 @@ module Oidc
       header, claims = decode_compact_token(encoded_token)
       validate_header! header
       validate_claims! claims
-      verify_signature! encoded_token, header.fetch("kid")
+      verify_signature! encoded_token, header["kid"]
       claims
     rescue Invalid, Unavailable
       raise
@@ -93,7 +94,7 @@ module Oidc
         unless header["alg"].is_a?(String) && header["alg"] == Oidc.signing_algorithm
           raise Invalid, "logout token algorithm is invalid"
         end
-        unless usable_identifier?(header["kid"])
+        if header.key?("kid") && !usable_identifier?(header["kid"])
           raise Invalid, "logout token key identifier is invalid"
         end
         if header.key?("typ") && !header["typ"].in?([ "JWT", "logout+jwt" ])
@@ -116,7 +117,7 @@ module Oidc
           raise Invalid, "logout token identifier is invalid"
         end
         unless claims["events"].is_a?(Hash) &&
-            claims["events"][BACK_CHANNEL_LOGOUT_EVENT] == {}
+            claims["events"][BACK_CHANNEL_LOGOUT_EVENT].is_a?(Hash)
           raise Invalid, "logout token event is invalid"
         end
         raise Invalid, "logout token cannot contain nonce" if claims.key?("nonce")
@@ -168,6 +169,8 @@ module Oidc
       end
 
       def verify_signature!(encoded_token, kid)
+        return verify_signature_without_kid!(encoded_token) unless kid
+
         key, cached = signing_key(kid)
         JSON::JWT.decode(encoded_token, key, [ Oidc.signing_algorithm.to_sym ])
       rescue JSON::JWS::VerificationFailed
@@ -177,9 +180,34 @@ module Oidc
         JSON::JWT.decode(encoded_token, key, [ Oidc.signing_algorithm.to_sym ])
       end
 
+      def verify_signature_without_kid!(encoded_token)
+        keys, cached = verification_keys
+        count = verified_signature_count(encoded_token, signing_keys_from(keys))
+        return if count == 1
+        raise Invalid, "logout token key is ambiguous" if count > 1
+
+        if cached
+          refreshed_keys = coordinated_refresh_verification_keys
+          count = verified_signature_count(encoded_token, signing_keys_from(refreshed_keys))
+          return if count == 1
+          raise Invalid, "logout token key is ambiguous" if count > 1
+        end
+
+        raise Invalid, "logout token signature is invalid"
+      end
+
+      def verified_signature_count(encoded_token, keys)
+        keys.count do |key|
+          JSON::JWT.decode(encoded_token, key, [ Oidc.signing_algorithm.to_sym ])
+          true
+        rescue JSON::JWS::VerificationFailed
+          false
+        end
+      end
+
       def signing_key(kid, force: false, coordinate_on_miss: true)
         keys, cached = verification_keys(force:)
-        matching = keys.select { |key| key["kid"] == kid }
+        matching = matching_signing_keys(keys, kid)
         if matching.empty? && cached && !force && coordinate_on_miss
           return [ coordinated_refresh_signing_key(kid), false ]
         end
@@ -192,6 +220,10 @@ module Oidc
       end
 
       def coordinated_refresh_signing_key(kid)
+        signing_key_from coordinated_refresh_verification_keys, kid
+      end
+
+      def coordinated_refresh_verification_keys
         refreshing = {
           "status" => "refreshing",
           "generation" => SecureRandom.hex(16),
@@ -203,14 +235,14 @@ module Oidc
         )
 
         if acquired
-          refresh_signing_key_as_leader(kid, refreshing)
+          refresh_verification_keys_as_leader(refreshing)
         else
-          follow_verification_refresh(kid)
+          follow_verification_refresh
         end
       end
 
-      def refresh_signing_key_as_leader(kid, refreshing)
-        keys = begin
+      def refresh_verification_keys_as_leader(refreshing)
+        begin
           verification_keys(force: true).first.tap do |refreshed_keys|
             publish_refresh_state!(refreshing, "complete", keys: refreshed_keys)
           end
@@ -218,24 +250,23 @@ module Oidc
           publish_refresh_state!(refreshing, "failed")
           raise
         end
-        signing_key_from keys, kid
       end
 
-      def follow_verification_refresh(kid)
+      def follow_verification_refresh
         state = cache_read(cache_key("refresh"))
         case refresh_status(state)
         when "complete"
-          signing_key_from_refresh_result(state, kid)
+          verification_keys_from_refresh_result(state)
         when "failed"
           raise Unavailable, "OIDC verification material refresh failed"
         when "refreshing"
-          wait_for_refresh_generation(kid, state)
+          wait_for_refresh_generation(state)
         else
           raise Unavailable, "OIDC verification material refresh state is unavailable"
         end
       end
 
-      def wait_for_refresh_generation(kid, initial_state)
+      def wait_for_refresh_generation(initial_state)
         generation = valid_refresh_generation!(initial_state)
         deadline = monotonic_now + VERIFICATION_REFRESH_WAIT.to_f
 
@@ -249,34 +280,60 @@ module Oidc
             refresh_signal_key(generation), 0,
             expires_in: VERIFICATION_REFRESH_RESULT_LIFETIME
           )
-          return signing_key_from_refresh_generation(generation, kid) if signal.positive?
+          return verification_keys_from_refresh_generation(generation) if signal.positive?
         end
       end
 
       def signing_key_from(keys, kid)
-        matching = keys.select { |key| key["kid"] == kid }
+        matching = matching_signing_keys(keys, kid)
         raise Invalid, "logout token key is ambiguous or unavailable" unless matching.one?
 
-        key = matching.sole
-        unless key["kty"] == "RSA" && (!key.key?("use") || key["use"] == "sig") &&
-            (!key.key?("alg") || key["alg"] == Oidc.signing_algorithm) &&
-            (!key.key?("key_ops") ||
-              (key["key_ops"].is_a?(Array) && key["key_ops"].all?(String) && key["key_ops"].include?("verify")))
+        rsa_signing_key matching.sole
+      end
+
+      def signing_keys_from(keys)
+        matching = matching_signing_keys(keys, nil)
+        raise Invalid, "logout token key is unavailable" if matching.empty?
+
+        matching.map { rsa_signing_key(_1) }
+      end
+
+      def rsa_signing_key(key)
+        unless usable_signing_key?(key)
           raise Invalid, "logout token key is not usable for verification"
         end
 
-        JSON::JWK.new(key).to_key
+        rsa = JSON::JWK.new(key).to_key
+        unless rsa.is_a?(OpenSSL::PKey::RSA) && RSA_KEY_BITS.cover?(rsa.n.num_bits)
+          raise Invalid, "logout token RSA key strength is invalid"
+        end
+        rsa
       rescue Invalid
         raise
       rescue JSON::ParserError, OpenSSL::OpenSSLError => error
         raise Unavailable.new("OIDC verification material is unavailable"), cause: error
       end
 
-      def signing_key_from_refresh_result(state, kid)
-        signing_key_from_refresh_generation valid_refresh_generation!(state), kid
+      def matching_signing_keys(keys, kid)
+        if kid
+          keys.select { |key| key["kid"] == kid }
+        else
+          keys.select { usable_signing_key?(_1) }
+        end
       end
 
-      def signing_key_from_refresh_generation(generation, kid)
+      def usable_signing_key?(key)
+        key["kty"] == "RSA" && (!key.key?("use") || key["use"] == "sig") &&
+          (!key.key?("alg") || key["alg"] == Oidc.signing_algorithm) &&
+          (!key.key?("key_ops") ||
+            (key["key_ops"].is_a?(Array) && key["key_ops"].all?(String) && key["key_ops"].include?("verify")))
+      end
+
+      def verification_keys_from_refresh_result(state)
+        verification_keys_from_refresh_generation valid_refresh_generation!(state)
+      end
+
+      def verification_keys_from_refresh_generation(generation)
         result = cache_read(refresh_result_key(generation))
         case refresh_status(result)
         when "complete"
@@ -284,7 +341,7 @@ module Oidc
           unless keys.is_a?(Array) && keys.length.between?(1, 100) && keys.all?(Hash)
             raise Unavailable, "OIDC verification material refresh result is invalid"
           end
-          signing_key_from keys, kid
+          keys
         when "failed"
           raise Unavailable, "OIDC verification material refresh failed"
         else

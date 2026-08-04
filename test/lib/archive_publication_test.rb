@@ -86,6 +86,31 @@ class ArchivePublicationTest < ActiveSupport::TestCase
     end
   end
 
+  test "a verified final archive is retryable after staging cleanup loses its marker" do
+    with_generation do |generation, destination|
+      assert_raises(SimulatedCrash) do
+        BackupArchiver.archive(
+          **archive_arguments(generation, destination), fault_after: ->(step) {
+            raise SimulatedCrash if step == "archive"
+          }
+        )
+      end
+      archive = archive_path(destination)
+      staging = staging_path(destination)
+      original_bytes = archive.binread
+      staging.join(BackupArchiver::STAGING_MARKER).delete
+
+      _stdout, stderr = capture_io do
+        retried = BackupArchiver.archive(**archive_arguments(generation, destination))
+        assert_equal archive.realpath, retried.realpath
+      end
+
+      assert_equal original_bytes, archive.binread
+      assert_not staging.exist?
+      assert_empty stderr
+    end
+  end
+
   test "a conflicting final file raced into place is never overwritten" do
     with_generation do |generation, destination|
       archive = archive_path(destination)

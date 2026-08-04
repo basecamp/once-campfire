@@ -1,6 +1,18 @@
 require "omniauth/strategies/openid_connect"
 
+module Oidc::RejectSwdServiceRedirect
+  private
+    def redirect_to(*)
+      raise SWD::Exception, "OIDC discovery service redirects are unsupported"
+    end
+end
+
+discovery_resource = OpenIDConnect::Discovery::Provider::Config::Resource
+discovery_resource.prepend(Oidc::RejectSwdServiceRedirect) unless discovery_resource < Oidc::RejectSwdServiceRedirect
+
 class CampfireOpenIdConnectStrategy < OmniAuth::Strategies::OpenIDConnect
+  RSA_KEY_BITS = (2048..8192).freeze
+
   option :name, "openid_connect"
 
   def request_phase
@@ -74,7 +86,33 @@ class CampfireOpenIdConnectStrategy < OmniAuth::Strategies::OpenIDConnect
     call_app!
   end
 
+  def decode_id_token(id_token)
+    decoded = JSON::JWT.decode(id_token, :skip_verification)
+    @id_token_key_id = decoded.header["kid"]
+    super
+  ensure
+    @id_token_key_id = nil
+  end
+
+  def public_key
+    super.tap { validate_signing_key_strength!(_1, @id_token_key_id) }
+  end
+
   private
+    def validate_signing_key_strength!(keyset, kid)
+      keys = keyset.respond_to?(:to_a) ? keyset.to_a : [ keyset ]
+      keys.select! { |key| key.as_json["kid"] == kid } if kid
+      keys.select! do |key|
+        attributes = key.as_json
+        attributes["kty"] == "RSA" && (!attributes.key?("alg") || attributes["alg"] == Oidc.signing_algorithm)
+      end
+      if keys.empty? || keys.any? { |key| !RSA_KEY_BITS.cover?(key.to_key.n.num_bits) }
+        raise Oidc::EndpointError, "OIDC provider RSA signing key strength is invalid"
+      end
+    rescue OpenSSL::OpenSSLError, NoMethodError
+      raise Oidc::EndpointError, "OIDC provider signing key is invalid"
+    end
+
     def access_token
       return @access_token if @access_token
 
@@ -203,7 +241,7 @@ class CampfireOpenIdConnectStrategy < OmniAuth::Strategies::OpenIDConnect
         intent = restored_linking_intent(flow)
         session[Oidc::LINKING_INTENT_SESSION_KEY] = {
           "session_id" => flow.linking_session_id,
-          "expires_at" => Oidc::FLOW_LIFETIME.from_now.to_i,
+          "expires_at" => flow.expires_at.to_i,
           "state" => params["state"],
           "return_to" => flow.return_to,
           "authorization" => intent.fetch("authorization")

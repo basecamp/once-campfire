@@ -11,12 +11,15 @@ UpgradeRecoveryGuard = CampfireBackup::UpgradeRecoveryGuard unless defined?(Upgr
 
 class ProcessMonitor
   POLL_INTERVAL = 0.05
-  DEFAULT_SHUTDOWN_TIMEOUT = 25
+  DEFAULT_SHUTDOWN_TIMEOUT = 60
   DEFAULT_KILL_TIMEOUT = 5
 
-  def initialize(procfile, shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+  def initialize(procfile,
+      shutdown_timeout: Integer(ENV.fetch("CAMPFIRE_SHUTDOWN_TIMEOUT", DEFAULT_SHUTDOWN_TIMEOUT).to_s, 10),
       kill_timeout: DEFAULT_KILL_TIMEOUT, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
       sleeper: ->(duration) { sleep duration })
+    raise ArgumentError, "shutdown timeout must be positive" unless shutdown_timeout.positive?
+
     @procs = process_list(procfile)
     @shutdown_timeout = shutdown_timeout
     @kill_timeout = kill_timeout

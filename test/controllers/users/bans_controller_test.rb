@@ -146,6 +146,33 @@ class Users::BansControllerTest < ActionDispatch::IntegrationTest
     assert_predicate identity.reload, :provider_revoked_at?
   end
 
+  test "required mode refuses to unban an unlinked user" do
+    user = users(:kevin)
+    recovery_user = users(:david)
+    user.ban_by! actor: recovery_user
+    configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => recovery_user.email_address)
+    User.active.without_bots.where.not(id: recovery_user.id).find_each do |active_user|
+      Identity.find_or_create_by!(
+        user: active_user, issuer: Oidc.issuer,
+        subject: "required-unban-#{active_user.id}", provider_fingerprint: Oidc.provider_fingerprint
+      )
+    end
+    accounts(:signal).update!(
+      oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+      oidc_required_at: Time.current,
+      oidc_break_glass_user: recovery_user
+    )
+    Session.find_by!(token: parsed_cookies.signed[:session_token]).update_columns(expires_at: 1.hour.from_now)
+    use_oidc_origin
+    assert Oidc::Activation.ready?
+
+    delete user_ban_url(user)
+
+    assert_response :forbidden
+    assert user.reload.banned?
+    assert Oidc::Activation.ready?
+  end
+
   test "non-admins cannot unban users" do
     sign_in :kevin
 

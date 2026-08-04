@@ -44,6 +44,19 @@ class Oidc::LogoutTokenTest < ActiveSupport::TestCase
     assert_not Session.exists?(session.id)
   end
 
+  test "sid-scoped logout records only a sid revocation watermark" do
+    issued_at = Time.current.to_i
+
+    consume "sub" => @identity.subject, "sid" => "scoped-provider-session", "iat" => issued_at
+
+    assert_equal [ "sid" ], Oidc::Revocation.where.not(revoked_before: nil).pluck(:identifier_type)
+    assert federated_session(@identity, sid: "different-provider-session", issued_at:)
+    error = assert_raises(Identity::AuthenticationError) do
+      federated_session(@identity, sid: "scoped-provider-session", issued_at:)
+    end
+    assert_equal "provider_session_revoked", error.message
+  end
+
   test "mismatched or ambiguous sid semantics reject without consuming or revoking" do
     first = federated_session(@identity, sid: "ambiguous-provider-session")
     second = federated_session(@other_identity, sid: "ambiguous-provider-session")

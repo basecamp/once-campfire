@@ -27,10 +27,13 @@ module CampfireBackup
     RECEIPT_FILENAME = "upgrade-recovery.json"
     RECEIPT_LIFETIME = 24 * 60 * 60
     FRESHNESS_TABLES = %w[ accounts users rooms messages active_storage_blobs ].freeze
+    FRESHNESS_INTERNAL_TABLES = %w[ ar_internal_metadata schema_migrations sqlite_sequence ].freeze
     SQLITE_CONNECTION_IDENTITY_IVAR = :@campfire_open_database_identity
     SCHEMA_VERIFIER_TARGETS_KEY = :campfire_schema_verifier_migration_targets
     MIGRATION_CONTEXT_TARGETS_KEY = :campfire_verified_migration_context_targets
     MIGRATION_OPERATION_KEY = :campfire_migration_operation
+    DATABASE_TASKS_MIGRATION_KEY = :campfire_database_tasks_migration
+    TRUSTED_MIGRATION_SELECTION_KEY = :campfire_trusted_migration_selection
     SQLITE_CONNECTION_OPEN_MUTEX = Mutex.new
     SQLITE_DESCRIPTOR_DIRECTORIES = %w[ /proc/self/fd /dev/fd ].freeze
 
@@ -132,15 +135,33 @@ module CampfireBackup
         end
     end
 
+    module DatabaseTasksMigrationGuard
+      def migrate(...)
+        CampfireBackup::UpgradeRecoveryGuard.with_database_tasks_migration { super }
+      end
+    end
+
     module MigrationContextGuard
+      def migrate(target_version = nil, &selection)
+        if selection && CampfireBackup::UpgradeRecoveryGuard.database_tasks_migration?
+          CampfireBackup::UpgradeRecoveryGuard.with_trusted_migration_selection(self) { super }
+        else
+          super
+        end
+      end
+
       def up(target_version = nil, &selection)
-        selected_versions = migrations.select { |migration| !selection || selection.call(migration) }.map(&:version)
-        migrate = -> { super(target_version) { |migration| selected_versions.include?(migration.version) } }
-        with_verified_campfire_migration_target!(&migrate)
+        with_verified_campfire_migration_target! do
+          selected_versions = isolated_selected_versions(selection)
+          super(target_version) { |migration| selected_versions.include?(migration.version) }
+        end
       end
 
       def down(target_version = nil, &selection)
-        with_verified_campfire_migration_target! { super }
+        with_verified_campfire_migration_target! do
+          selected_versions = isolated_selected_versions(selection)
+          super(target_version) { |migration| selected_versions.include?(migration.version) }
+        end
       end
 
       def run(direction, target_version)
@@ -163,6 +184,27 @@ module CampfireBackup
       end
 
       private
+        def isolated_selected_versions(selection)
+          if selection && CampfireBackup::UpgradeRecoveryGuard.production_environment? &&
+              !CampfireBackup::UpgradeRecoveryGuard.trusted_migration_selection?(self)
+            raise ActiveRecord::MigrationError, "Production migration selection blocks are unsupported"
+          end
+          return migrations.map(&:version) unless selection
+
+          pool = schema_migration.instance_variable_get(:@pool)
+          unless pool.respond_to?(:with_connection)
+            raise ActiveRecord::MigrationError, "Active Record migration selection cannot be isolated"
+          end
+          selected = nil
+          pool.with_connection do |connection|
+            connection.transaction(requires_new: true) do
+              selected = migrations.select { |migration| selection.call(migration) }.map(&:version)
+              raise ActiveRecord::Rollback
+            end
+          end
+          selected
+        end
+
         def move(direction, steps)
           with_verified_campfire_migration_target! { super }
         end
@@ -240,12 +282,55 @@ module CampfireBackup
 
     class << self
       def install_active_record_guards!
+        require "active_record/tasks/database_tasks"
+
         context_guard = MigrationContextGuard
         ActiveRecord::MigrationContext.prepend(context_guard) unless ActiveRecord::MigrationContext < context_guard
         migrator_guard = MigratorGuard
         ActiveRecord::Migrator.prepend(migrator_guard) unless ActiveRecord::Migrator < migrator_guard
         migration_guard = MigrationGuard
         ActiveRecord::Migration.prepend(migration_guard) unless ActiveRecord::Migration < migration_guard
+        database_tasks_guard = DatabaseTasksMigrationGuard
+        database_tasks_singleton = ActiveRecord::Tasks::DatabaseTasks.singleton_class
+        unless database_tasks_singleton < database_tasks_guard
+          database_tasks_singleton.prepend(database_tasks_guard)
+        end
+      end
+
+      def with_database_tasks_migration
+        previous = Thread.current.thread_variable_get(DATABASE_TASKS_MIGRATION_KEY)
+        capability = { pid: Process.pid, token: Object.new }.freeze
+        Thread.current.thread_variable_set(DATABASE_TASKS_MIGRATION_KEY, capability)
+        yield
+      ensure
+        Thread.current.thread_variable_set(DATABASE_TASKS_MIGRATION_KEY, previous)
+      end
+
+      def database_tasks_migration?
+        capability = Thread.current.thread_variable_get(DATABASE_TASKS_MIGRATION_KEY)
+        capability.is_a?(Hash) && capability[:pid] == Process.pid
+      end
+
+      def with_trusted_migration_selection(context)
+        capability = Thread.current.thread_variable_get(DATABASE_TASKS_MIGRATION_KEY)
+        unless capability.is_a?(Hash) && capability[:pid] == Process.pid
+          raise ActiveRecord::MigrationError, "Active Record database task selection is not authorized"
+        end
+
+        previous = Thread.current.thread_variable_get(TRUSTED_MIGRATION_SELECTION_KEY)
+        trusted = { pid: Process.pid, context_id: context.object_id, token: capability.fetch(:token) }.freeze
+        Thread.current.thread_variable_set(TRUSTED_MIGRATION_SELECTION_KEY, trusted)
+        yield
+      ensure
+        Thread.current.thread_variable_set(TRUSTED_MIGRATION_SELECTION_KEY, previous)
+      end
+
+      def trusted_migration_selection?(context)
+        capability = Thread.current.thread_variable_get(DATABASE_TASKS_MIGRATION_KEY)
+        trusted = Thread.current.thread_variable_get(TRUSTED_MIGRATION_SELECTION_KEY)
+        capability.is_a?(Hash) && trusted.is_a?(Hash) &&
+          capability[:pid] == Process.pid && trusted[:pid] == Process.pid &&
+          trusted[:context_id] == context.object_id && trusted[:token].equal?(capability[:token])
       end
 
       def install_sqlite_connection_identity!(adapter)
@@ -1040,7 +1125,19 @@ module CampfireBackup
           return true if relevant.empty? && !tables.include?("schema_migrations")
           return false unless relevant == FRESHNESS_TABLES
 
-          relevant.all? do |table|
+          shadow_tables = database.execute("PRAGMA table_list").filter_map do |row|
+            schema, name, type = if row.is_a?(Hash)
+              row.values_at("schema", "name", "type")
+            else
+              row.values_at(0, 1, 2)
+            end
+            name if schema == "main" && type == "shadow"
+          end
+          durable_tables = tables.reject do |table|
+            table.in?(FRESHNESS_INTERNAL_TABLES) ||
+              table.in?(shadow_tables)
+          end
+          durable_tables.all? do |table|
             database.get_first_value("SELECT COUNT(*) FROM #{quote_identifier(table)}").to_i.zero?
           end
         end

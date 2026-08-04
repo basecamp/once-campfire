@@ -23,7 +23,7 @@ module User::Avatar
     avatar.variant(:square).processed if avatar.variable?
   end
 
-  def update_with_staged_avatar!(attributes, actor:, current_password: nil)
+  def update_with_staged_avatar!(attributes, actor:, current_password: nil, current_session: nil)
     attributes = attributes.to_h.symbolize_keys
     upload = attributes.delete(:avatar)
 
@@ -43,6 +43,7 @@ module User::Avatar
         end
 
         user.update!(attributes)
+        rotate_password_credentials!(user, current_session) if password_change
         StagedUpload.attach! user.avatar, blob if blob
       end
     end
@@ -58,4 +59,17 @@ module User::Avatar
     end
     reload
   end
+
+  private
+    def rotate_password_credentials!(user, current_session)
+      retained_session = user.sessions.lock.find_by(id: current_session&.id)
+      unless retained_session
+        raise User::AuthorizationError, "the authenticated session cannot be rotated"
+      end
+
+      CredentialIntent.where(user_id: user.id).delete_all
+      user.sessions.where.not(id: retained_session.id).destroy_all
+      user.increment! :authorization_generation
+      retained_session.regenerate_token
+    end
 end

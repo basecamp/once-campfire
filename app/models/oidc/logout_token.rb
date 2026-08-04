@@ -20,7 +20,7 @@ class Oidc::LogoutToken < ApplicationRecord
           prune_expired!
           Oidc::Revocation.prune_expired!
           Oidc::Revocation.record!(
-            issuer: claims.fetch("iss"), subject: claims["sub"], sid: claims["sid"],
+            issuer: claims.fetch("iss"), subject: (claims["sub"] unless claims["sid"]), sid: claims["sid"],
             issued_at: claims.fetch("iat")
           )
           create!(
