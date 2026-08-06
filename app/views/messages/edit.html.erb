@@ -14,17 +14,18 @@
       <% else %>
         <div class="composer--edit composer--rich-text">
           <%= form_with model: @message, url: room_message_path(@room, @message), id: dom_id(@message, :form), data: {
-                controller: "form", action: "trix-file-accept->form#preventAttachment keydown.esc->form#cancel keydown.ctrl+enter->form#submit:prevent keydown.meta+enter->form#submit:prevent" } do |form| %>
+                controller: "form", action: "lexxy:file-accept->form#preventAttachment keydown.esc->form#cancel keydown.ctrl+enter->form#submit:prevent keydown.meta+enter->form#submit:prevent" } do |form| %>
             <div class="full-width input input--actor min-width fill-white">
               <%= form.rich_text_area :body,
+                    value: editable_body(@message),
                     rows: 1,
-                    class: "input",
+                    class: "input lexxy-content",
                     aria: { multiline: "true", label: "Edit message" },
                     autofocus: true,
-                    data: {
-                      controller: "rich-autocomplete",
-                      action: rich_text_data_actions,
-                      rich_autocomplete_url_value: autocompletable_users_path(room_id: @room.id) } %>
+                    "permitted-attachment-types": "application/vnd.campfire.mention application/vnd.actiontext.opengraph-embed",
+                    data: { action: rich_text_data_actions } do %>
+                <%= mention_prompt_tag @room %>
+              <% end %>
             </div>
 
             <%= link_to "Close editor and discard changes", room_message_path(@room, @message), data: { form_target: "cancel" }, hidden: true %>

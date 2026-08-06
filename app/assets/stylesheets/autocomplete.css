@@ -33,7 +33,7 @@
   }
 }
 
-[data-trix-content-type~='application/vnd.campfire.mention'] {
+action-text-attachment[content-type~='application/vnd.campfire.mention'] {
   display: inline-flex;
   margin: 0;
   padding: 0;

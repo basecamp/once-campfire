@@ -89,7 +89,7 @@ export default class extends Controller {
   }
 
   async editMyLastMessage() {
-    const editorEmpty = document.querySelector("#composer trix-editor").matches(":empty")
+    const editorEmpty = document.querySelector("#composer lexxy-editor").isBlank
 
     if (editorEmpty && this.#paginator.upToDate) {
       this.#myLastMessage?.querySelector(".message__edit-btn")?.click()

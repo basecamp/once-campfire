@@ -26,6 +26,9 @@ gem "importmap-rails", github: "rails/importmap-rails"
 gem "turbo-rails", github: "hotwired/turbo-rails"
 gem "stimulus-rails"
 
+# Rich text
+gem "lexxy", "~> 0.9.24"
+
 # Media handling
 gem "image_processing", ">= 1.2"
 

@@ -1,10 +1,19 @@
-import Unfurler from "lib/rich_text/unfurl/unfurler"
+import * as Lexxy from "lexxy"
+import CampfireRichTextExtension from "lib/rich_text/campfire_extension"
 
-// Support a `cite` block for attribution links
-Trix.config.blockAttributes.cite = {
-  tagName: "cite",
-  inheritable: false,
-}
+Lexxy.configure({
+  global: {
+    // Keep the content type of mention attachments (application/vnd.campfire.mention)
+    // that Campfire has used since its Trix days
+    attachmentContentTypeNamespace: "campfire",
+    extensions: [ CampfireRichTextExtension ]
+  },
+  default: {
+    // Campfire sends files as separate messages via the composer's own
+    // attach button, never through the editor
+    toolbar: { attachments: false },
 
-const unfurler = new Unfurler()
-unfurler.install()
+    // Trix offered a single heading level, rendered as h1
+    headings: [ "h1" ]
+  }
+})

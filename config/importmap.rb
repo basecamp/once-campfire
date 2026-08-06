@@ -5,8 +5,7 @@ pin "@hotwired/stimulus-loading", to: "stimulus-loading.js"
 pin "@hotwired/turbo-rails", to: "turbo.js"
 pin "@rails/actioncable", to: "actioncable.esm.js"
 pin "@rails/request.js", to: "@rails--request.js" # @0.0.8
-pin "trix", to: "trix.esm.min.js" # @2.1.19
-pin "@rails/actiontext", to: "actiontext.js"
+pin "lexxy", to: "lexxy.js"
 pin "highlight.js", to: "highlight.js/core.js"
 
 pin_all_from "app/javascript/initializers", under: "initializers"

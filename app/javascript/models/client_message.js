@@ -18,7 +18,7 @@ export default class ClientMessage {
       body,
       messageTimestamp: Math.floor(now.getTime()),
       messageDatetime: now.toISOString(),
-      messageClasses: this.#containsOnlyEmoji(node.textContent) ? "message--emoji" : "",
+      messageClasses: this.#messageClassesFromNode(node),
     })
   }
 
@@ -52,26 +52,37 @@ export default class ClientMessage {
     }
   }
 
+  #messageClassesFromNode(node) {
+    if (this.#containsOnlyEmoji(this.#plainTextFromNode(node))) {
+      return "message--emoji"
+    } else {
+      return ""
+    }
+  }
+
 
   #isPlayCommand(node) {
     return this.#matchPlayCommand(node)
   }
 
   #matchPlayCommand(node) {
-    return this.#stripWrapperElement(node)?.match(new RegExp(`^/play (${SOUND_NAMES.join("|")})`))?.[1]
+    return this.#plainTextFromNode(node)?.match(new RegExp(`^/play (${SOUND_NAMES.join("|")})`))?.[1]
   }
 
-  #stripWrapperElement(node) {
-    return node.innerHTML?.replace(/<div>(?:<!--[\s\S]*?-->)*([\s\S]*?)<\/div>/i, '$1')
+  #plainTextFromNode(node) {
+    if (this.#isRichText(node)) {
+      return node.toString().trim()
+    } else {
+      return node
+    }
   }
-
 
   #isRichText(node) {
     return typeof(node) != "string"
   }
 
   #richTextContent(node) {
-    return `<div class="trix-content">${node.innerHTML}</div>`
+    return `<div class="lexxy-content">${node.value}</div>`
   }
 
 

@@ -100,20 +100,56 @@
   }
 
   .composer--rich-text {
-    trix-toolbar {
-      display: block;
+    lexxy-toolbar {
+      display: flex;
     }
 
-    trix-editor.input {
+    lexxy-editor.input {
       margin-block-start: var(--block-space-half);
     }
   }
 
-  .composer--edit trix-toolbar {
+  /* In the message composer the toolbar goes below the text, on the same
+     row as the surrounding action buttons, like the Trix toolbar did.
+     The edit composer keeps it on top. */
+  #composer.composer--rich-text lexxy-editor.input {
+    display: flex;
+    flex-direction: column;
+
+    /* Sit the toolbar row on the same baseline as the composer's round
+       buttons, which pull themselves down with negative margins */
+    margin-block-end: -0.25em;
+
+    .lexxy-editor__content {
+      order: -1;
+    }
+
+    lexxy-toolbar {
+      margin-block-start: 0.4em;
+
+      /* Dropdowns open upward — the toolbar sits at the bottom of the screen */
+      [data-dropdown-panel] {
+        inset-block-start: auto;
+        inset-block-end: 100%;
+      }
+    }
+  }
+
+  .composer--edit lexxy-toolbar {
     border-block-end: 1px solid var(--color-border);
     margin-inline: -0.8em;
     padding-inline: 0.3em;
     padding-block-end: 0.5em;
+  }
+}
+
+/* The editor's container-type prevents it from sizing the message bubble by
+   its content, so give the bubble the full available width while editing */
+.message__body:has(.composer--edit) {
+  inline-size: 100%;
+
+  .message__body-content--editing {
+    flex-grow: 1;
   }
 }
 
