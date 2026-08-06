@@ -1,5 +1,8 @@
 .flash {
+  align-items: center;
+  animation: appear-then-fade 3s 300ms both;
   display: flex;
+  gap: 0.5rem;
   inset-block-start: var(--block-space);
   inset-inline-start: 50%;
   justify-content: center;
@@ -9,7 +12,6 @@
 }
 
 .flash__inner {
-  animation: appear-then-fade 3s 300ms both;
   aspect-ratio: 1;
   background-color: var(--flash-background, var(--color-positive));
   border-radius: 50%;
@@ -20,4 +22,17 @@
   img {
     grid-area: 1/1;
   }
+}
+
+.flash--alert .flash__inner {
+  --flash-background: var(--color-negative);
+}
+
+.flash__message {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-dark);
+  border-radius: 999px;
+  color: var(--color-text);
+  font-weight: 600;
+  padding: 0.6em 0.9em;
 }

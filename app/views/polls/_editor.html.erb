@@ -1,0 +1,16 @@
+<% inline = local_assigns.fetch(:inline, false) %>
+<% framed = local_assigns.fetch(:framed, !inline) %>
+
+<div class="poll-editor <%= "pad border-radius border shadow" if framed %>">
+  <h2 class="margin-none"><%= title %></h2>
+
+  <%= render "polls/form",
+        poll: poll,
+        room: room,
+        url: url,
+        method: method,
+        submit_label: submit_label,
+        delete_button: local_assigns[:delete_button],
+        client_message_id: local_assigns[:client_message_id],
+        cancel_link: local_assigns[:cancel_link] %>
+</div>

@@ -36,18 +36,9 @@
       <%= yield :nav %>
     </nav>
 
-    <% if notice = flash[:notice] || flash[:alert] %>
-      <div class="flash" data-controller="element-removal" data-action="animationend->element-removal#remove">
-        <div class="flash__inner shadow" style="<%= "--flash-background: var(--color-negative)" if flash[:alert] %>">
-          <% if flash[:alert] %>
-            <%= image_tag "alert.svg", aria: { hidden: true }, size: 24, class: "colorize--white" %></span>
-          <% else %>
-            <%= image_tag "check.svg", aria: { hidden: true }, size: 24, class: "colorize--white" %></span>
-          <% end %>
-        </div>
-        <span class="for-screen-reader" role="alert" aria-atomic="true"><%= notice %></span>
-      </div>
-    <% end %>
+    <div id="flash">
+      <%= render "layouts/flash" %>
+    </div>
 
     <main id="main-content">
       <%= yield %>

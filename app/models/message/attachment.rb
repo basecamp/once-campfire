@@ -12,7 +12,7 @@ module Message::Attachment
 
   module ClassMethods
     def create_with_attachment!(attributes)
-      create!(attributes).tap(&:process_attachment)
+      create!(attributes) { |message| yield message if block_given? }.tap(&:process_attachment)
     end
   end
 
