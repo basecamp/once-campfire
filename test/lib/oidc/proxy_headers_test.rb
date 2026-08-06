@@ -118,6 +118,17 @@ class Oidc::ProxyHeadersTest < ActiveSupport::TestCase
     assert_equal 0, @calls
   end
 
+  test "readiness checks do not require client attribution from a trusted edge" do
+    Oidc::HEALTH_PATHS.each do |path|
+      status, = attribution_stack.call(environment(
+        remote_address: "10.20.1.2", forwarded_for: nil, method: "GET", path:
+      ))
+
+      assert_equal 200, status
+    end
+    assert_equal Oidc::HEALTH_PATHS.size, @calls
+  end
+
   test "disables response storage for security endpoint attribution failures only" do
     stack = attribution_stack
 
@@ -131,6 +142,9 @@ class Oidc::ProxyHeadersTest < ActiveSupport::TestCase
       ))
       assert_equal 421, status
       assert_equal "no-store", headers.fetch("cache-control")
+      Oidc::DEFAULT_SECURITY_HEADERS.each do |name, value|
+        assert_equal value, headers.fetch(name)
+      end
     end
 
     status, headers = stack.call(environment(

@@ -5,7 +5,7 @@ module Oidc
   class RequestGuard
     AUTHENTICATION_PATHS = %w[ /auth/openid_connect /auth/openid_connect/callback ].freeze
     BACK_CHANNEL_LOGOUT_PATH = "/auth/openid_connect/backchannel_logout"
-    HEALTH_PATHS = %w[ /up /up/oidc /up/scim ].freeze
+    HEALTH_PATHS = Oidc::HEALTH_PATHS
     REQUEST_LIMIT = 10
     IP_REQUEST_LIMIT = 60
     REQUEST_WINDOW = 3.minutes
@@ -19,9 +19,9 @@ module Oidc
 
     def call(env)
       request = ActionDispatch::Request.new(env)
-      return canonical_origin_response(request) unless canonical_origin?(request)
       recognized_path = recognized_security_path(request.path)
       return response(:not_found, "Not found") if recognized_path && request.path != recognized_path
+      return canonical_origin_response(request) unless canonical_origin?(request)
       authentication_path = recognized_authentication_path(request.path)
       if authentication_path && !authentication_method_allowed?(request, authentication_path)
         return method_not_allowed_response(authentication_path)
@@ -100,7 +100,15 @@ module Oidc
 
       def canonical_origin_response(request)
         if request.get? || request.head?
-          [ 308, { "location" => "#{Oidc.configuration.canonical_origin}#{request.fullpath}", "content-type" => "text/plain" }, [] ]
+          [
+            308,
+            Oidc.security_headers(
+              "content-length" => "0",
+              "content-type" => "text/plain",
+              "location" => "#{Oidc.configuration.canonical_origin}#{request.fullpath}"
+            ),
+            []
+          ]
         else
           response :misdirected_request, "Use the configured Campfire origin"
         end
@@ -140,7 +148,11 @@ module Oidc
       end
 
       def response(status, body)
-        [ Rack::Utils.status_code(status), { "content-type" => "text/plain", "content-length" => body.bytesize.to_s }, [ body ] ]
+        [
+          Rack::Utils.status_code(status),
+          Oidc.security_headers("content-type" => "text/plain", "content-length" => body.bytesize.to_s),
+          [ body ]
+        ]
       end
 
       def required_mode_not_ready_response(request)
@@ -183,11 +195,11 @@ module Oidc
         HTML
         [
           Rack::Utils.status_code(:service_unavailable),
-          {
+          Oidc.security_headers(
             "cache-control" => "no-store",
             "content-type" => "text/html; charset=utf-8",
             "content-length" => body.bytesize.to_s
-          },
+          ),
           request.head? ? [] : [ body ]
         ]
       end
@@ -204,13 +216,17 @@ module Oidc
 
 
       def recognized_authentication_path(path)
-        normalized_path = path.downcase.sub(%r{/$}, "")
+        normalized_path = normalize_security_path(path)
         normalized_path if normalized_path.in?(AUTHENTICATION_PATHS)
       end
 
       def recognized_security_path(path)
-        normalized_path = path.downcase.sub(%r{/$}, "")
+        normalized_path = normalize_security_path(path)
         normalized_path if normalized_path.in?(AUTHENTICATION_PATHS) || normalized_path == BACK_CHANNEL_LOGOUT_PATH
+      end
+
+      def normalize_security_path(path)
+        path.to_s.downcase.delete_suffix("/").sub(/\.[^\/]*\z/, "")
       end
 
       class << self

@@ -66,6 +66,46 @@ class Rooms::DirectTest < ActiveSupport::TestCase
     assert_equal Rooms::Direct.participant_key_for(participant_ids), room.direct_participant_key
   end
 
+  test "direct room identity and type cannot change" do
+    room = Rooms::Direct.find_or_create_for([ users(:david), users(:jz) ], actor: users(:david))
+    original_key = room.direct_participant_key
+
+    converted = room.becomes!(Rooms::Open)
+    assert_not converted.save
+    assert_includes converted.errors[:type], "cannot be changed for a direct room"
+
+    room.reload
+    assert_not room.update(direct_participant_key: "legacy:replacement")
+    assert_includes room.errors[:direct_participant_key], "cannot be changed"
+    assert room.reload.direct?
+    assert_equal original_key, room.direct_participant_key
+  end
+
+  test "canonical lookup ignores preserved duplicate rooms" do
+    participants = [ users(:david), users(:jz) ]
+    canonical = Rooms::Direct.find_or_create_for(participants, actor: participants.first)
+    duplicate_id = Room.insert!({
+      type: "Rooms::Direct", creator_id: participants.first.id,
+      direct_participant_key: "legacy:duplicate:#{canonical.direct_participant_key}",
+      created_at: Time.current, updated_at: Time.current
+    }).first.fetch("id")
+    Membership.insert_all!(participants.map do |user|
+      {
+        room_id: duplicate_id, user_id: user.id, involvement: "everything",
+        created_at: Time.current, updated_at: Time.current
+      }
+    end)
+    duplicate = Rooms::Direct.find(duplicate_id)
+
+    assert_equal canonical,
+      Rooms::Direct.find_or_create_for(participants.reverse, actor: participants.last)
+    assert_raises(Rooms::Direct::ParticipantMutationError) do
+      duplicate.memberships.create!(user: users(:jason))
+    end
+    assert_not duplicate.becomes!(Rooms::Closed).save
+    assert_equal participants.map(&:id).sort, duplicate.reload.user_ids.sort
+  end
+
   test "whole room destruction removes canonical participant rows" do
     room = Rooms::Direct.find_or_create_for([ users(:david), users(:jz) ], actor: users(:david))
     membership_ids = room.membership_ids

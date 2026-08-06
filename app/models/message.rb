@@ -1,6 +1,9 @@
 class Message < ApplicationRecord
   class ClientMessageIdConflict < StandardError; end
-  WEBHOOK_REPLY_MARKER = Object.new.freeze
+  ORIGIN_USER = "user"
+  ORIGIN_BOT_API = "bot_api"
+  ORIGIN_WEBHOOK_REPLY = "webhook_reply"
+  ORIGINS = [ ORIGIN_USER, ORIGIN_BOT_API, ORIGIN_WEBHOOK_REPLY ].freeze
 
   include Attachment, Broadcasts, Mentionee, Pagination, Searchable
 
@@ -12,8 +15,6 @@ class Message < ApplicationRecord
 
   has_rich_text :body
 
-  attr_accessor :webhook_reply
-
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
   before_create :authorize_creator!
   after_create :create_reliable_effects
@@ -24,6 +25,8 @@ class Message < ApplicationRecord
   validate :body_or_attachment
   validate :client_message_id_within_limit
   validate :preserve_client_message_id, on: :update
+  validate :preserve_origin, on: :update
+  validates :origin, inclusion: { in: ORIGINS }
 
   scope :ordered, -> { order(:created_at) }
   scope :with_creator, -> { preload(creator: :avatar_attachment) }
@@ -76,6 +79,8 @@ class Message < ApplicationRecord
   end
 
   def webhook_recipients
+    return User.none if creator.bot?
+
     recipients = room.direct? ? room.users.active_bots : mentionees.active_bots
     recipients.where.not(id: creator_id)
   end
@@ -104,7 +109,7 @@ class Message < ApplicationRecord
     def create_reliable_effects
       create_effect! "room_receive", "room_receive"
       create_effect! "broadcast_create", "broadcast_create"
-      unless webhook_reply.equal?(WEBHOOK_REPLY_MARKER)
+      if origin == ORIGIN_USER && !creator.bot?
         create_effect! "webhook_fanout", "webhook_fanout"
       end
     end
@@ -157,5 +162,9 @@ class Message < ApplicationRecord
 
     def preserve_client_message_id
       errors.add :client_message_id, "cannot be changed" if will_save_change_to_client_message_id?
+    end
+
+    def preserve_origin
+      errors.add :origin, "cannot be changed" if will_save_change_to_origin?
     end
 end

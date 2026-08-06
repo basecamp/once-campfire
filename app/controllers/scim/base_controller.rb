@@ -13,6 +13,7 @@ class Scim::BaseController < ActionController::API
   rescue_from InvalidRequest, with: :render_invalid_request
   rescue_from ActionDispatch::Http::Parameters::ParseError, JSON::ParserError,
     with: :render_malformed_request
+  rescue_from User::MutationFence::Unavailable, with: :render_unavailable
   rescue_from ActiveRecord::ActiveRecordError, with: :render_unavailable
   rescue_from ActiveRecord::RecordInvalid, with: :render_mutability_conflict
   rescue_from ActiveRecord::RecordNotFound, with: :render_not_found

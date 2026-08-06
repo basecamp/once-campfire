@@ -7,7 +7,7 @@ class CreateIdentitiesDirectRoomsTest < ActiveSupport::TestCase
   PREVIOUS_SCHEMA_VERSION = 20251212154340
   MIGRATION_VERSION = 20260730000000
 
-  test "upgrade preserves duplicate legacy rooms and claims one canonical identity" do
+  test "upgrade gives every duplicate legacy room an immutable unique identity" do
     with_temporary_database do |connection, context|
       context.up(PREVIOUS_SCHEMA_VERSION)
       insert_duplicate_direct_rooms(connection)
@@ -16,12 +16,16 @@ class CreateIdentitiesDirectRoomsTest < ActiveSupport::TestCase
 
       keys = connection.select_values("SELECT direct_participant_key FROM rooms ORDER BY id")
       assert_equal 2, connection.select_value("SELECT COUNT(*) FROM rooms").to_i
-      assert keys.first.present?
-      assert_nil keys.second
+      assert_equal "v1:#{Digest::SHA256.hexdigest("1:2")}", keys.first
+      assert keys.second.start_with?("legacy:2:")
+      assert_equal 2, keys.compact.uniq.size
       assert_raises(ActiveRecord::StatementInvalid) do
         connection.execute <<~SQL
           UPDATE rooms SET direct_participant_key = #{connection.quote(keys.first)} WHERE id = 2
         SQL
+      end
+      assert_raises(ActiveRecord::StatementInvalid) do
+        connection.execute "UPDATE rooms SET direct_participant_key = NULL WHERE id = 2"
       end
       assert_empty connection.exec_query("PRAGMA foreign_key_check")
     end

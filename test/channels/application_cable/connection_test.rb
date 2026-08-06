@@ -89,6 +89,46 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
     connection.transmit(type: "private-message")
   end
 
+  test "an explicit remote session revocation preserves the frontend protocol reason" do
+    cookies.signed[:session_token] = sessions(:david_safari).token
+    connect
+    connection.expects(:close).with(reason: Session::REVOKED_REASON, reconnect: false)
+
+    connection.send :process_internal_message, {
+      "type" => "disconnect", "reason" => Session::REVOKED_REASON, "reconnect" => false
+    }
+  end
+
+  test "subscribes an authenticated connection to its user-wide internal channel" do
+    cookies.signed[:session_token] = sessions(:david_safari).token
+    connect
+    event_loop = stub
+    pubsub = mock
+    server = stub(event_loop:, pubsub:)
+    connection.instance_variable_set :@server, server
+    event_loop.stubs(:post).yields
+    pubsub.expects(:subscribe).with(connection.send(:internal_channel), instance_of(Proc))
+    pubsub.expects(:subscribe).with(
+      ApplicationCable::Connection.user_internal_channel(users(:david)), instance_of(Proc)
+    )
+
+    connection.send :subscribe_to_internal_channel
+  end
+
+  test "broadcasts an authoritative user-wide revocation control frame" do
+    channel = ApplicationCable::Connection.user_internal_channel(users(:david))
+
+    assert_difference -> { ActionCable.server.pubsub.broadcasts(channel).size }, 1 do
+      ApplicationCable::Connection.disconnect_user(
+        user: users(:david), reason: Session::REVOKED_REASON, reconnect: false
+      )
+    end
+
+    assert_equal({
+      "type" => "disconnect", "reason" => Session::REVOKED_REASON, "reconnect" => false
+    }, ActiveSupport::JSON.decode(ActionCable.server.pubsub.broadcasts(channel).last))
+  end
+
   test "does not transmit after an OIDC back-channel logout revokes its provider session" do
     configure_oidc
     identity = Identity.create!(user: users(:jz), issuer: Oidc.issuer, subject: "cable-logout-subject")
@@ -114,11 +154,24 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
     connection.transmit(type: "private-message")
   end
 
-  test "does not transmit when policy fails after the session was loaded" do
+  test "closes reconnectably when policy fails after the session was loaded" do
     cookies.signed[:session_token] = sessions(:david_safari).token
     connect
     Oidc.stubs(:rollback_prepared?).raises(Oidc::PolicyUnavailable, Oidc::POLICY_UNAVAILABLE_MESSAGE)
-    connection.expects(:close).with(reason: "Session revoked", reconnect: false)
+    connection.expects(:close).with(
+      reason: ApplicationCable::Connection::POLICY_UNAVAILABLE_REASON, reconnect: true
+    )
+
+    connection.transmit(type: "private-message")
+  end
+
+  test "closes reconnectably when the database fails after the session was loaded" do
+    cookies.signed[:session_token] = sessions(:david_safari).token
+    connect
+    Session.stubs(:includes).raises(ActiveRecord::StatementInvalid, "database unavailable")
+    connection.expects(:close).with(
+      reason: ApplicationCable::Connection::POLICY_UNAVAILABLE_REASON, reconnect: true
+    )
 
     connection.transmit(type: "private-message")
   end

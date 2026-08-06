@@ -227,6 +227,45 @@ class Message::EffectTest < ActiveSupport::TestCase
     ).count
   end
 
+  test "webhook fanout journals bots in bounded continuation batches without dropping recipients" do
+    now = Time.current
+    bot_ids = User.insert_all!(
+      (Message::Effect::BOT_FANOUT_BATCH_SIZE + 1).times.map do |index|
+        {
+          name: "Batch Bot #{index}", bot_token: User.generate_bot_token,
+          role: User.roles.fetch("bot"), status: User.statuses.fetch("active"),
+          created_at: now, updated_at: now
+        }
+      end,
+      returning: %w[ id ]
+    ).rows.flatten
+    Webhook.insert_all!(bot_ids.map do |bot_id|
+      {
+        user_id: bot_id, url: "https://bot-#{bot_id}.example.com/hook",
+        delivery_generation: SecureRandom.uuid, created_at: now, updated_at: now
+      }
+    end)
+    room = Rooms::Direct.find_or_create_for(
+      User.where(id: [ @creator.id, *bot_ids ]), actor: @creator
+    )
+    message = build_unperformed_message(
+      room:, client_message_id: "bounded-bot-fanout"
+    )
+    fanout = message.message_effects.find_by!(effect: "webhook_fanout")
+
+    assert fanout.perform_safely
+
+    deliveries = message.message_effects.where(effect: "bot_webhook")
+    assert_equal Message::Effect::BOT_FANOUT_BATCH_SIZE, deliveries.count
+    assert_nil fanout.reload.completed_at
+    assert fanout.lease_token?
+
+    assert fanout.perform!(fanout.lease_token)
+
+    assert_equal bot_ids.sort, deliveries.pluck(:recipient_id).sort
+    assert fanout.reload.completed_at?
+  end
+
   test "bot reply remains idempotent when effect completion is interrupted" do
     message = build_message(body: "<div>Hey #{mention_attachment_for(:bender)}</div>")
     effect = message.message_effects.find_by!(effect: "bot_webhook")
@@ -260,6 +299,29 @@ class Message::EffectTest < ActiveSupport::TestCase
     assert effect.reload.canceled_at?
     assert_nil effect.completed_at
     assert_not_requested :post, webhooks(:bender).url
+  end
+
+  test "a preexisting delivery cannot turn one bot message into a two-bot cycle" do
+    recipient = User.create_bot!({
+      name: "Cycle Target", webhook_url: "https://cycle-target.example.com/hook"
+    }, actor: @creator)
+    Membership.create!(room: @room, user: recipient)
+    message = @room.messages.create!(
+      creator: users(:bender), body: "Automated source", client_message_id: SecureRandom.uuid
+    )
+    webhook = recipient.webhook
+    effect = message.message_effects.create!(
+      effect: "bot_webhook", deduplication_key: "bot_webhook:#{recipient.id}",
+      recipient_id: recipient.id, room_id: @room.id,
+      message_client_id: message.client_message_id, webhook_id: webhook.id,
+      webhook_generation: webhook.delivery_generation, delivery_id: SecureRandom.uuid
+    )
+    request = WebMock.stub_request(:post, webhook.url).to_raise("must not deliver")
+
+    assert effect.perform!(effect.reload.lease_token)
+
+    assert effect.reload.canceled_at?
+    assert_not_requested request
   end
 
   test "bot webhook is canceled when its endpoint generation rotates" do
@@ -449,6 +511,28 @@ class Message::EffectTest < ActiveSupport::TestCase
       .where(recipient_id: membership.user.push_subscriptions.select(:id)).exists?
   end
 
+  test "an absent presence advances pending unread and push reconciliation" do
+    membership = memberships(:jason_watercooler)
+    membership.update_columns(connected_at: nil, presence_tokens: {}, unread_at: nil)
+    presence = membership.present
+    message = build_message(client_message_id: "presence-absent-advance")
+    effect = message.message_effects.find_by!(
+      effect: "presence_reconcile", recipient_id: membership.id
+    )
+    assert_operator effect.next_attempt_at, :>, Time.current
+
+    Membership.transaction do
+      assert membership.absent(presence)
+      assert_nil effect.reload.lease_token
+      assert_operator effect.next_attempt_at, :<=, Time.current
+    end
+
+    assert effect.reload.lease_token?
+    assert effect.perform!(effect.lease_token)
+    assert_equal message.created_at, membership.reload.unread_at
+    assert effect.reload.completed_at?
+  end
+
   test "expired presence reconciles unread state and one push per current subscription" do
     membership = memberships(:jason_watercooler)
     membership.update_columns(connected_at: nil, presence_tokens: {}, unread_at: nil)
@@ -465,6 +549,27 @@ class Message::EffectTest < ActiveSupport::TestCase
     assert_equal subscription_ids.sort, message.message_effects
       .where(effect: "push_delivery", recipient_id: subscription_ids).pluck(:recipient_id).sort
     assert effect.reload.completed_at?
+  end
+
+  test "an unread broadcast failure remains durable and retries" do
+    membership = memberships(:jason_watercooler)
+    membership.update_columns(connected_at: nil, presence_tokens: {}, unread_at: nil)
+    UnreadRoomsChannel.stubs(:broadcast_to).raises(IOError, "cable unavailable")
+    message = build_message(client_message_id: "unread-broadcast-retry")
+    effect = message.message_effects.find_by!(
+      effect: "presence_reconcile", recipient_id: membership.id
+    )
+
+    assert_equal message.created_at, membership.reload.unread_at
+    assert effect.reload.next_attempt_at?
+    assert_nil effect.completed_at
+
+    UnreadRoomsChannel.unstub(:broadcast_to)
+    effect.update_columns(next_attempt_at: nil)
+    assert effect.reload.perform_safely
+    assert effect.reload.completed_at?
+  ensure
+    UnreadRoomsChannel.unstub(:broadcast_to)
   end
 
   test "a later read generation cannot be regressed after it disconnects" do
@@ -494,10 +599,9 @@ class Message::EffectTest < ActiveSupport::TestCase
     effect = message.message_effects.find_by!(effect: "presence_reconcile", recipient_id: membership.id)
 
     assert membership.absent(presence)
+    assert effect.reload.lease_token?
     membership.read
-    travel_to effect.next_attempt_at + 1.second do
-      assert effect.reload.perform_safely
-    end
+    assert effect.perform!(effect.lease_token)
 
     assert effect.reload.canceled_at?
     assert_nil membership.reload.unread_at

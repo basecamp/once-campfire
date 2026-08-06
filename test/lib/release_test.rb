@@ -15,7 +15,7 @@ class ReleaseTest < ActiveSupport::TestCase
   ].freeze
   PHASE_KEYS = %w[
     tag draft workflow ghcr_immutable secondary_immutable static_immutable
-    github_assets static_staging promotion_prepared promotion publication
+    github_assets static_staging promotion_prepared promotion publication abandonment
   ].freeze
 
   class FakeLock
@@ -234,6 +234,63 @@ class ReleaseTest < ActiveSupport::TestCase
     end
   end
 
+  test "GitHub publication does not mutate the separately fenced latest channel" do
+    states = { "github_public" => "draft", "github_latest" => "v1.2.2" }
+    commands = []
+    success = stub(success?: true)
+    lock = FakeLock.new(base_journal)
+    lock.define_singleton_method(:run_mutation!) do |*command, env: {}|
+      commands << [ command, env ]
+      if command.include?("--draft=false")
+        states["github_public"] = "public"
+        states["github_latest"] = "v1.2.3" if command.include?("--latest")
+      elsif command.include?("--latest")
+        states["github_latest"] = command.fetch(3)
+      end
+      success
+    end
+    channels = [
+      ReleaseChannel.new(
+        key: "github_public", previous: "draft", target: "public",
+        read: -> { states.fetch("github_public") },
+        write: ->(_target, runner) {
+          publish_github_release_without_latest!(
+            repository: EXPECTED_REPOSITORY, tag: "v1.2.3", runner:
+          )
+        }
+      ),
+      ReleaseChannel.new(
+        key: "github_latest", previous: "v1.2.2", target: "v1.2.3",
+        read: -> { states.fetch("github_latest") },
+        write: ->(target, runner) {
+          mutate! "gh", "release", "edit", target, "--repo", EXPECTED_REPOSITORY,
+            "--latest", runner:
+        }
+      )
+    ]
+    promotion = MovingChannelPromotion.new(
+      lock:, journal: lock.journal, channels:,
+      fault_after: ->(step) { raise SimulatedCrash if step == "github_public" }
+    )
+
+    assert_raises(SimulatedCrash) { promotion.converge!("complete") }
+    assert_equal "public", states.fetch("github_public")
+    assert_equal "v1.2.2", states.fetch("github_latest")
+    publication_command = commands.sole.first
+    assert_includes publication_command, "--latest=false"
+    assert_not_includes publication_command, "--latest"
+
+    marker = lock.journal.fetch("mutation_in_flight")
+    settle_release_mutation!(
+      lock:, journal: lock.journal, reconciling: true, token: marker.fetch("token")
+    )
+    assert MovingChannelPromotion.new(
+      lock:, journal: lock.journal, channels:
+    ).converge!("complete")
+    assert_equal "v1.2.3", states.fetch("github_latest")
+    assert_equal %w[ github_latest github_public ], lock.journal.fetch("completed_steps").keys.sort
+  end
+
   test "explicit rollback restores every previous channel" do
     states = {
       "registry_latest" => "sha256:new",
@@ -278,6 +335,71 @@ class ReleaseTest < ActiveSupport::TestCase
       MovingChannelPromotion.new(lock:, journal: lock.journal, channels:).converge!("complete")
     end
     assert_empty writes
+  end
+
+  test "moving-channel completion rejects an uncaptured target coincidence" do
+    states = { "registry" => "new" }
+    writes = []
+    release_channel = channel("registry", "old", "new", states, writes)
+
+    error = assert_raises(ReleaseStateError) do
+      MovingChannelPromotion.new(
+        lock: FakeLock.new(base_journal), journal: base_journal,
+        channels: [ release_channel ]
+      ).converge!("complete")
+    end
+
+    assert_match "without an authenticated mutation", error.message
+    assert_empty writes
+  end
+
+  test "moving-channel settlements authorize only their convergence generation" do
+    current_generation = "1" * 32
+    journal = base_journal.merge(
+      "convergence_generation" => current_generation,
+      "settled_mutations" => [ {
+        "target" => {
+          "channel" => "registry", "value" => "new", "generation" => "2" * 32
+        }
+      } ]
+    )
+    states = { "registry" => "new" }
+
+    assert_raises(ReleaseStateError) do
+      MovingChannelPromotion.new(
+        lock: FakeLock.new(journal), journal:,
+        channels: [ channel("registry", "old", "new", states, []) ]
+      ).converge!("complete")
+    end
+  end
+
+  test "rollback rotates generation and permanently invalidates completion authority" do
+    states = { "registry" => "old" }
+    writes = []
+    lock = FakeLock.new(base_journal)
+    release_channel = channel("registry", "old", "new", states, writes)
+    promotion = MovingChannelPromotion.new(
+      lock:, journal: lock.journal, channels: [ release_channel ]
+    )
+    assert promotion.converge!("complete")
+    completed_generation = lock.journal.fetch("convergence_generation")
+    assert lock.journal["completion_authority"]
+
+    rollback = MovingChannelPromotion.new(
+      lock:, journal: lock.journal, channels: [ release_channel ]
+    )
+    assert rollback.converge!("rollback")
+    assert_not_equal completed_generation, lock.journal.fetch("convergence_generation")
+    assert_nil lock.journal["completion_authority"]
+    assert lock.journal["completion_authority_invalidated_at"]
+    assert_equal "old", states.fetch("registry")
+
+    assert_raises(ReleaseStateError) do
+      MovingChannelPromotion.new(
+        lock:, journal: lock.journal, channels: [ release_channel ]
+      ).converge!("complete")
+    end
+    assert_equal "old", states.fetch("registry")
   end
 
   test "moving channels compare immediately before write and re-read after settlement" do
@@ -418,6 +540,49 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_equal 2, state.dig(:journal, "journal_revision")
     assert_equal history.last.fetch(:current_digest), state.fetch(:history_digest)
     assert_equal history.map { _1.fetch(:name) }, state.fetch(:history).map { _1.fetch(:name) }
+  end
+
+  test "persisted format 5 moving-channel states require explicit legacy recovery" do
+    marker = {
+      "token" => "1" * 32,
+      "kind" => "moving_channel",
+      "target" => { "channel" => "github_public", "value" => "public" },
+      "started_at" => "2026-08-05T12:00:00Z"
+    }
+    legacy_states = {
+      "mutation_in_flight" => { "mutation_in_flight" => marker },
+      "settled_mutations" => {
+        "settled_mutations" => [ marker.merge("settled_at" => "2026-08-05T12:01:00Z") ]
+      },
+      "completed_steps" => {
+        "completed_steps" => {
+          "github_public" => {
+            "outcome" => "complete", "value" => "public",
+            "verified_at" => "2026-08-05T12:02:00Z"
+          }
+        }
+      }
+    }
+    expected = "Release journal format 5 predates generation-bound moving-channel state; " \
+      "automatic migration is unsafe. Preserve the journal and use audited format-5 " \
+      "recovery tooling before retrying"
+
+    legacy_states.each do |name, state|
+      journal = phase_zero_journal.merge(
+        state.merge(
+          "format_version" => 5, "lock_id" => "a" * 64, "journal_revision" => 0
+        )
+      )
+      history = ReleaseJournal.build_history(
+        journal, operation_id: "a" * 64, prior_digest: ReleaseJournal::GENESIS_DIGEST,
+        publisher_id: "1" * 32, key: history_key
+      )
+
+      error = assert_raises(ReleaseStateError, name) do
+        ReleaseLock.state_from_snapshot(history_snapshot([ history ]), key: history_key)
+      end
+      assert_equal expected, error.message, name
+    end
   end
 
   test "authenticated history rejects forks duplicate revisions and gaps without erasing evidence" do
@@ -1192,10 +1357,13 @@ class ReleaseTest < ActiveSupport::TestCase
 
   test "only explicit reconciliation with the authenticated token settles an in-flight mutation" do
     journal = base_journal.merge(
+      "convergence_generation" => "1" * 32,
       "mutation_in_flight" => {
         "token" => "a" * 32,
         "kind" => "moving_channel",
-        "target" => { "channel" => "github_public", "value" => "public" },
+        "target" => {
+          "channel" => "github_public", "value" => "public", "generation" => "1" * 32
+        },
         "started_at" => "2026-08-01T12:00:00Z"
       }
     )
@@ -1381,6 +1549,86 @@ class ReleaseTest < ActiveSupport::TestCase
         reconcile_sha: "c" * 40,
         existing_tag_sha: "c" * 40
       ))
+    end
+  end
+
+  test "reconciliation action is explicit and unavailable to an ordinary release" do
+    assert_equal "complete", parse_release_reconcile_action!(
+      env: { "RELEASE_RECONCILE_ACTION" => "complete" }, reconciling: true
+    )
+    assert_equal "rollback", parse_release_reconcile_action!(
+      env: { "RELEASE_RECONCILE_ACTION" => "rollback" }, reconciling: true
+    )
+    assert_raises(ReleaseStateError) do
+      parse_release_reconcile_action!(env: {}, reconciling: true)
+    end
+    assert_raises(ReleaseStateError) do
+      parse_release_reconcile_action!(
+        env: { "RELEASE_RECONCILE_ACTION" => "forward" }, reconciling: true
+      )
+    end
+    assert_raises(ReleaseStateError) do
+      parse_release_reconcile_action!(
+        env: { "RELEASE_RECONCILE_ACTION" => "rollback" }, reconciling: false
+      )
+    end
+
+    source = Rails.root.join("bin/release").read
+    assert_operator source.index("reconcile_action = parse_release_reconcile_action!"), :<,
+      source.index('GIT_SHA = capture!("git", "rev-parse", "HEAD")')
+    assert_operator source.rindex("authenticate_reconcile_action!("), :<,
+      source.index('start_release_phase! release_lock, journal, "tag"')
+  end
+
+  test "pre-promotion rollback is durable and terminal across every interruption boundary" do
+    %w[
+      reconcile_action_authenticated pre_promotion_abandon_started pre_promotion_abandoned
+    ].each do |boundary|
+      lock = FakeLock.new(phase_zero_journal.merge("lock_id" => "a" * 64))
+      fault = ->(observed) { raise SimulatedCrash if observed == boundary }
+
+      assert_raises(SimulatedCrash, boundary) do
+        authenticate_reconcile_action!(
+          lock:, journal: lock.journal, action: "rollback", fault_after: fault
+        )
+        abandon_pre_promotion_reconciliation!(
+          lock:, journal: lock.journal, action: "rollback", fault_after: fault
+        )
+      end
+
+      resumed = FakeLock.new(lock.journal)
+      authenticate_reconcile_action!(
+        lock: resumed, journal: resumed.journal, action: "rollback"
+      )
+      assert abandon_pre_promotion_reconciliation!(
+        lock: resumed, journal: resumed.journal, action: "rollback"
+      )
+      assert_equal "abandoned", resumed.journal.fetch("status")
+      assert_equal "rollback", resumed.journal.fetch("outcome")
+      assert_equal "completed", resumed.journal.dig("phases", "abandonment", "status")
+      assert_empty resumed.journal.fetch("completed_steps")
+      assert_nil resumed.journal["channels"]
+      assert_includes ReleaseLock::TERMINAL_STATUSES, resumed.journal.fetch("status")
+    end
+  end
+
+  test "retained workflow identity is authenticated without live GitHub run metadata" do
+    identity = {
+      "run_id" => "123", "run_attempt" => "2", "operation_nonce" => "9" * 64
+    }
+    expects(:validated_workflow_run!).never
+
+    %w[ workflow_evidence workflow_evidence_pending ].each do |contract_key|
+      journal = phase_zero_journal.merge(
+        contract_key => identity.merge(
+          "format_version" => 1,
+          "files" => { "release-evidence.json" => { "bytes" => 1, "sha256" => "a" * 64 } }
+        ),
+        "phases" => phase_zero_journal.fetch("phases").merge(
+          "workflow" => { "status" => "completed", "data" => identity }
+        )
+      )
+      assert_equal identity, authenticated_retained_workflow_identity!(journal)
     end
   end
 
@@ -1585,7 +1833,8 @@ class ReleaseTest < ActiveSupport::TestCase
     [
       :missing_field, :extra_field, :nested_field, :tampered_file, :missing_file,
       :extra_inventory_file, :wrong_nonce, :manifest_binding, :runtime_binding,
-      :container_validation_binding
+      :container_validation_binding, :transport_mode, :transport_contract,
+      :recovery_extra_field
     ].each do |fault|
       Dir.mktmpdir("release-evidence-#{fault}") do |directory|
         attributes = write_valid_release_evidence(directory)
@@ -1613,7 +1862,8 @@ class ReleaseTest < ActiveSupport::TestCase
           File.binwrite File.join(directory, "unexpected.json"), "{}\n"
         when :wrong_nonce
           attributes[:operation_nonce] = "8" * 64
-        when :manifest_binding, :runtime_binding, :container_validation_binding
+        when :manifest_binding, :runtime_binding, :container_validation_binding,
+            :transport_mode, :transport_contract, :recovery_extra_field
           recovery_path = File.join(directory, "recovery-amd64.json")
           recovery = JSON.parse(File.binread(recovery_path))
           case fault
@@ -1623,6 +1873,12 @@ class ReleaseTest < ActiveSupport::TestCase
             recovery["runtime_binding"] = "single-build-multi-export"
           when :container_validation_binding
             recovery["container_validation_sha256"] = "0" * 64
+          when :transport_mode
+            recovery["transport_mode"] = "internal-plaintext-probe"
+          when :transport_contract
+            recovery.fetch("checks")["transport_contract"] = "failed"
+          when :recovery_extra_field
+            recovery["unexpected"] = true
           end
           File.binwrite recovery_path, JSON.pretty_generate(recovery) << "\n"
           refresh_release_evidence_file_hash! directory, "recovery-amd64.json"
@@ -1630,6 +1886,61 @@ class ReleaseTest < ActiveSupport::TestCase
 
         assert_raises(ReleaseStateError, fault) { validate_release_evidence!(**attributes) }
       end
+    end
+  end
+
+  test "retained provenance verification binds the exact bundle subject and signer context" do
+    Dir.mktmpdir("release-provenance-verification") do |directory|
+      attributes = write_valid_release_evidence(directory)
+      command = nil
+      runner = lambda do |*arguments|
+        command = arguments
+        valid_attestation_runner(*arguments)
+      end
+
+      assert verify_retained_provenance_bundle!(
+        bundle_path: File.join(directory, "index-provenance.bundle.jsonl"),
+        repository: attributes.fetch(:repository), image: attributes.fetch(:image),
+        digest: "sha256:#{'c' * 64}", source_sha: attributes.fetch(:sha), runner:
+      )
+
+      assert_includes command, "--bundle"
+      assert_includes command, "--cert-identity"
+      assert_includes command, "--signer-workflow"
+      assert_includes command, "--signer-digest"
+      assert_includes command, "--source-ref"
+      assert_includes command, "--source-digest"
+      assert_includes command, "--predicate-type"
+      assert_includes command, "--deny-self-hosted-runners"
+      assert_not_includes command, "--no-public-good"
+      assert_includes command, "oci://#{attributes.fetch(:image)}@sha256:#{'c' * 64}"
+    end
+  end
+
+  test "a rehashed forged retained bundle is rejected independently of transcript JSON" do
+    Dir.mktmpdir("release-forged-provenance") do |directory|
+      attributes = write_valid_release_evidence(directory)
+      bundle = File.join(directory, "index-provenance.bundle.jsonl")
+      File.binwrite bundle, JSON.generate("forged" => true) << "\n"
+      transcript = File.join(directory, "index-provenance-verification.json")
+      File.binwrite transcript, JSON.generate("verification" => "forged success") << "\n"
+      refresh_release_evidence_file_hash! directory, "index-provenance.bundle.jsonl"
+      refresh_release_evidence_file_hash! directory, "index-provenance-verification.json"
+      failed = Object.new
+      failed.define_singleton_method(:success?) { false }
+      attributes[:attestation_runner] = lambda do |*command|
+        retained = command.fetch(command.index("--bundle") + 1)
+        if retained == bundle
+          [ "", "signature verification failed", failed ]
+        else
+          valid_attestation_runner(*command)
+        end
+      end
+
+      error = assert_raises(ReleaseStateError) do
+        validate_release_evidence!(**attributes)
+      end
+      assert_match "Cryptographic verification failed", error.message
     end
   end
 
@@ -1683,19 +1994,26 @@ class ReleaseTest < ActiveSupport::TestCase
     end
 
     prepared = phase_zero_journal.merge(
+      "convergence_generation" => "1" * 32,
       "channels" => {
         "github_public" => {
           "kind" => "github_release", "previous" => "draft", "target" => "public"
         }
       },
       "mutation_in_flight" => {
-        "target" => { "channel" => "github_public", "value" => "public" }
+        "target" => {
+          "channel" => "github_public", "value" => "public", "generation" => "1" * 32
+        }
       }
     )
     assert validate_observed_github_release_state!(journal: prepared, release:)
 
     completed = prepared.except("mutation_in_flight").merge(
-      "completed_steps" => { "github_public" => { "value" => "public" } }
+      "completed_steps" => {
+        "github_public" => {
+          "outcome" => "complete", "value" => "public", "generation" => "1" * 32
+        }
+      }
     )
     assert_raises(ReleaseStateError) do
       validate_observed_github_release_state!(
@@ -1778,6 +2096,7 @@ class ReleaseTest < ActiveSupport::TestCase
 
   test "a successful fenced publication retains authenticated settlement evidence" do
     journal = phase_zero_journal.merge(
+      "convergence_generation" => "1" * 32,
       "channels" => {
         "github_public" => {
           "kind" => "github_release", "previous" => "draft", "target" => "public"
@@ -1785,7 +2104,9 @@ class ReleaseTest < ActiveSupport::TestCase
       }
     )
     lock = FakeLock.new(journal, mutation_status: stub(success?: true))
-    target = { "channel" => "github_public", "value" => "public" }
+    target = {
+      "channel" => "github_public", "value" => "public", "generation" => "1" * 32
+    }
 
     ReleaseMutationFence.new(lock:, journal: lock.journal).run!(
       kind: "moving_channel", target:
@@ -2051,6 +2372,8 @@ class ReleaseTest < ActiveSupport::TestCase
     build_inputs = steps.find { _1["name"] == "Compute immutable build inputs" }.fetch("run")
     release_evidence = steps.find { _1["name"] == "Record release evidence" }.fetch("run")
     authorization = steps.find { _1["name"] == "Validate release authorization" }
+    backup = steps.find { _1["name"] == "Exercise production backup and new-volume restore" }.fetch("run")
+    provenance_steps = steps.select { _1["name"]&.start_with?("Verify commit-bound signed") }
 
     assert_equal [ "workflow_dispatch" ], triggers.keys
     assert_equal %w[ operation_nonce release_sha release_tag ], inputs.keys.sort
@@ -2072,6 +2395,13 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_includes build_inputs, "release:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${{ matrix.arch }}:${RELEASE_SHA}"
     assert_includes release_evidence, '--arg run_attempt "$GITHUB_RUN_ATTEMPT"'
     assert_includes release_evidence, '--arg operation_nonce "$OPERATION_NONCE"'
+    assert_includes backup, 'docker stop --timeout 70 "$source_container"'
+    assert provenance_steps.all? do |step|
+      run = step.fetch("run")
+      run.include?("--bundle") &&
+        run.include?("--predicate-type https://slsa.dev/provenance/v1") &&
+        !run.include?("--no-public-good")
+    end
     assert steps.none? { _1.fetch("run", "").include?("exact_tags=(") }
     %w[ ghcr_evidence ghcr_tag_alias ghcr_version_alias ].each do |boundary|
       assert_includes Rails.root.join("bin/release").read, boundary
@@ -2176,7 +2506,8 @@ class ReleaseTest < ActiveSupport::TestCase
 
     set_static_release_target!(
       "static.example", "campfire-1.2.3", "c" * 40,
-      expected: "campfire-1.2.2", runner:
+      expected: "campfire-1.2.2", archive_digest: "a" * 64,
+      checksum_digest: "b" * 64, runner:
     )
 
     assert_includes command, "flock -x 9"
@@ -2185,6 +2516,8 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_operator command.scan("readlink campfire-current").length, :>=, 3
     assert_includes command, "campfire-1.2.2"
     assert_includes command, "mv -Tf"
+    assert_includes command, "test campfire.zip -ef"
+    assert_includes command, "sha256sum campfire.zip"
   end
 
   test "immutable static files publish with a no-clobber hard link" do
@@ -2251,6 +2584,10 @@ class ReleaseTest < ActiveSupport::TestCase
         assert_includes command, "-rbase64"
         assert_includes command, "-eq 2"
         assert_includes command, "stat -c %h"
+        assert_includes command, "chmod 0444"
+        assert_includes command, "chmod 0555"
+        assert_includes command, "test campfire.zip -ef"
+        assert_includes command, "sha256sum campfire.zip"
         assert_not_includes command, "mv "
         _stdout, stderr, status = Open3.capture3("bash", "-n", "-c", command)
         assert status.success?, stderr
@@ -2679,6 +3016,7 @@ class ReleaseTest < ActiveSupport::TestCase
           "target_manifest_digest" => children.fetch(architecture),
           "target_config_digest" => "sha256:#{(index + 7).to_s(16) * 64}",
           "runtime_binding" => "registry-manifest-digest",
+          "transport_mode" => "external-https-loopback-probe",
           "container_validation_sha256" => Digest::SHA256.file(
             File.join(directory, "container-validation-#{architecture}.json")
           ).hexdigest,
@@ -2692,7 +3030,7 @@ class ReleaseTest < ActiveSupport::TestCase
           "legacy_recovery" => { "artifact_kind" => "campfire-backup", "artifact_sha256" => "9" * 64 },
           "checks" => %w[
             current_restore legacy_restore migration_denials tamper_denials authorized_upgrade
-            http_history_and_uploads worker_execution
+            http_history_and_uploads transport_contract worker_execution
           ].to_h { [ _1, "passed" ] },
           "recovery" => "passed",
           "run_id" => run_id.to_s,
@@ -2773,8 +3111,28 @@ class ReleaseTest < ActiveSupport::TestCase
       )
       {
         repository:, run_id:, run_attempt:, destination: directory, sha:, tag:, image:,
-        operation_nonce:
+        operation_nonce:, attestation_runner: method(:valid_attestation_runner)
       }
+    end
+
+    def valid_attestation_runner(*command)
+      reference = command.find { _1.start_with?("oci://") }
+      image, digest = reference.delete_prefix("oci://").split("@", 2)
+      result = [ {
+        "attestation" => {},
+        "verificationResult" => {
+          "statement" => {
+            "predicateType" => "https://slsa.dev/provenance/v1",
+            "subject" => [ {
+              "name" => image,
+              "digest" => { "sha256" => digest.delete_prefix("sha256:") }
+            } ]
+          }
+        }
+      } ]
+      status = Object.new
+      status.define_singleton_method(:success?) { true }
+      [ JSON.generate(result), "", status ]
     end
 
     def refresh_release_evidence_file_hash!(directory, name)
@@ -2784,6 +3142,10 @@ class ReleaseTest < ActiveSupport::TestCase
       evidence.fetch("evidence_files")[name] = digest
       if match = name.match(/\Arecovery-(amd64|arm64)\.json\z/)
         evidence.fetch("recovery_receipts")[match[1]] = digest
+      elsif name == "index-provenance.bundle.jsonl"
+        evidence.fetch("signed_provenance")["index_bundle_sha256"] = digest
+      elsif name == "index-provenance-verification.json"
+        evidence.fetch("signed_provenance")["index_verification_sha256"] = digest
       end
       File.binwrite path, JSON.pretty_generate(evidence) << "\n"
     end

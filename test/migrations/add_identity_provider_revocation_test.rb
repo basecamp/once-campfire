@@ -187,9 +187,10 @@ class AddIdentityProviderRevocationTest < ActiveSupport::TestCase
       connection.execute <<~SQL
         INSERT INTO sessions
           (id, user_id, identity_id, authentication_method, oidc_configuration_fingerprint,
-           oidc_session_id, oidc_issued_at, expires_at, token, last_active_at, created_at, updated_at)
+           oidc_session_generation, oidc_session_id, oidc_issued_at, expires_at, token,
+           last_active_at, created_at, updated_at)
         VALUES
-          (3, 1, 1, 'oidc', '#{'b' * 64}', 'signed-provider-session', 1,
+          (3, 1, 1, 'oidc', '#{'b' * 64}', 1, 'signed-provider-session', 1,
            CURRENT_TIMESTAMP, 'current-migration-session', CURRENT_TIMESTAMP,
            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       SQL

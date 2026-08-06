@@ -4,11 +4,29 @@ set -eu
 export LOG_REQUESTS=false
 export THRUSTER_LOG_REQUESTS=false
 
-if [ -n "${DISABLE_SSL:-}" ]; then
+if [ "${DISABLE_SSL+x}" = x ]; then
+  if [ "$DISABLE_SSL" != "true" ]; then
+    printf '%s\n' 'DISABLE_SSL must be exactly true when set' >&2
+    exit 1
+  fi
+
   unset CAMPFIRE_INTERNAL_TLS_PROXY
   export PORT=80
   exec bin/start-app
 else
+  if [ "${THRUSTER_TLS_DOMAIN+x}" = x ]; then
+    effective_tls_domain=$THRUSTER_TLS_DOMAIN
+  else
+    effective_tls_domain=${TLS_DOMAIN:-}
+  fi
+  case "$effective_tls_domain" in
+    *[![:space:],]*) ;;
+    *)
+      printf '%s\n' 'built-in Thruster TLS requires a nonempty effective TLS_DOMAIN' >&2
+      exit 1
+      ;;
+  esac
+
   export CAMPFIRE_INTERNAL_TLS_PROXY=true
   exec bundle exec thrust bin/start-app
 fi

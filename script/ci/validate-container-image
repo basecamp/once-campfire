@@ -21,6 +21,9 @@ oci_archive=${OCI_ARCHIVE:-}
 build_metadata=${BUILD_METADATA:-}
 attestation_image=${ATTESTATION_IMAGE:-}
 runtime_archive=${RUNTIME_ARCHIVE:-}
+asset_precompile_contract='RUN DISABLE_SSL=true OIDC_MODE=disabled SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile'
+
+[[ "$(grep -Fxc "$asset_precompile_contract" Dockerfile)" -eq 1 ]]
 
 case "$platform" in
   linux/amd64) architecture=amd64 ;;
@@ -56,6 +59,8 @@ jq -e \
   (.[0].Config.Env | index("APP_VERSION=" + $app_version)) != null and
   (.[0].Config.Env | index("GIT_REVISION=" + $revision)) != null and
   (.[0].Config.Env | index("MAX_REQUEST_BODY=106954752")) != null and
+  (.[0].Config.Env | map(select(startswith("DISABLE_SSL="))) | length) == 0 and
+  (.[0].Config.Env | map(select(startswith("OIDC_MODE="))) | length) == 0 and
   .[0].Config.Labels["org.opencontainers.image.title"] == "Campfire" and
   .[0].Config.Labels["org.opencontainers.image.description"] == $description and
   .[0].Config.Labels["org.opencontainers.image.source"] == $source and
@@ -244,6 +249,7 @@ printf '%s\n' "$runnable_digest" > "$evidence_directory/runnable-digest"
 suffix=${build_identity:0:16}-${architecture}
 container="campfire-container-smoke-$suffix"
 volume="campfire-container-smoke-$suffix"
+transport_headers=(--header 'X-Forwarded-Proto: https')
 cleanup() {
   if [[ -n "${container:-}" ]]; then
     docker logs "$container" > "$evidence_directory/container.log" 2>&1 || true
@@ -255,12 +261,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
+missing_transport_log="$evidence_directory/missing-transport.log"
+if docker run --rm --platform "$platform" "$image" bin/start-web > "$missing_transport_log" 2>&1; then
+  printf 'Container startup without an explicit transport mode succeeded unexpectedly\n' >&2
+  exit 1
+fi
+grep -Fq 'built-in Thruster TLS requires a nonempty effective TLS_DOMAIN' "$missing_transport_log"
+
 docker volume create "$volume" >/dev/null
 container_id=$(docker run --detach \
   --platform "$platform" \
   --name "$container" \
   --publish 127.0.0.1::80 \
   --mount "type=volume,src=$volume,dst=/rails/storage" \
+  --env DISABLE_SSL=true \
+  --env OIDC_MODE=disabled \
   --env SKIP_TELEMETRY=true \
   --env WEB_CONCURRENCY=1 \
   --env SECRET_KEY_BASE=container-smoke-secret-key-base-container-smoke-secret-key-base \
@@ -270,11 +285,35 @@ container_id=$(docker run --detach \
 [[ "$container_id" == "$container" || "$container_id" =~ ^[0-9a-f]{64}$ ]]
 port=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container")
 [[ "$port" =~ ^[0-9]+$ ]]
-curl --fail --silent --show-error \
+health_status=$(curl --fail --silent --show-error \
   --retry 60 --retry-all-errors --retry-delay 2 --connect-timeout 2 --max-time 10 \
-  "http://127.0.0.1:$port/up" > "$evidence_directory/health-response.txt"
+  "${transport_headers[@]}" --output "$evidence_directory/health-response.txt" \
+  --write-out '%{http_code}' "http://127.0.0.1:$port/up")
+[[ "$health_status" == 200 ]]
 [[ "$(docker exec "$container" id -u)" == 1000 ]]
 [[ "$(docker exec "$container" id -g)" == 1000 ]]
+[[ "$(docker exec "$container" printenv DISABLE_SSL)" == true ]]
+[[ "$(docker exec "$container" printenv OIDC_MODE)" == disabled ]]
+docker exec "$container" sh -ceu '
+  command -v ps >/dev/null
+  test "$(stat -c %u:%g /rails)" = 0:0
+  test "$(stat -c %u:%g /rails/bin/boot)" = 0:0
+  test "$(stat -c %u:%g /usr/local/bundle)" = 0:0
+  test -x /rails/bin/boot
+  test ! -w /rails/bin/boot
+  test ! -w /usr/local/bundle
+  test -z "$(find /usr/local/bundle -xdev \( ! -user 0 -o ! -group 0 \) -print -quit)"
+  test -z "$(find /rails -xdev \( ! -user 0 -o ! -group 0 \) \
+    ! -path /rails/log ! -path "/rails/log/*" \
+    ! -path /rails/storage ! -path "/rails/storage/*" \
+    ! -path /rails/tmp ! -path "/rails/tmp/*" -print -quit)"
+  test -z "$(find /rails/log /rails/storage /rails/tmp -xdev \
+    \( ! -user 1000 -o ! -group 1000 \) -print -quit)"
+  for directory in /rails/log /rails/storage /rails/tmp /rails/tmp/pids; do
+    test "$(stat -c %u:%g "$directory")" = 1000:1000
+    test -w "$directory"
+  done
+'
 docker exec "$container" cat /etc/campfire-build-identity.json | jq -e \
   --arg revision "$source_revision" --arg build_identity "$build_identity" '
     (keys | sort) == ["build_identity", "format_version", "revision"] and
@@ -288,6 +327,7 @@ printf a >> "$oversized_request"
 [[ "$(wc -c < "$oversized_request")" -eq "$((request_limit_bytes + 1))" ]]
 request_limit_status=$(curl --silent --show-error --http1.1 --max-time 60 \
   --output /dev/null --write-out 'HTTP/%{http_version} %{http_code}' \
+  "${transport_headers[@]}" \
   --header 'Content-Type: application/x-www-form-urlencoded' --header 'Expect:' \
   --header 'Transfer-Encoding: chunked' --header 'Content-Length:' \
   --data-binary "@$oversized_request" "http://127.0.0.1:$port/session")
@@ -295,9 +335,10 @@ rm -f "$oversized_request"
 printf '%s\n' "$request_limit_status" > "$evidence_directory/request-limit-response.txt"
 [[ "$request_limit_status" =~ ^HTTP/1\.[01][[:space:]]413$ ]]
 sleep 1
-curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$port/up" >/dev/null
+[[ "$(curl --fail --silent --show-error --max-time 10 --output /dev/null \
+  --write-out '%{http_code}' "${transport_headers[@]}" "http://127.0.0.1:$port/up")" == 200 ]]
 
-docker stop --timeout 35 "$container" >/dev/null
+docker stop --timeout 70 "$container" >/dev/null
 [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == false ]]
 exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container")
 [[ "$exit_code" == 0 ]]
@@ -342,6 +383,7 @@ jq -n \
     config_digest: $config_digest,
     validated_manifest_digest: $runnable_digest,
     runtime_binding: $runtime_binding,
+    transport_mode: "external-https-loopback-probe",
     image_inspection_sha256: $inspection_sha256,
     sbom_sha256: $sbom_sha256,
     buildkit_provenance_sha256: $provenance_sha256,
@@ -349,8 +391,14 @@ jq -n \
     runtime_archive_sha256: (if $runtime_archive_sha256 == "" then null else $runtime_archive_sha256 end),
     request_limit_probe_bytes: ($request_limit_bytes | tonumber),
     checks: {
+      asset_precompile_transport: "passed",
       platform_config: "passed",
       non_root_user: "passed",
+      procps: "passed",
+      immutable_runtime_paths: "passed",
+      mutable_runtime_directories: "passed",
+      runtime_transport_neutrality: "passed",
+      transport_contract: "passed",
       entrypoint_and_labels: "passed",
       sbom: "passed",
       provenance: "passed",

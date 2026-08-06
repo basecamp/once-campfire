@@ -123,17 +123,14 @@ class BackupTest < ActiveSupport::TestCase
         File.chmod 0o700, checker
       end
 
-      stdout, stderr, status = Open3.capture3(
-        {
-          "EXPECTED_INSTALLATION_FINGERPRINT" => manifest.fetch("installation_fingerprint"),
-          "EXPECTED_ENVIRONMENT" => "test",
-          "BACKUP_AUTHENTICATION_KEY" => AUTHENTICATION_KEY,
-          "PATH" => "#{tools}:#{ENV.fetch('PATH')}"
-        },
-        RbConfig.ruby,
-        Rails.root.join("script/admin/verify-backup").to_s,
-        generation.to_s
-      )
+      stdout, stderr, status = standalone_verification(generation, manifest, tools)
+
+      assert_not status.success?
+      assert_empty stdout
+      assert_match "requires redis-server for target replay", stderr
+
+      write_fake_redis_server tools
+      stdout, stderr, status = standalone_verification(generation, manifest, tools)
 
       assert status.success?, stderr
       assert_equal "verified", JSON.parse(stdout).fetch("status")
@@ -1073,6 +1070,38 @@ class BackupTest < ActiveSupport::TestCase
       yield
     ensure
       previous.each { |key, value| value ? ENV[key] = value : ENV.delete(key) }
+    end
+
+    def standalone_verification(generation, manifest, tools)
+      Open3.capture3(
+        {
+          "EXPECTED_INSTALLATION_FINGERPRINT" => manifest.fetch("installation_fingerprint"),
+          "EXPECTED_ENVIRONMENT" => "test",
+          "BACKUP_AUTHENTICATION_KEY" => AUTHENTICATION_KEY,
+          "PATH" => tools.to_s
+        },
+        RbConfig.ruby,
+        Rails.root.join("script/admin/verify-backup").to_s,
+        generation.to_s
+      )
+    end
+
+    def write_fake_redis_server(directory)
+      directory.join("redis-server").tap do |server|
+        server.write <<~RUBY
+          #!#{RbConfig.ruby}
+          require "socket"
+          socket_path = ARGV.fetch(ARGV.index("--unixsocket") + 1)
+          server = UNIXServer.new(socket_path)
+          client = server.accept
+          crlf = 13.chr + 10.chr
+          expected = [ "*1", "$" + "4", "PING", "" ].join(crlf)
+          abort unless client.read(expected.bytesize) == expected
+          client.write "+PONG" + crlf
+          sleep
+        RUBY
+        File.chmod 0o700, server
+      end
     end
 
     def encryption_keyring

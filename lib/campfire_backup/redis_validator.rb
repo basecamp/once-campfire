@@ -1,10 +1,16 @@
 require "fileutils"
 require "pathname"
+require "socket"
 require "tmpdir"
 require_relative "subprocess"
 
 module CampfireBackup
   module RedisValidator
+    ManifestEntry = Data.define(:filename, :sequence, :type)
+    MANIFEST_TYPE_ORDER = { "b" => 0, "h" => 1, "i" => 2 }.freeze
+    MAX_MANIFEST_SEQUENCE = (2**63) - 1
+    REPLAY_TIMEOUT = 5 * 60
+
     class << self
       def validate!(payload_directory, require_aof: false)
         source = Pathname(payload_directory).join("redis")
@@ -43,8 +49,12 @@ module CampfireBackup
               raise "Redis backup contains AOF files without a loadable manifest"
             end
 
-            expected_files = manifest.read.lines.map { parse_manifest_entry!(_1) }
-            raise "Redis backup manifest contains duplicate files" unless expected_files.uniq.size == expected_files.size
+            entries = manifest.read.lines.map { parse_manifest_entry!(_1) }
+            validate_manifest_entries! entries, require_aof:
+            expected_files = entries.map(&:filename)
+            unless expected_files.uniq.size == expected_files.size
+              raise "Redis backup manifest contains duplicate files"
+            end
             actual_files = appendonly_directory.children.map do |path|
               unless regular_file?(path)
                 raise "Redis backup contains nested directories, links, or special files"
@@ -66,6 +76,9 @@ module CampfireBackup
             raise "Redis backup contains only dump.rdb, but this image requires AOF persistence"
           end
           run! "redis-check-rdb", rdb if path_exists?(rdb)
+          if path_exists?(appendonly_directory) || path_exists?(legacy_aof)
+            replay_with_target_server! directory, required: require_aof
+          end
         end
 
         def path_exists?(path)
@@ -90,11 +103,40 @@ module CampfireBackup
         def parse_manifest_entry!(line)
           offset = /(?:0|[1-9]\d*)/
           match = line.match(
-            /\Afile ([^\s\/]+) seq [1-9]\d* type [bih](?: startoffset #{offset}(?: endoffset #{offset})?)?\n?\z/
+            /\Afile ([^\s\/]+) seq ([1-9]\d*) type ([bih])(?: startoffset #{offset}(?: endoffset #{offset})?)?\n?\z/
           )
           raise "Redis backup contains an invalid AOF manifest entry" unless match
 
-          match[1]
+          sequence = Integer(match[2], 10)
+          if sequence > MAX_MANIFEST_SEQUENCE
+            raise "Redis backup contains an invalid AOF manifest entry"
+          end
+
+          ManifestEntry.new(match[1], sequence, match[3])
+        end
+
+        def validate_manifest_entries!(entries, require_aof:)
+          raise "Redis backup contains an empty AOF manifest" if entries.empty?
+          if entries.count { _1.type == "b" } > 1
+            raise "Redis backup AOF manifest contains multiple base files"
+          end
+
+          order = entries.map { MANIFEST_TYPE_ORDER.fetch(_1.type) }
+          unless order.each_cons(2).all? { |left, right| left <= right }
+            raise "Redis backup AOF manifest entries are out of order"
+          end
+
+          incremental_sequences = entries.select { _1.type == "i" }.map(&:sequence)
+          unless incremental_sequences.each_cons(2).all? { |left, right| left < right }
+            raise "Redis backup AOF manifest contains non-monotonic incremental sequences"
+          end
+
+          active = entries.any? { _1.type.in?([ "b", "i" ]) }
+          unless active
+            message = "Redis backup AOF manifest contains only history files"
+            message += " and is missing required active AOF persistence" if require_aof
+            raise message
+          end
         end
 
         def run!(command, path)
@@ -132,6 +174,123 @@ module CampfireBackup
             end
             yield destination_directory.join(path.basename)
           end
+        end
+
+        def replay_with_target_server!(source, required:)
+          executable = redis_server_executable
+          unless executable
+            raise "Redis backup validation requires redis-server for target replay" if required
+
+            return
+          end
+
+          Dir.mktmpdir("campfire-redis-replay") do |directory|
+            root = Pathname(directory)
+            copy = root.join("redis")
+            FileUtils.copy_entry source, copy
+            FileUtils.chmod_R 0o700, copy
+            run_replay_server! executable, copy, root.join("redis.sock"), root.join("redis.log")
+          end
+        end
+
+        def redis_server_executable
+          ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).filter_map do |directory|
+            next if directory.empty?
+
+            candidate = Pathname(directory).join("redis-server")
+            candidate.to_s if candidate.file? && candidate.executable?
+          end.first
+        end
+
+        def run_replay_server!(executable, directory, socket_path, log_path)
+          arguments = [
+            "--port", "0",
+            "--protected-mode", "no",
+            "--daemonize", "no",
+            "--dir", directory.to_s,
+            "--dbfilename", "dump.rdb",
+            "--appendonly", "yes",
+            "--appendfilename", "appendonly.aof",
+            "--appenddirname", "appendonlydir",
+            "--appendfsync", "no",
+            "--auto-aof-rewrite-percentage", "0",
+            "--aof-load-truncated", "no",
+            "--propagation-error-behavior", "panic",
+            "--save", "",
+            "--unixsocket", socket_path.to_s,
+            "--unixsocketperm", "700"
+          ]
+          environment = ENV.slice(*CampfireBackup::Subprocess::INHERITED_ENVIRONMENT_VARIABLES)
+          pid = nil
+          reaped = false
+          log = File.open(log_path, File::WRONLY | File::CREAT | File::TRUNC, 0o600)
+          pid = Process.spawn(
+            environment, executable, *arguments, unsetenv_others: true,
+            out: log, err: [ :child, :out ]
+          )
+          log.close
+          log = nil
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + REPLAY_TIMEOUT
+
+          loop do
+            waited_pid, status = Process.waitpid2(pid, Process::WNOHANG)
+            if waited_pid
+              reaped = true
+              raise replay_failure(log_path, status)
+            end
+
+            if path_exists?(socket_path)
+              begin
+                socket = UNIXSocket.new(socket_path.to_s)
+                socket.write("*1\r\n$4\r\nPING\r\n")
+                if IO.select([ socket ], nil, nil, 1) && socket.gets == "+PONG\r\n"
+                  break
+                end
+              rescue Errno::ECONNREFUSED, Errno::ENOENT
+                nil
+              ensure
+                socket&.close
+              end
+            end
+
+            if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+              raise "Redis backup target-server replay timed out"
+            end
+            sleep 0.05
+          end
+        ensure
+          log&.close
+          stop_replay_server(pid) if pid && !reaped
+        end
+
+        def replay_failure(log_path, status)
+          details = if log_path.file?
+            File.read(log_path, 4096).to_s.gsub(/\s+/, " ").strip
+          else
+            ""
+          end
+          outcome = status.signaled? ? "redis-server signal #{status.termsig}" : "redis-server exit #{status.exitstatus}"
+          "Redis backup target-server replay failed: #{details.empty? ? outcome : details}"
+        end
+
+        def stop_replay_server(pid)
+          begin
+            Process.kill("TERM", pid)
+          rescue Errno::ESRCH
+            Process.waitpid(pid)
+            return
+          end
+          100.times do
+            return if Process.waitpid(pid, Process::WNOHANG)
+
+            sleep 0.01
+          end
+          Process.kill("KILL", pid)
+          Process.waitpid(pid)
+        rescue Errno::ESRCH
+          Process.waitpid(pid)
+        rescue Errno::ECHILD
+          nil
         end
     end
   end

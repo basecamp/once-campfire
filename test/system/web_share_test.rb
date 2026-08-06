@@ -49,7 +49,8 @@ class WebShareTest < ApplicationSystemTestCase
   test "does not share an authentication redirect" do
     sign_in users(:jz).email_address
     join_room rooms(:designers)
-    Session.order(:id).last.destroy!
+    # Keep the stale page connected so the attachment fetch exercises redirect handling.
+    Session.where(id: Session.order(:id).last.id).delete_all
 
     click_on "Share private.txt"
 

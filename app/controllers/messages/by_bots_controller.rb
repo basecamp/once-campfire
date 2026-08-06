@@ -11,9 +11,9 @@ class Messages::ByBotsController < MessagesController
   private
     def message_params
       if params[:attachment]
-        params.permit(:attachment)
+        params.permit(:attachment).merge(origin: Message::ORIGIN_BOT_API)
       else
-        reading(request.body) { |body| { body: body } }
+        reading(request.body) { |body| { body:, origin: Message::ORIGIN_BOT_API } }
       end
     end
 

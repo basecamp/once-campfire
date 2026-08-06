@@ -21,6 +21,29 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
 
     with_fake_aws do |environment, state_path|
       update_fake_state(state_path) do |state|
+        state.fetch("buckets").fetch("campfire-release-anchor-a")["default_retention"] = {
+          "DefaultRetention" => { "Mode" => "COMPLIANCE", "Days" => 2_557 }
+        }
+      end
+
+      control = anchors(environment)
+      assert control.reconcile!(state: journal_state(1), release: release_identity)
+      control_puts = fake_state(state_path).fetch("calls").select do |call|
+        call.fetch("operation") == "put-object" &&
+          call.fetch("arguments").any? { _1.include?("kind=destructive-authority-control") }
+      end
+      anchor_a_controls = control_puts.select { _1.fetch("profile") == "anchor-a" }
+      assert_equal 2, anchor_a_controls.length
+      anchor_a_controls.each do |call|
+        arguments = call.fetch("arguments")
+        assert_includes arguments, "--object-lock-mode"
+        assert_equal "COMPLIANCE", arguments.fetch(arguments.index("--object-lock-mode") + 1)
+        assert_includes arguments, "--object-lock-retain-until-date"
+      end
+    end
+
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
         state.fetch("buckets").fetch("campfire-release-anchor-a")["force_retention_mode"] = "GOVERNANCE"
       end
 
@@ -29,6 +52,37 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
         control.reconcile!(state: journal_state(1), release: release_identity)
       end
       assert_match "COMPLIANCE", error.message
+    end
+  end
+
+  test "default-retention destructive-authority deadlines normalize fractional clocks" do
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        state.fetch("buckets").each_value do |bucket|
+          bucket["default_retention"] = {
+            "DefaultRetention" => { "Mode" => "COMPLIANCE", "Days" => 2_557 }
+          }
+        end
+      end
+
+      control_time = Time.utc(2026, 8, 2, 12) + Rational(789, 1_000)
+      control = anchors(environment, control_time:)
+      assert control.reconcile!(state: journal_state(1), release: release_identity)
+
+      state = fake_state(state_path)
+      control_puts = state.fetch("calls").select do |call|
+        call.fetch("operation") == "put-object" &&
+          call.fetch("arguments").any? { _1.include?("kind=destructive-authority-control") }
+      end
+      assert_equal 4, control_puts.length
+      control_puts.each do |call|
+        arguments = call.fetch("arguments")
+        retain_until = arguments.fetch(arguments.index("--object-lock-retain-until-date") + 1)
+        assert_equal retain_until, Time.iso8601(retain_until).iso8601
+      end
+      state.fetch("buckets").each_value do |bucket|
+        assert_not bucket.fetch("objects").keys.any? { _1.include?("/.destructive-authority-controls/") }
+      end
     end
   end
 
@@ -224,16 +278,27 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
       state = fake_state(state_path)
 
       state.fetch("buckets").each_value do |bucket|
-      assert_equal 3, bucket.fetch("objects").length
+        assert_equal 3, bucket.fetch("objects").length
         bucket.fetch("objects").each_value { assert_equal 1, _1.length }
+        assert_empty bucket.fetch("delete_markers")
       end
       calls = state.fetch("calls")
       rejected_overwrites = calls.select do |call|
         call.fetch("operation") == "put-object" && call.fetch("arguments").include?("--if-none-match")
       end
       delete_attempts = calls.select { _1.fetch("operation") == "delete-object" }
+      control_deletes = delete_attempts.select do |call|
+        key = call.fetch("arguments").fetch(call.fetch("arguments").index("--key") + 1)
+        key.include?("/.destructive-authority-controls/control-")
+      end
       assert_operator rejected_overwrites.length, :>=, 12
-      assert_equal 6, delete_attempts.length
+      assert_equal 4, control_deletes.length
+      assert_equal 22, delete_attempts.length
+      control_deletes.each do |call|
+        key = call.fetch("arguments").fetch(call.fetch("arguments").index("--key") + 1)
+        assert_match %r{campfire/release-journal/(?:catalog/operations|releases/[0-9a-f]{64})/\.destructive-authority-controls/control-[0-9a-f]{32}\.json\z}, key
+        assert_not_includes key, "/probes/"
+      end
     end
 
     with_fake_aws do |environment, state_path|
@@ -245,6 +310,173 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
         anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
       end
       assert_match "accepted deletion", error.message
+    end
+  end
+
+  test "retained delete rejection requires proven destructive authority and COMPLIANCE classification" do
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        state.fetch("buckets").fetch("campfire-release-anchor-a")["deny_version_delete"] = true
+      end
+
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "lacks destructive version-delete authority", error.message
+    end
+
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        state.fetch("buckets").fetch("campfire-release-anchor-a")["compliance_delete_error"] =
+          "arbitrary server failure"
+      end
+
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "expected COMPLIANCE retention rejection", error.message
+    end
+  end
+
+  test "a key-specific IAM denial cannot masquerade as COMPLIANCE enforcement" do
+    with_fake_aws do |environment, state_path|
+      state = journal_state(1)
+      assert anchors(environment).reconcile!(state:, release: release_identity)
+      protected_key = fake_state(state_path)
+        .dig("buckets", "campfire-release-anchor-a", "objects")
+        .find { |_key, versions| versions.sole.dig("metadata", "kind") == "operation" }
+        .first
+      prior_call_count = fake_state(state_path).fetch("calls").length
+      update_fake_state(state_path) do |fake|
+        fake.dig("buckets", "campfire-release-anchor-a")["denied_version_delete_keys"] =
+          [ protected_key ]
+      end
+
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state:, release: release_identity)
+      end
+      assert_match "lacks exact-resource destructive version-delete authority", error.message
+
+      protected_deletes = fake_state(state_path).fetch("calls").drop(prior_call_count).select do |call|
+        arguments = call.fetch("arguments")
+        call.fetch("operation") == "delete-object" &&
+          arguments.fetch(arguments.index("--key") + 1) == protected_key
+      end
+      assert_equal 3, protected_deletes.length
+      assert_equal 1, protected_deletes.count { !_1.fetch("arguments").include?("--version-id") }
+    end
+  end
+
+  test "a stale destructive-authority control is recovered after delete authority is restored" do
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        bucket = state.fetch("buckets").fetch("campfire-release-anchor-a")
+        bucket["default_retention"] = {
+          "DefaultRetention" => { "Mode" => "COMPLIANCE", "Days" => 2_557 }
+        }
+        bucket["deny_version_delete"] = true
+      end
+
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "lacks destructive version-delete authority", error.message
+      stale_key = fake_state(state_path)
+        .dig("buckets", "campfire-release-anchor-a", "objects")
+        .find { |_key, versions| versions.sole.dig("metadata", "kind") == "destructive-authority-control" }
+        .first
+      assert_match %r{campfire/release-journal/catalog/operations/\.destructive-authority-controls/control-[0-9a-f]{32}\.json\z}, stale_key
+
+      update_fake_state(state_path) do |state|
+        state.dig("buckets", "campfire-release-anchor-a")["deny_version_delete"] = false
+      end
+      recovery_sleeps = []
+      assert anchors(environment, sleep_durations: recovery_sleeps)
+        .reconcile!(state: journal_state(1), release: release_identity)
+      assert_operator recovery_sleeps.max, :<=,
+        ReleaseObjectLockAnchors::DESTRUCTIVE_CONTROL_RETENTION_SECONDS +
+          ReleaseObjectLockAnchors::DESTRUCTIVE_CONTROL_EXPIRY_MARGIN_SECONDS
+
+      state = fake_state(state_path)
+      state.fetch("buckets").each_value do |bucket|
+        has_control = bucket.fetch("objects").values.any? do |versions|
+          versions.any? { _1.dig("metadata", "kind") == "destructive-authority-control" }
+        end
+        assert_not has_control
+      end
+      stale_deletes = state.fetch("calls").select do |call|
+        arguments = call.fetch("arguments")
+        call.fetch("operation") == "delete-object" &&
+          arguments.fetch(arguments.index("--key") + 1) == stale_key
+      end
+      assert_equal 2, stale_deletes.length
+      stale_retention_reads = state.fetch("calls").count do |call|
+        arguments = call.fetch("arguments")
+        call.fetch("operation") == "get-object-retention" &&
+          arguments.fetch(arguments.index("--key") + 1) == stale_key
+      end
+      assert_equal 2, stale_retention_reads
+    end
+  end
+
+  test "a stale destructive-authority control with distant retention fails without sleeping" do
+    with_fake_aws do |environment, state_path|
+      control_time = Time.utc(2026, 8, 2, 12)
+      update_fake_state(state_path) do |state|
+        bucket = state.fetch("buckets").fetch("campfire-release-anchor-a")
+        bucket["default_retention"] = {
+          "DefaultRetention" => { "Mode" => "COMPLIANCE", "Days" => 2_557 }
+        }
+        bucket["deny_version_delete"] = true
+      end
+      assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment, control_time:)
+          .reconcile!(state: journal_state(1), release: release_identity)
+      end
+
+      update_fake_state(state_path) do |state|
+        bucket = state.fetch("buckets").fetch("campfire-release-anchor-a")
+        bucket["deny_version_delete"] = false
+        stale = bucket.fetch("objects").values
+          .map(&:sole)
+          .find { _1.dig("metadata", "kind") == "destructive-authority-control" }
+        stale["retain_until"] = (
+          control_time + ReleaseObjectLockAnchors::DESTRUCTIVE_CONTROL_RETENTION_SECONDS +
+            ReleaseObjectLockAnchors::DESTRUCTIVE_CONTROL_EXPIRY_MARGIN_SECONDS + 1
+        ).iso8601
+      end
+      sleep_durations = []
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment, control_time:, sleep_durations:)
+          .reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "retention exceeds its bounded recovery window", error.message
+      assert_empty sleep_durations
+    end
+  end
+
+  test "destructive authority is proven inside each protected key namespace" do
+    %w[ catalog/operations releases/ ].each do |relative_prefix|
+      with_fake_aws do |environment, state_path|
+        denied_prefix = "#{environment.fetch('RELEASE_JOURNAL_ANCHOR_1_PREFIX')}/#{relative_prefix}"
+        update_fake_state(state_path) do |state|
+          state.fetch("buckets").fetch("campfire-release-anchor-a")["denied_version_delete_prefixes"] =
+            [ denied_prefix ]
+        end
+
+        error = assert_raises(ReleaseObjectLockAnchors::Error, relative_prefix) do
+          anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+        end
+        assert_match "lacks destructive version-delete authority", error.message
+        denied_control = fake_state(state_path).fetch("calls").find do |call|
+          next unless call.fetch("operation") == "delete-object"
+
+          arguments = call.fetch("arguments")
+          key = arguments.fetch(arguments.index("--key") + 1)
+          key.start_with?(denied_prefix) && key.include?("/.destructive-authority-controls/control-")
+        end
+        assert denied_control, "missing in-namespace control for #{relative_prefix}"
+      end
     end
   end
 
@@ -437,9 +669,15 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
   end
 
   private
-    def anchors(environment, fault_after: ->(_anchor, _kind, _revision) { })
+    def anchors(environment, fault_after: ->(_anchor, _kind, _revision) { },
+      control_time: Time.utc(2026, 8, 2, 12), sleep_durations: nil)
       ReleaseObjectLockAnchors.from_env!(
-        env: environment, clock: -> { Time.utc(2026, 8, 2, 12) }, fault_after:
+        env: environment, clock: -> { Time.utc(2026, 8, 2, 12) }, fault_after:,
+        control_clock: -> { control_time },
+        sleeper: ->(duration) {
+          sleep_durations << duration if sleep_durations
+          control_time += duration
+        }
       )
     end
 

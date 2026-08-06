@@ -1,6 +1,7 @@
 class MessagesController < ApplicationController
   include ActiveStorage::SetCurrent, RoomScoped
 
+  rescue_from ActiveRecord::RecordNotFound, with: -> { head :not_found }
   before_action :set_room, except: :create
   before_action :set_message, only: %i[ show edit update destroy ]
   before_action :ensure_can_administer, only: :edit
@@ -26,6 +27,17 @@ class MessagesController < ApplicationController
     head :not_found
   rescue ActiveRecord::RecordInvalid
     head :unprocessable_entity
+  end
+
+  def reconciliation
+    client_message_id = params.require(:client_message_id).to_s
+    raise ActionController::BadRequest, "client message ID is blank" if client_message_id.blank?
+
+    ContentLimits.verify! client_message_id.bytesize,
+      maximum: ContentLimits::CLIENT_MESSAGE_ID_BYTES, description: "client message ID"
+    response.headers["Cache-Control"] = "private, no-store"
+    @message = @room.messages.find_by(creator: Current.user, client_message_id:)
+    head :no_content unless @message
   end
 
   def show

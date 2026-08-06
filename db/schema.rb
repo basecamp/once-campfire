@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
+ActiveRecord::Schema[8.2].define(version: 2026_08_05_000000) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -20,6 +20,8 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
     t.integer "oidc_break_glass_user_id"
     t.string "oidc_configuration_fingerprint"
     t.datetime "oidc_required_at"
+    t.string "oidc_session_configuration_fingerprint"
+    t.integer "oidc_session_generation", default: 0, null: false
     t.string "oidc_transition_state"
     t.datetime "oidc_verified_at"
     t.string "oidc_verified_configuration_fingerprint"
@@ -30,6 +32,8 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
     t.index ["oidc_break_glass_user_id"], name: "index_accounts_on_oidc_break_glass_user_id"
     t.index ["singleton_guard"], name: "index_accounts_on_singleton_guard", unique: true
     t.check_constraint "length(installation_identifier) = 32 AND installation_identifier NOT GLOB '*[^0-9a-f]*'", name: "accounts_installation_identifier"
+    t.check_constraint "oidc_session_configuration_fingerprint IS NULL OR (length(oidc_session_configuration_fingerprint) = 64 AND oidc_session_configuration_fingerprint NOT GLOB '*[^0-9a-f]*')", name: "accounts_oidc_session_configuration_fingerprint"
+    t.check_constraint "oidc_session_generation >= 0", name: "accounts_oidc_session_generation"
     t.check_constraint "oidc_transition_state IS NULL OR oidc_transition_state = 'rollback_prepared'", name: "accounts_oidc_transition_state"
   end
 
@@ -168,7 +172,19 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
     t.index ["scim_id"], name: "index_identities_on_scim_id", unique: true
     t.index ["user_id", "issuer"], name: "index_identities_on_user_id_and_issuer", unique: true
     t.index ["user_id"], name: "index_identities_on_user_id"
+    t.check_constraint "scim_id <> '00000000-0000-0000-0000-000000000000'", name: "identities_reserved_scim_id"
     t.check_constraint "length(scim_id) = 36 AND substr(scim_id, 9, 1) = '-' AND substr(scim_id, 14, 1) = '-' AND substr(scim_id, 19, 1) = '-' AND substr(scim_id, 24, 1) = '-' AND scim_id NOT GLOB '*[^0-9a-f-]*'", name: "identities_scim_id"
+  end
+
+  create_table "identity_deprovisionings", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "deprovisioned_at", null: false
+    t.string "issuer", null: false
+    t.string "subject", null: false
+    t.datetime "updated_at", null: false
+    t.index ["issuer", "subject"], name: "index_identity_deprovisionings_on_issuer_and_subject", unique: true
+    t.check_constraint "length(CAST(issuer AS BLOB)) BETWEEN 1 AND 255", name: "identity_deprovisionings_issuer_bytes"
+    t.check_constraint "length(CAST(subject AS BLOB)) BETWEEN 1 AND 255", name: "identity_deprovisionings_subject_bytes"
   end
 
   create_table "memberships", force: :cascade do |t|
@@ -230,12 +246,14 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
     t.string "client_message_id", null: false
     t.datetime "created_at", null: false
     t.integer "creator_id", null: false
+    t.string "origin", default: "user", null: false
     t.integer "room_id", null: false
     t.datetime "updated_at", null: false
     t.index ["creator_id"], name: "index_messages_on_creator_id"
     t.index ["room_id", "client_message_id"], name: "index_messages_on_room_and_client_message_id", unique: true
     t.index ["room_id"], name: "index_messages_on_room_id"
     t.check_constraint "length(CAST(client_message_id AS BLOB)) BETWEEN 1 AND 64", name: "messages_client_message_id_bytes"
+    t.check_constraint "origin IN ('user', 'bot_api', 'webhook_reply')", name: "messages_origin"
   end
 
   create_table "oidc_flows", force: :cascade do |t|
@@ -308,7 +326,7 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
     t.string "type", null: false
     t.datetime "updated_at", null: false
     t.index ["direct_participant_key"], name: "index_rooms_on_canonical_direct_participants", unique: true, where: "direct_participant_key IS NOT NULL"
-    t.check_constraint "type = 'Rooms::Direct' OR direct_participant_key IS NULL", name: "rooms_direct_participant_key_type"
+    t.check_constraint "(type = 'Rooms::Direct' AND direct_participant_key IS NOT NULL) OR (type <> 'Rooms::Direct' AND direct_participant_key IS NULL)", name: "rooms_direct_participant_key_type"
   end
 
   create_table "searches", force: :cascade do |t|
@@ -328,6 +346,7 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
     t.datetime "last_active_at", null: false
     t.string "oidc_configuration_fingerprint"
     t.integer "oidc_issued_at"
+    t.integer "oidc_session_generation"
     t.string "oidc_session_id"
     t.string "token", null: false
     t.datetime "updated_at", null: false
@@ -337,11 +356,13 @@ ActiveRecord::Schema[8.2].define(version: 2026_08_03_000000) do
     t.index ["id", "user_id"], name: "index_sessions_on_id_and_user_id", unique: true
     t.index ["identity_id", "oidc_session_id"], name: "index_sessions_on_identity_and_oidc_session", where: "oidc_session_id IS NOT NULL"
     t.index ["identity_id"], name: "index_sessions_on_identity_id"
+    t.index ["oidc_session_generation"], name: "index_sessions_on_oidc_session_generation"
     t.index ["token"], name: "index_sessions_on_token", unique: true
     t.index ["user_id"], name: "index_sessions_on_user_id"
     t.check_constraint "(authentication_method = 'oidc' AND identity_id IS NOT NULL AND expires_at IS NOT NULL AND oidc_configuration_fingerprint IS NOT NULL) OR (authentication_method <> 'oidc' AND identity_id IS NULL AND oidc_configuration_fingerprint IS NULL)", name: "sessions_oidc_identity_and_expiry"
     t.check_constraint "(authentication_method = 'oidc' AND oidc_issued_at IS NOT NULL) OR (authentication_method <> 'oidc' AND oidc_issued_at IS NULL)", name: "sessions_oidc_issued_at_method"
     t.check_constraint "oidc_issued_at IS NULL OR oidc_issued_at > 0", name: "sessions_oidc_issued_at_positive"
+    t.check_constraint "(authentication_method = 'oidc' AND oidc_session_generation IS NOT NULL AND oidc_session_generation > 0) OR (authentication_method <> 'oidc' AND oidc_session_generation IS NULL)", name: "sessions_oidc_generation_method"
     t.check_constraint "authentication_method = 'oidc' OR oidc_session_id IS NULL", name: "sessions_oidc_session_id_method"
     t.check_constraint "authentication_method IN ('legacy', 'password', 'oidc', 'transfer')", name: "sessions_authentication_method"
     t.check_constraint "oidc_session_id IS NULL OR (length(CAST(oidc_session_id AS BLOB)) BETWEEN 1 AND 255)", name: "sessions_oidc_session_id_bytes"

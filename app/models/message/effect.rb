@@ -9,7 +9,19 @@ class Message::Effect < ApplicationRecord
     room_receive broadcast_create broadcast_update broadcast_destroy webhook_fanout
   ].freeze
   RECIPIENT_EFFECTS = %w[ push_delivery presence_reconcile bot_webhook ].freeze
-  RECIPIENT_FANOUT_BATCH_SIZE = 100
+  MAXIMUM_FANOUT_BATCH_SIZE = ReliableWork::DISPATCH_BATCH_SIZE
+  RECIPIENT_FANOUT_BATCH_SIZE = Integer(
+    ENV.fetch("MESSAGE_RECIPIENT_FANOUT_BATCH_SIZE", 100).to_s, 10
+  )
+  BOT_FANOUT_BATCH_SIZE = Integer(
+    ENV.fetch("MESSAGE_BOT_FANOUT_BATCH_SIZE", 25).to_s, 10
+  )
+  unless [ RECIPIENT_FANOUT_BATCH_SIZE, BOT_FANOUT_BATCH_SIZE ].all? {
+      _1.between?(1, MAXIMUM_FANOUT_BATCH_SIZE)
+    }
+    raise ArgumentError,
+      "message fanout batch sizes must be between 1 and #{MAXIMUM_FANOUT_BATCH_SIZE}"
+  end
   TERMINAL_RETENTION = 1.day
   TERMINAL_PRUNE_BATCH_SIZE = 10_000
   JOB_CLASS = MessageEffectJob
@@ -37,6 +49,25 @@ class Message::Effect < ApplicationRecord
         .order(Arel.sql("COALESCE(completed_at, canceled_at) ASC"), :id)
         .limit(limit).ids
       where(id: ids).delete_all
+    end
+
+    def advance_presence_reconciliation_for(membership)
+      now = Time.current
+      effect_ids = transaction do
+        current_membership = Membership.lock.find_by(id: membership.id)
+        next [] unless current_membership && !current_membership.connected?
+
+        effects = pending.where(
+          effect: "presence_reconcile", recipient_id: current_membership.id,
+          presence_generation: current_membership.presence_generation
+        )
+        effects.where("next_attempt_at > ?", now).update_all(next_attempt_at: now, updated_at: now)
+        dispatchable(effects, now:).limit(ReliableWork::DISPATCH_BATCH_SIZE).ids
+      end
+
+      ActiveRecord.after_all_transactions_commit do
+        dispatch_pending pending.where(id: effect_ids)
+      end
     end
   end
 
@@ -121,6 +152,7 @@ class Message::Effect < ApplicationRecord
         [ ids, recipients.size > batch.size ]
       end
 
+      perform_due_recipient_effects(recipient_effect_ids, now:)
       dispatch_recipient_effects recipient_effect_ids
       :continue if more
     end
@@ -128,16 +160,28 @@ class Message::Effect < ApplicationRecord
     def create_webhook_effects
       return unless message
 
-      message.webhook_recipients.includes(:webhook).find_each do |bot|
-        if webhook = bot.webhook
+      recipient_effect_ids, more = self.class.transaction do
+        existing_recipients = self.class.where(
+          message_id:, effect: "bot_webhook"
+        ).select(:recipient_id)
+        recipients = message.webhook_recipients.joins(:webhook)
+          .where.not(id: existing_recipients).order("users.id")
+          .limit(BOT_FANOUT_BATCH_SIZE + 1)
+          .pluck("users.id", "webhooks.id", "webhooks.delivery_generation")
+        batch = recipients.first(BOT_FANOUT_BATCH_SIZE)
+        ids = batch.map do |bot_id, webhook_id, webhook_generation|
           create_recipient_effect(
-            "bot_webhook", bot.id,
-            webhook_id: webhook.id,
-            webhook_generation: webhook.delivery_generation,
+            "bot_webhook", bot_id,
+            webhook_id:,
+            webhook_generation:,
             delivery_id: SecureRandom.uuid
-          )
+          ).id
         end
+        [ ids, recipients.size > batch.size ]
       end
+
+      dispatch_recipient_effects recipient_effect_ids
+      :continue if more
     end
 
     def create_recipient_effect(effect, recipient_id, **attributes)
@@ -156,6 +200,23 @@ class Message::Effect < ApplicationRecord
       self.class.dispatch_pending effects
     end
 
+    def perform_due_recipient_effects(effect_ids, now:)
+      effects = self.class.pending.where(id: effect_ids, effect: "presence_reconcile")
+      disconnected_at_same_generation = <<~SQL
+        EXISTS (
+          SELECT 1 FROM memberships
+          WHERE memberships.id = message_effects.recipient_id
+            AND memberships.presence_generation = message_effects.presence_generation
+            AND (memberships.connected_at IS NULL OR memberships.connected_at < ?)
+        )
+      SQL
+      effects.where("next_attempt_at > ?", now).where(
+        disconnected_at_same_generation, now - Membership::Connectable::CONNECTION_TTL
+      ).update_all(next_attempt_at: now, updated_at: now)
+      effect_ids = self.class.dispatchable(effects, now:).limit(RECIPIENT_FANOUT_BATCH_SIZE).ids
+      effect_ids.each { self.class.find_by(id: _1)&.perform_safely }
+    end
+
     def deliver_push
       return unless message
 
@@ -168,6 +229,7 @@ class Message::Effect < ApplicationRecord
       result = self.class.transaction do
         membership = Membership.lock.find_by(id: recipient_id, room_id:)
         next :cancel unless membership && !membership.involved_in_invisible? && membership.user_id != message.creator_id
+        next :cancel unless User.active.exists?(id: membership.user_id)
         next :cancel unless membership.presence_generation == presence_generation
         next :cancel if membership.connected?
 
@@ -179,9 +241,12 @@ class Message::Effect < ApplicationRecord
             create_recipient_effect "push_delivery", subscription_id
           end
         end
-        :reconciled
+        membership.user_id
       end
-      result == :cancel ? :cancel : nil
+      return :cancel if result == :cancel
+
+      UnreadRoomsChannel.broadcast_to User.find(result), { roomId: room_id }
+      nil
     end
 
     def deliver_webhook
@@ -198,6 +263,7 @@ class Message::Effect < ApplicationRecord
       self.class.transaction do
         current_message = Message.lock.find_by(id: message_id, room_id:)
         next unless current_message
+        next if current_message.creator.bot?
         bot = User.active_bots.lock.find_by(id: recipient_id)
         next unless bot && bot.id != current_message.creator_id
 

@@ -163,13 +163,24 @@ class Oidc::RequestGuardTest < ActiveSupport::TestCase
     %w[
       /AUTH/OPENID_CONNECT
       /auth/openid_connect/
+      /auth/openid_connect.json
+      /auth/openid_connect/callback.json
       /AUTH/OPENID_CONNECT/BACKCHANNEL_LOGOUT
       /auth/openid_connect/backchannel_logout/
+      /auth/openid_connect/backchannel_logout.json
     ].each do |path|
       assert_equal 404, guard.call(environment(path:)).first
     end
 
     assert_equal 0, @calls
+  end
+
+  test "direct guard responses include the default security headers" do
+    _status, headers, = guard.call(environment(method: "GET"))
+
+    Oidc::DEFAULT_SECURITY_HEADERS.each do |name, value|
+      assert_equal value, headers.fetch(name)
+    end
   end
 
   test "requires POST initiation and GET callback before OmniAuth" do

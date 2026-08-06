@@ -167,24 +167,203 @@ jobs:
         if: always()
         env:
           ARCHITECTURE: ${{ matrix.arch }}
+          CONTAINER_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_HOST_ARCHITECTURE: ${{ matrix.host_architecture }}
           SOURCE_REVISION: ${{ github.sha }}
+          TARGET_BUILD_IDENTITY: ${{ steps.build.outputs.build_identity }}
         shell: bash
         run: |
           set -euo pipefail
           EVIDENCE_DIRECTORY="$RUNNER_TEMP/container-evidence-$ARCHITECTURE"
-          if [[ -f "$EVIDENCE_DIRECTORY/container-validation.json" && -f "$EVIDENCE_DIRECTORY/recovery-receipt.json" ]]; then
+          mkdir -p "$EVIDENCE_DIRECTORY"
+          validation="$EVIDENCE_DIRECTORY/container-validation.json"
+          recovery="$EVIDENCE_DIRECTORY/recovery-receipt.json"
+          run_receipt="$EVIDENCE_DIRECTORY/run.json"
+          upgrade_receipt="$EVIDENCE_DIRECTORY/upgrade-recovery.json"
+          receipt_status=incomplete
+          if [[ -f "$validation" && ! -L "$validation" && -s "$validation" &&
+                -f "$recovery" && ! -L "$recovery" && -s "$recovery" &&
+                -f "$run_receipt" && ! -L "$run_receipt" && -s "$run_receipt" &&
+                -f "$upgrade_receipt" && ! -L "$upgrade_receipt" && -s "$upgrade_receipt" ]]; then
+            validation_sha256=$(sha256sum "$validation" | cut -d' ' -f1)
+            recovery_sha256=$(sha256sum "$recovery" | cut -d' ' -f1)
+            run_receipt_sha256=$(sha256sum "$run_receipt" | cut -d' ' -f1)
+            upgrade_receipt_sha256=$(sha256sum "$upgrade_receipt" | cut -d' ' -f1)
+            runnable_digest=$(jq -r '.runnable_digest' "$validation")
+            config_digest=$(jq -r '.config_digest' "$validation")
+            if jq -e \
+                --arg architecture "$ARCHITECTURE" \
+                --arg platform "$CONTAINER_PLATFORM" \
+                --arg source_revision "$SOURCE_REVISION" \
+                --arg build_identity "$TARGET_BUILD_IDENTITY" '
+                  (keys | sort) == [
+                    "app_version", "architecture", "build_identity", "buildkit_provenance_sha256",
+                    "checks", "config_digest", "format_version", "image", "image_inspection_sha256",
+                    "kind", "oci_archive_sha256", "platform", "request_limit_probe_bytes",
+                    "runnable_digest", "runtime_archive_sha256", "runtime_binding", "sbom_sha256",
+                    "source_revision", "transport_mode", "validated_manifest_digest"
+                  ] and
+                  .format_version == 1 and .kind == "campfire-container-validation" and
+                  .architecture == $architecture and .platform == $platform and
+                  .source_revision == $source_revision and .build_identity == $build_identity and
+                  (.runnable_digest | test("^sha256:[0-9a-f]{64}$")) and
+                  (.config_digest | test("^sha256:[0-9a-f]{64}$")) and
+                  .validated_manifest_digest == .runnable_digest and
+                  .transport_mode == "external-https-loopback-probe" and
+                  (.checks | keys | sort) == [
+                    "asset_precompile_transport", "boot_health", "entrypoint_and_labels", "graceful_exit_code",
+                    "immutable_runtime_paths", "mutable_runtime_directories", "non_root_user",
+                    "platform_config", "procps", "provenance", "request_limit",
+                    "runtime_transport_neutrality", "sbom", "transport_contract"
+                  ] and
+                  .checks.asset_precompile_transport == "passed" and
+                  .checks.platform_config == "passed" and .checks.non_root_user == "passed" and
+                  .checks.entrypoint_and_labels == "passed" and .checks.sbom == "passed" and
+                  .checks.provenance == "passed" and .checks.boot_health == "passed" and
+                  .checks.procps == "passed" and .checks.immutable_runtime_paths == "passed" and
+                  .checks.mutable_runtime_directories == "passed" and
+                  .checks.runtime_transport_neutrality == "passed" and
+                  .checks.transport_contract == "passed" and
+                  (.checks.request_limit | test("^HTTP/1\\.[01] 413$")) and
+                  .checks.graceful_exit_code == 0
+                ' "$validation" >/dev/null &&
+              jq -e \
+                --arg architecture "$ARCHITECTURE" \
+                --arg platform "$CONTAINER_PLATFORM" \
+                --arg source_revision "$SOURCE_REVISION" \
+                --arg build_identity "$TARGET_BUILD_IDENTITY" \
+                --arg runnable_digest "$runnable_digest" \
+                --arg config_digest "$config_digest" \
+                --arg validation_sha256 "$validation_sha256" \
+                --arg upgrade_receipt_sha256 "$upgrade_receipt_sha256" '
+                  (keys | sort) == [
+                    "architecture", "checks", "container_validation_sha256", "current_recovery",
+                    "format_version", "kind", "legacy_digest", "legacy_recovery", "legacy_reference",
+                    "legacy_revision", "platform", "recovery", "release_tag", "run_attempt", "run_id",
+                    "runtime_binding", "source_schema_version", "source_sha", "target_build_identity",
+                    "target_config_digest", "target_digest", "target_manifest_digest", "target_reference",
+                    "transport_mode", "upgrade_receipt_sha256"
+                  ] and
+                  .format_version == 1 and .kind == "campfire-image-recovery" and
+                  .architecture == $architecture and .platform == $platform and
+                  .source_sha == $source_revision and .target_build_identity == $build_identity and
+                  .target_digest == $runnable_digest and .target_manifest_digest == $runnable_digest and
+                  .target_config_digest == $config_digest and
+                  .container_validation_sha256 == $validation_sha256 and
+                  .upgrade_receipt_sha256 == $upgrade_receipt_sha256 and
+                  .transport_mode == "external-https-loopback-probe" and
+                  (.current_recovery | keys | sort) == ["artifact_kind", "artifact_sha256"] and
+                  (.legacy_recovery | keys | sort) == ["artifact_kind", "artifact_sha256"] and
+                  (.checks | keys | sort) == [
+                    "authorized_upgrade", "current_restore", "http_history_and_uploads",
+                    "legacy_restore", "migration_denials", "tamper_denials", "transport_contract",
+                    "worker_execution"
+                  ] and
+                  .checks.current_restore == "passed" and .checks.legacy_restore == "passed" and
+                  .checks.migration_denials == "passed" and .checks.tamper_denials == "passed" and
+                  .checks.authorized_upgrade == "passed" and
+                  .checks.http_history_and_uploads == "passed" and
+                  .checks.transport_contract == "passed" and
+                  .checks.worker_execution == "passed" and
+                  .recovery == "passed"
+                ' "$recovery" >/dev/null &&
+              jq -e \
+                --arg architecture "$ARCHITECTURE" \
+                --arg host_architecture "$EXPECTED_HOST_ARCHITECTURE" \
+                --arg source_revision "$SOURCE_REVISION" '
+                  (keys | sort) == [
+                    "architecture", "format_version", "host_architecture", "source_revision", "status"
+                  ] and
+                  .format_version == 1 and .architecture == $architecture and
+                  .host_architecture == $host_architecture and
+                  .source_revision == $source_revision and .status == "started"
+                ' "$run_receipt" >/dev/null &&
+              jq -e \
+                --arg source_revision "$SOURCE_REVISION" \
+                --arg build_identity "$TARGET_BUILD_IDENTITY" \
+                --arg source_schema_version "$(jq -r '.source_schema_version' "$recovery")" '
+                  (keys | sort) == [
+                    "archive_bytes", "archive_path", "archive_sha256", "authentication",
+                    "authentication_path", "authentication_sha256", "backup_id", "created_at",
+                    "environment", "expires_at", "format_version", "installation_fingerprint",
+                    "kind", "migration", "source_manifest_sha256", "source_schema_version",
+                    "source_state_sha256", "target_build_identity", "target_revision"
+                  ] and
+                  (.authentication | keys | sort) == ["algorithm", "key_id", "mac"] and
+                  .format_version == 2 and .kind == "campfire-upgrade-recovery" and
+                  .target_revision == $source_revision and
+                  .target_build_identity == $build_identity and
+                  (.source_schema_version | tostring) == $source_schema_version and
+                  (.archive_bytes | type) == "number" and .archive_bytes > 0 and
+                  .archive_path == .authentication_path and
+                  .archive_sha256 == .authentication_sha256 and
+                  ([.archive_sha256, .authentication_sha256, .source_manifest_sha256,
+                    .source_state_sha256] | all(test("^[0-9a-f]{64}$"))) and
+                  .authentication.algorithm == "HMAC-SHA256" and
+                  (.authentication.key_id | test("^[0-9a-f]{16}$")) and
+                  (.authentication.mac | test("^[0-9a-f]{64}$"))
+                ' "$upgrade_receipt" >/dev/null; then
+              receipt_status=passed
+            fi
+          fi
+
+          if [[ "$receipt_status" == passed ]]; then
             jq -n \
+              --arg kind "campfire-container-workflow-receipt" \
               --arg architecture "$ARCHITECTURE" \
+              --arg platform "$CONTAINER_PLATFORM" \
+              --arg host_architecture "$EXPECTED_HOST_ARCHITECTURE" \
               --arg source_revision "$SOURCE_REVISION" \
-              --arg validation_sha256 "$(sha256sum "$EVIDENCE_DIRECTORY/container-validation.json" | cut -d' ' -f1)" \
-              --arg recovery_sha256 "$(sha256sum "$EVIDENCE_DIRECTORY/recovery-receipt.json" | cut -d' ' -f1)" \
-              '{format_version: 1, architecture: $architecture, source_revision: $source_revision, container_validation_sha256: $validation_sha256, recovery_receipt_sha256: $recovery_sha256, status: "passed"}' \
+              --arg build_identity "$TARGET_BUILD_IDENTITY" \
+              --arg runnable_digest "$runnable_digest" \
+              --arg config_digest "$config_digest" \
+              --arg validation_sha256 "$validation_sha256" \
+              --arg recovery_sha256 "$recovery_sha256" \
+              --arg run_receipt_sha256 "$run_receipt_sha256" \
+              --arg upgrade_receipt_sha256 "$upgrade_receipt_sha256" '
+                {
+                  format_version: 1,
+                  kind: $kind,
+                  architecture: $architecture,
+                  platform: $platform,
+                  host_architecture: $host_architecture,
+                  source_revision: $source_revision,
+                  build_identity: $build_identity,
+                  runnable_digest: $runnable_digest,
+                  config_digest: $config_digest,
+                  transport_mode: "external-https-loopback-probe",
+                  container_validation_sha256: $validation_sha256,
+                  recovery_receipt_sha256: $recovery_sha256,
+                  run_receipt_sha256: $run_receipt_sha256,
+                  upgrade_receipt_sha256: $upgrade_receipt_sha256,
+                  checks: {
+                    native_host_architecture: "passed",
+                    container_validation: "passed",
+                    image_recovery: "passed"
+                  },
+                  status: "passed"
+                }
+              ' \
               > "$EVIDENCE_DIRECTORY/receipt.json"
           else
-            jq -n --arg architecture "$ARCHITECTURE" --arg source_revision "$SOURCE_REVISION" \
-              '{format_version: 1, architecture: $architecture, source_revision: $source_revision, status: "incomplete"}' \
+            jq -n \
+              --arg architecture "$ARCHITECTURE" \
+              --arg platform "$CONTAINER_PLATFORM" \
+              --arg host_architecture "$EXPECTED_HOST_ARCHITECTURE" \
+              --arg source_revision "$SOURCE_REVISION" '
+                {
+                  format_version: 1,
+                  kind: "campfire-container-workflow-receipt",
+                  architecture: $architecture,
+                  platform: $platform,
+                  host_architecture: $host_architecture,
+                  source_revision: $source_revision,
+                  status: "incomplete"
+                }
+              ' \
               > "$EVIDENCE_DIRECTORY/receipt.json"
           fi
+          [[ "$receipt_status" == passed ]]
 
       - name: Remove unretained image archives
         if: always()
@@ -198,5 +377,251 @@ jobs:
         with:
           name: container-evidence-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/container-evidence-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-receipts:
+    name: Verify exact architecture receipts
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Download amd64 evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: container-evidence-amd64-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/container-receipts/amd64
+
+      - name: Download arm64 evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: container-evidence-arm64-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/container-receipts/arm64
+
+      - name: Verify exact amd64 and arm64 receipt set
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt_root="$RUNNER_TEMP/container-receipts"
+          for architecture in amd64 arm64; do
+            case "$architecture" in
+              amd64) platform=linux/amd64; host_architecture=x86_64 ;;
+              arm64) platform=linux/arm64; host_architecture=aarch64 ;;
+              *) exit 64 ;;
+            esac
+            directory="$receipt_root/$architecture"
+            receipt="$directory/receipt.json"
+            validation="$directory/container-validation.json"
+            recovery="$directory/recovery-receipt.json"
+            run_receipt="$directory/run.json"
+            upgrade_receipt="$directory/upgrade-recovery.json"
+            for source in "$receipt" "$validation" "$recovery" "$run_receipt" "$upgrade_receipt"; do
+              [[ -f "$source" && ! -L "$source" && -s "$source" ]]
+            done
+            validation_sha256=$(sha256sum "$validation" | cut -d' ' -f1)
+            recovery_sha256=$(sha256sum "$recovery" | cut -d' ' -f1)
+            run_receipt_sha256=$(sha256sum "$run_receipt" | cut -d' ' -f1)
+            upgrade_receipt_sha256=$(sha256sum "$upgrade_receipt" | cut -d' ' -f1)
+            build_identity=$(jq -r '.build_identity' "$receipt")
+            runnable_digest=$(jq -r '.runnable_digest' "$receipt")
+            config_digest=$(jq -r '.config_digest' "$receipt")
+            jq -e \
+              --arg architecture "$architecture" \
+              --arg platform "$platform" \
+              --arg host_architecture "$host_architecture" \
+              --arg source_revision "$SOURCE_REVISION" \
+              --arg validation_sha256 "$validation_sha256" \
+              --arg recovery_sha256 "$recovery_sha256" \
+              --arg run_receipt_sha256 "$run_receipt_sha256" \
+              --arg upgrade_receipt_sha256 "$upgrade_receipt_sha256" '
+                (keys | sort) == [
+                  "architecture", "build_identity", "checks", "config_digest",
+                  "container_validation_sha256", "format_version", "host_architecture", "kind",
+                  "platform", "recovery_receipt_sha256", "run_receipt_sha256", "runnable_digest",
+                  "source_revision", "status", "transport_mode", "upgrade_receipt_sha256"
+                ] and
+                .format_version == 1 and .kind == "campfire-container-workflow-receipt" and
+                .architecture == $architecture and .platform == $platform and
+                .host_architecture == $host_architecture and .source_revision == $source_revision and
+                (.build_identity | test("^[0-9a-f]{64}$")) and
+                (.runnable_digest | test("^sha256:[0-9a-f]{64}$")) and
+                (.config_digest | test("^sha256:[0-9a-f]{64}$")) and
+                .transport_mode == "external-https-loopback-probe" and
+                .container_validation_sha256 == $validation_sha256 and
+                .recovery_receipt_sha256 == $recovery_sha256 and
+                .run_receipt_sha256 == $run_receipt_sha256 and
+                .upgrade_receipt_sha256 == $upgrade_receipt_sha256 and
+                .checks == {
+                  "container_validation": "passed",
+                  "image_recovery": "passed",
+                  "native_host_architecture": "passed"
+                } and
+                .status == "passed"
+              ' "$receipt" >/dev/null
+            jq -e \
+              --arg architecture "$architecture" \
+              --arg platform "$platform" \
+              --arg source_revision "$SOURCE_REVISION" \
+              --arg build_identity "$build_identity" \
+              --arg runnable_digest "$runnable_digest" \
+              --arg config_digest "$config_digest" '
+                (keys | sort) == [
+                  "app_version", "architecture", "build_identity", "buildkit_provenance_sha256",
+                  "checks", "config_digest", "format_version", "image", "image_inspection_sha256",
+                  "kind", "oci_archive_sha256", "platform", "request_limit_probe_bytes",
+                  "runnable_digest", "runtime_archive_sha256", "runtime_binding", "sbom_sha256",
+                  "source_revision", "transport_mode", "validated_manifest_digest"
+                ] and
+                .format_version == 1 and .kind == "campfire-container-validation" and
+                .architecture == $architecture and .platform == $platform and
+                .source_revision == $source_revision and .build_identity == $build_identity and
+                .runnable_digest == $runnable_digest and .validated_manifest_digest == $runnable_digest and
+                .config_digest == $config_digest and
+                .transport_mode == "external-https-loopback-probe" and
+                (.checks | keys | sort) == [
+                  "asset_precompile_transport", "boot_health", "entrypoint_and_labels", "graceful_exit_code",
+                  "immutable_runtime_paths", "mutable_runtime_directories", "non_root_user",
+                  "platform_config", "procps", "provenance", "request_limit",
+                  "runtime_transport_neutrality", "sbom", "transport_contract"
+                ] and .checks.graceful_exit_code == 0
+              ' "$validation" >/dev/null
+            jq -e \
+              --arg architecture "$architecture" \
+              --arg platform "$platform" \
+              --arg source_revision "$SOURCE_REVISION" \
+              --arg build_identity "$build_identity" \
+              --arg runnable_digest "$runnable_digest" \
+              --arg config_digest "$config_digest" \
+              --arg validation_sha256 "$validation_sha256" \
+              --arg upgrade_receipt_sha256 "$upgrade_receipt_sha256" '
+                (keys | sort) == [
+                  "architecture", "checks", "container_validation_sha256", "current_recovery",
+                  "format_version", "kind", "legacy_digest", "legacy_recovery", "legacy_reference",
+                  "legacy_revision", "platform", "recovery", "release_tag", "run_attempt", "run_id",
+                  "runtime_binding", "source_schema_version", "source_sha", "target_build_identity",
+                  "target_config_digest", "target_digest", "target_manifest_digest", "target_reference",
+                  "transport_mode", "upgrade_receipt_sha256"
+                ] and
+                .format_version == 1 and .kind == "campfire-image-recovery" and
+                .architecture == $architecture and .platform == $platform and
+                .source_sha == $source_revision and .target_build_identity == $build_identity and
+                .target_digest == $runnable_digest and .target_manifest_digest == $runnable_digest and
+                .target_config_digest == $config_digest and
+                .container_validation_sha256 == $validation_sha256 and
+                .upgrade_receipt_sha256 == $upgrade_receipt_sha256 and
+                .transport_mode == "external-https-loopback-probe" and .recovery == "passed" and
+                (.current_recovery | keys | sort) == ["artifact_kind", "artifact_sha256"] and
+                (.legacy_recovery | keys | sort) == ["artifact_kind", "artifact_sha256"] and
+                (.checks | keys | sort) == [
+                  "authorized_upgrade", "current_restore", "http_history_and_uploads",
+                  "legacy_restore", "migration_denials", "tamper_denials", "transport_contract",
+                  "worker_execution"
+                ]
+              ' "$recovery" >/dev/null
+            jq -e \
+              --arg architecture "$architecture" \
+              --arg host_architecture "$host_architecture" \
+              --arg source_revision "$SOURCE_REVISION" '
+                (keys | sort) == [
+                  "architecture", "format_version", "host_architecture", "source_revision", "status"
+                ] and
+                .format_version == 1 and .architecture == $architecture and
+                .host_architecture == $host_architecture and
+                .source_revision == $source_revision and .status == "started"
+              ' "$run_receipt" >/dev/null
+            jq -e \
+              --arg source_revision "$SOURCE_REVISION" \
+              --arg build_identity "$build_identity" \
+              --arg source_schema_version "$(jq -r '.source_schema_version' "$recovery")" '
+                (keys | sort) == [
+                  "archive_bytes", "archive_path", "archive_sha256", "authentication",
+                  "authentication_path", "authentication_sha256", "backup_id", "created_at",
+                  "environment", "expires_at", "format_version", "installation_fingerprint",
+                  "kind", "migration", "source_manifest_sha256", "source_schema_version",
+                  "source_state_sha256", "target_build_identity", "target_revision"
+                ] and
+                (.authentication | keys | sort) == ["algorithm", "key_id", "mac"] and
+                .format_version == 2 and .kind == "campfire-upgrade-recovery" and
+                .target_revision == $source_revision and
+                .target_build_identity == $build_identity and
+                (.source_schema_version | tostring) == $source_schema_version and
+                (.archive_bytes | type) == "number" and .archive_bytes > 0 and
+                .archive_path == .authentication_path and
+                .archive_sha256 == .authentication_sha256 and
+                ([.archive_sha256, .authentication_sha256, .source_manifest_sha256,
+                  .source_state_sha256] | all(test("^[0-9a-f]{64}$"))) and
+                .authentication.algorithm == "HMAC-SHA256" and
+                (.authentication.key_id | test("^[0-9a-f]{16}$")) and
+                (.authentication.mac | test("^[0-9a-f]{64}$"))
+              ' "$upgrade_receipt" >/dev/null
+          done
+
+          amd64_receipt_sha256=$(sha256sum "$receipt_root/amd64/receipt.json" | cut -d' ' -f1)
+          arm64_receipt_sha256=$(sha256sum "$receipt_root/arm64/receipt.json" | cut -d' ' -f1)
+          amd64_validation_sha256=$(sha256sum "$receipt_root/amd64/container-validation.json" | cut -d' ' -f1)
+          arm64_validation_sha256=$(sha256sum "$receipt_root/arm64/container-validation.json" | cut -d' ' -f1)
+          amd64_recovery_sha256=$(sha256sum "$receipt_root/amd64/recovery-receipt.json" | cut -d' ' -f1)
+          arm64_recovery_sha256=$(sha256sum "$receipt_root/arm64/recovery-receipt.json" | cut -d' ' -f1)
+          amd64_run_receipt_sha256=$(sha256sum "$receipt_root/amd64/run.json" | cut -d' ' -f1)
+          arm64_run_receipt_sha256=$(sha256sum "$receipt_root/arm64/run.json" | cut -d' ' -f1)
+          amd64_upgrade_receipt_sha256=$(sha256sum "$receipt_root/amd64/upgrade-recovery.json" | cut -d' ' -f1)
+          arm64_upgrade_receipt_sha256=$(sha256sum "$receipt_root/arm64/upgrade-recovery.json" | cut -d' ' -f1)
+          amd64_runnable_digest=$(jq -r '.runnable_digest' "$receipt_root/amd64/receipt.json")
+          arm64_runnable_digest=$(jq -r '.runnable_digest' "$receipt_root/arm64/receipt.json")
+          jq -n \
+            --arg source_revision "$SOURCE_REVISION" \
+            --arg amd64_receipt_sha256 "$amd64_receipt_sha256" \
+            --arg arm64_receipt_sha256 "$arm64_receipt_sha256" \
+            --arg amd64_validation_sha256 "$amd64_validation_sha256" \
+            --arg arm64_validation_sha256 "$arm64_validation_sha256" \
+            --arg amd64_recovery_sha256 "$amd64_recovery_sha256" \
+            --arg arm64_recovery_sha256 "$arm64_recovery_sha256" \
+            --arg amd64_run_receipt_sha256 "$amd64_run_receipt_sha256" \
+            --arg arm64_run_receipt_sha256 "$arm64_run_receipt_sha256" \
+            --arg amd64_upgrade_receipt_sha256 "$amd64_upgrade_receipt_sha256" \
+            --arg arm64_upgrade_receipt_sha256 "$arm64_upgrade_receipt_sha256" \
+            --arg amd64_runnable_digest "$amd64_runnable_digest" \
+            --arg arm64_runnable_digest "$arm64_runnable_digest" '
+              {
+                format_version: 1,
+                kind: "campfire-container-architecture-set",
+                source_revision: $source_revision,
+                transport_mode: "external-https-loopback-probe",
+                architectures: [
+                  {
+                    architecture: "amd64",
+                    platform: "linux/amd64",
+                    host_architecture: "x86_64",
+                    receipt_sha256: $amd64_receipt_sha256,
+                    container_validation_sha256: $amd64_validation_sha256,
+                    recovery_receipt_sha256: $amd64_recovery_sha256,
+                    run_receipt_sha256: $amd64_run_receipt_sha256,
+                    upgrade_receipt_sha256: $amd64_upgrade_receipt_sha256,
+                    runnable_digest: $amd64_runnable_digest
+                  },
+                  {
+                    architecture: "arm64",
+                    platform: "linux/arm64",
+                    host_architecture: "aarch64",
+                    receipt_sha256: $arm64_receipt_sha256,
+                    container_validation_sha256: $arm64_validation_sha256,
+                    recovery_receipt_sha256: $arm64_recovery_sha256,
+                    run_receipt_sha256: $arm64_run_receipt_sha256,
+                    upgrade_receipt_sha256: $arm64_upgrade_receipt_sha256,
+                    runnable_digest: $arm64_runnable_digest
+                  }
+                ],
+                status: "passed"
+              }
+            ' > "$RUNNER_TEMP/container-architecture-receipt.json"
+
+      - name: Upload architecture receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-architecture-receipt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/container-architecture-receipt.json
           if-no-files-found: error
           retention-days: 30

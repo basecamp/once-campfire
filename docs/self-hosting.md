@@ -55,7 +55,8 @@ By default Docker containers don't persist storage between runs, so you'll want 
 The simplest way to do this is with the `--volume` flag with `docker run`. For example:
 
 ```sh
-docker run --volume campfire:/rails/storage ghcr.io/basecamp/once-campfire:latest
+docker run --volume campfire:/rails/storage --env TLS_DOMAIN=chat.example.com \
+  ghcr.io/basecamp/once-campfire:latest
 ```
 
 That will create a named volume (called `campfire`) and mount it into the correct path.
@@ -84,7 +85,9 @@ remains an additional check around guarded mutations.
 ### Configuring with environment variables
 
 To configure your Campfire installation, you can use environment variables.
-At a minimum you'll want to configure your secret key and your SSL domain.
+At a minimum, configure your secrets and one valid HTTPS transport mode: a
+`TLS_DOMAIN` for built-in TLS, or `DISABLE_SSL=true` behind a TLS-terminating
+proxy.
 
 #### Secrets
 
@@ -131,26 +134,30 @@ settings, validates and fingerprints their effective values, and rejects an
 empty or incompatible override. The pinned Thruster release rejects arbitrary
 HTTP Host values instead of redirecting them.
 
-If you are terminating SSL in some other proxy in front of Campfire, or aren't using SSL at all (for example, if you want to run it locally on your laptop), then you should set `DISABLE_SSL=true` instead and just publish port 80:
+If another proxy terminates HTTPS in front of Campfire, set `DISABLE_SSL=true`
+to disable built-in Thruster TLS and expose port 80 only to that proxy. For a
+proxy running on the Docker host, bind the port to loopback rather than every
+interface:
 
 ```sh
-docker run --publish 80:80 --env DISABLE_SSL=true ...
+docker run --publish 127.0.0.1:3000:80 --env DISABLE_SSL=true ...
 ```
 
-When OIDC is enabled, browsers must still reach Campfire over HTTPS. A
-TLS-terminating proxy must pass the original HTTPS scheme (normally through
-`X-Forwarded-Proto: https`); OIDC and authentication cookies are `Secure` in
-production. Set `OIDC_TRUSTED_PROXY_CIDRS` to the comma-separated CIDRs of the
-proxies that connect directly to Campfire, and prevent clients from reaching
-the application port except through those proxies. Campfire ignores forwarded
-HTTPS from other addresses. Also set `TLS_DOMAIN` to include the public OIDC
-hostname; `DISABLE_SSL=true` keeps Thruster disabled, so the proxy remains the
-TLS terminator. Proxies serving a non-default HTTPS port must send the exact
-port in `X-Forwarded-Port` and set the same value in `HTTPS_PORT`. Campfire
-installs that validated host and port as the downstream request authority so
-Rails CSRF and Action Cable origin checks use the browser's canonical origin.
-Do not use a broad client network as a trusted proxy range. Plain HTTP with
-`DISABLE_SSL=true` is not an OIDC deployment mode.
+Production browsers must still reach Campfire over HTTPS. `DISABLE_SSL=true`
+does not authorize plaintext production traffic: the TLS-terminating proxy must
+pass the original HTTPS scheme through `X-Forwarded-Proto: https`, and direct
+clients must not be able to reach or spoof requests to the application port.
+Authentication cookies remain `Secure` even when TLS terminates at the proxy.
+
+When OIDC is enabled, set `OIDC_TRUSTED_PROXY_CIDRS` to the comma-separated
+CIDRs of only the proxies that connect directly to Campfire. Campfire ignores
+forwarded HTTPS from other addresses. Also set `TLS_DOMAIN` to include the
+public OIDC hostname; `DISABLE_SSL=true` keeps Thruster disabled, so the proxy
+remains the TLS terminator. Proxies serving a non-default HTTPS port must send
+the exact port in `X-Forwarded-Port` and set the same value in `HTTPS_PORT`.
+Campfire installs that validated host and port as the downstream request
+authority so Rails CSRF and Action Cable origin checks use the browser's
+canonical origin. Do not use a broad client network as a trusted proxy range.
 
 #### Error reporting (optional)
 
@@ -285,7 +292,7 @@ running image, stop Campfire, and run:
 
 ```sh
 IMAGE=ghcr.io/basecamp/once-campfire@sha256:replace-with-running-digest
-docker stop --timeout 35 campfire
+docker stop --timeout 70 campfire
 test "$(docker inspect --format '{{.State.Running}}' campfire)" = false
 test "$(docker inspect --format '{{.State.ExitCode}}' campfire)" = 0
 
@@ -336,13 +343,16 @@ private tmpfs for the second command. Do not restart Campfire until both
 commands succeed.
 
 On every normal boot, Campfire removes the previous `clean-shutdown.json`
-proof before database preparation or any writer starts. It publishes a new
-proof only after every process group has stopped, Redis has exited successfully,
+proof before database preparation or any writer starts. Signal supervision is
+already active when preparation begins: `TERM` and `INT` are forwarded to its
+process group, which is reaped before startup fails. An interrupted preparation
+cannot publish clean-shutdown evidence. Campfire publishes a new proof only
+after every runtime process group has stopped, Redis has exited successfully,
 and all Redis persistence files and directories have been flushed. A nonzero
-Redis exit, graceful-shutdown timeout, forced termination, or container
-`SIGKILL` leaves no usable proof. For current-format storage, `prepare-backup`
-requires a valid proof; `CONFIRM_QUIESCED_BACKUP` and the legacy controls cannot
-override a missing or invalid one.
+child or Redis exit, unexpected child signal, graceful-shutdown timeout, forced
+termination, or container `SIGKILL` leaves no usable proof. For current-format
+storage, `prepare-backup` requires a valid proof; `CONFIRM_QUIESCED_BACKUP` and
+the legacy controls cannot override a missing or invalid one.
 
 `prepare-backup` publishes `storage/backups/<backup-id>/` and atomically updates
 `latest`. It never deletes an older generation. Retention is an explicit

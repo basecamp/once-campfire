@@ -1,6 +1,25 @@
 require "test_helper"
 
 class SessionsControllerTest < ActionDispatch::IntegrationTest
+  test "session status verifies the exact authenticated page session without caching" do
+    sign_in :david
+    current_session = users(:david).sessions.order(:id).last
+
+    get session_url(session_id: current_session.id)
+
+    assert_response :no_content
+    assert_equal "private, no-store", response.headers["Cache-Control"]
+  end
+
+  test "session status rejects a different page session" do
+    sign_in :david
+
+    get session_url(session_id: sessions(:jason_chrome).id)
+
+    assert_response :conflict
+    assert_equal "private, no-store", response.headers["Cache-Control"]
+  end
+
   test "OIDC sign-in establishes a secure browser flow binding" do
     configure_oidc
     host! Oidc.configuration.redirect_host
@@ -14,6 +33,48 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/;\s*samesite=lax/i, browser_cookie)
   end
 
+  test "HTTPS password sign-in sets a secure authentication cookie without OIDC" do
+    configure_oidc("OIDC_MODE" => "disabled")
+    host! "campfire.example.com"
+    https!
+
+    post session_url, params: {
+      email_address: users(:david).email_address,
+      password: "secret123456"
+    }
+
+    authentication_cookie = Array(response.headers.fetch("set-cookie"))
+      .find { _1.start_with?("session_token=") }
+    assert_match(/;\s*secure/i, authentication_cookie)
+  end
+
+  test "HTTPS transport sets a secure Rails session cookie outside production" do
+    configure_oidc("OIDC_MODE" => "disabled")
+    host! "campfire.example.com"
+    https!
+
+    get room_url(rooms(:watercooler))
+
+    rails_session_cookie = Array(response.headers.fetch("set-cookie"))
+      .find { _1.start_with?("_campfire_session=") }
+    assert_match(/;\s*secure/i, rails_session_cookie)
+  end
+
+  test "explicit development plaintext does not trust a forwarded HTTPS scheme for cookies" do
+    configure_oidc(
+      "RAILS_ENV" => "development", "OIDC_MODE" => "disabled", "DISABLE_SSL" => "true"
+    )
+
+    post session_url, params: {
+      email_address: users(:david).email_address,
+      password: "secret123456"
+    }, headers: { "X-Forwarded-Proto" => "https" }
+
+    authentication_cookie = Array(response.headers.fetch("set-cookie"))
+      .find { _1.start_with?("session_token=") }
+    assert_no_match(/;\s*secure/i, authentication_cookie)
+  end
+
   test "trusted non-default proxy port is used for authentication URLs and the saved return URL" do
     configure_oidc(
       "DISABLE_SSL" => "true",
@@ -22,6 +83,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       "OIDC_REDIRECT_URI" => "https://campfire.example.com:8443/auth/openid_connect/callback"
     )
     host! "campfire.example.com"
+    https!
     proxy_environment = {
       "REMOTE_ADDR" => "10.20.1.2",
       "HTTP_X_FORWARDED_FOR" => "198.51.100.20",

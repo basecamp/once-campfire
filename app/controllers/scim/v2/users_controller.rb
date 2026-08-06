@@ -2,7 +2,9 @@ class Scim::V2::UsersController < Scim::BaseController
   FILTER_PATTERN = /\A(externalId|userName|id)\s+eq\s+"((?:[^"\\]|\\["\\])*)"\z/i
   MAXIMUM_OPERATIONS = 10
 
-  before_action :set_identity, only: %i[ show update destroy ]
+  SUBJECT_DEPROVISIONING_ID = Identity::SUBJECT_DEPROVISIONING_SCIM_ID
+
+  before_action :set_identity, only: %i[ show update ]
 
   def index
     identity = identity_from_filter
@@ -33,7 +35,12 @@ class Scim::V2::UsersController < Scim::BaseController
   end
 
   def destroy
-    @identity.user.deactivate_from_identity_provider!(identity: @identity, issuer: Scim.issuer)
+    if params[:id] == SUBJECT_DEPROVISIONING_ID
+      deprovision_subject_without_existence_signal
+    else
+      identity = scim_identities.includes(:user).find_by!(scim_id: params[:id])
+      identity.user.deactivate_from_identity_provider!(identity:, issuer: Scim.issuer)
+    end
     head :no_content
   end
 
@@ -43,6 +50,33 @@ class Scim::V2::UsersController < Scim::BaseController
     end
 
     def identity_from_filter
+      attribute, value = parsed_identity_filter
+
+      if attribute == "id"
+        scim_identities.includes(:user).find_by(scim_id: value)
+      else
+        scim_identities.includes(:user).find_by(subject: value)
+      end
+    end
+
+    def subject_from_deprovisioning_filter
+      attribute, value = parsed_identity_filter
+      unless attribute == "externalid"
+        raise InvalidRequest.new(
+          "Subject deprovisioning requires an externalId filter.", scim_type: "invalidFilter"
+        )
+      end
+
+      value
+    end
+
+    def deprovision_subject_without_existence_signal
+      Identity::Deprovisioning.deprovision!(
+        issuer: Scim.issuer, subject: subject_from_deprovisioning_filter
+      )
+    end
+
+    def parsed_identity_filter
       filter = params[:filter]
       match = filter.match(FILTER_PATTERN) if filter.is_a?(String) && filter.bytesize <= 1024
       unless match
@@ -55,11 +89,7 @@ class Scim::V2::UsersController < Scim::BaseController
         raise InvalidRequest.new("The identity filter is invalid.", scim_type: "invalidFilter")
       end
 
-      if attribute == "id"
-        scim_identities.includes(:user).find_by(scim_id: value)
-      else
-        scim_identities.includes(:user).find_by(subject: value)
-      end
+      [ attribute, value ]
     end
 
     def requested_start_index

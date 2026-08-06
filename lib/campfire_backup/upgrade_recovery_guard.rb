@@ -26,7 +26,6 @@ module CampfireBackup
     GATED_MIGRATION = 20260730000000
     RECEIPT_FILENAME = "upgrade-recovery.json"
     RECEIPT_LIFETIME = 24 * 60 * 60
-    FRESHNESS_TABLES = %w[ accounts users rooms messages active_storage_blobs ].freeze
     FRESHNESS_INTERNAL_TABLES = %w[ ar_internal_metadata schema_migrations sqlite_sequence ].freeze
     SQLITE_CONNECTION_IDENTITY_IVAR = :@campfire_open_database_identity
     SCHEMA_VERIFIER_TARGETS_KEY = :campfire_schema_verifier_migration_targets
@@ -151,35 +150,35 @@ module CampfireBackup
       end
 
       def up(target_version = nil, &selection)
-        with_verified_campfire_migration_target! do
+        with_verified_campfire_migration_target!(operation: "up") do
           selected_versions = isolated_selected_versions(selection)
           super(target_version) { |migration| selected_versions.include?(migration.version) }
         end
       end
 
       def down(target_version = nil, &selection)
-        with_verified_campfire_migration_target! do
+        with_verified_campfire_migration_target!(direction: :down, operation: "down") do
           selected_versions = isolated_selected_versions(selection)
           super(target_version) { |migration| selected_versions.include?(migration.version) }
         end
       end
 
       def run(direction, target_version)
-        with_verified_campfire_migration_target! { super }
+        with_verified_campfire_migration_target!(direction:, operation: "run(#{direction.inspect})") { super }
       end
 
       def rollback(steps = 1)
-        with_verified_campfire_migration_target! { super }
+        with_verified_campfire_migration_target!(direction: :down, operation: "rollback") { super }
       end
 
       def forward(steps = 1)
-        with_verified_campfire_migration_target! { super }
+        with_verified_campfire_migration_target!(operation: "forward") { super }
       end
 
       def open
         GuardedMigrator.new(
           builder: -> { ActiveRecord::Migrator.new(:up, migrations, schema_migration, internal_metadata) },
-          guard: ->(&operation) { with_verified_campfire_migration_target!(&operation) }
+          guard: ->(&operation) { with_verified_campfire_migration_target!(operation: "open", &operation) }
         )
       end
 
@@ -206,10 +205,15 @@ module CampfireBackup
         end
 
         def move(direction, steps)
-          with_verified_campfire_migration_target! { super }
+          with_verified_campfire_migration_target!(direction:, operation: "move(#{direction.inspect})") { super }
         end
 
-        def with_verified_campfire_migration_target!
+        def with_verified_campfire_migration_target!(direction: :up, operation:)
+          if direction.to_sym == :down
+            CampfireBackup::UpgradeRecoveryGuard.authorize_destructive_rollback!(
+              migration: "ActiveRecord::MigrationContext##{operation}"
+            )
+          end
           CampfireBackup::UpgradeRecoveryGuard.with_verified_migration(schema_migration) { yield }
         end
     end
@@ -1120,11 +1124,6 @@ module CampfireBackup
 
       def fresh_database?(connection: nil)
         with_database(connection:) do |database|
-          tables = first_column_values(database, "SELECT name FROM sqlite_schema WHERE type = 'table'")
-          relevant = FRESHNESS_TABLES & tables
-          return true if relevant.empty? && !tables.include?("schema_migrations")
-          return false unless relevant == FRESHNESS_TABLES
-
           shadow_tables = database.execute("PRAGMA table_list").filter_map do |row|
             schema, name, type = if row.is_a?(Hash)
               row.values_at("schema", "name", "type")
@@ -1133,13 +1132,25 @@ module CampfireBackup
             end
             name if schema == "main" && type == "shadow"
           end
-          durable_tables = tables.reject do |table|
-            table.in?(FRESHNESS_INTERNAL_TABLES) ||
-              table.in?(shadow_tables)
+          durable_objects = database.execute(<<~SQL).reject do |row|
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE type IN ('table', 'index', 'view', 'trigger')
+          SQL
+            type, name, table, sql = if row.is_a?(Hash)
+              row.values_at("type", "name", "tbl_name", "sql")
+            else
+              row.values_at(0, 1, 2, 3)
+            end
+            shadow_tables.include?(name) || shadow_tables.include?(table) ||
+              (type == "table" && FRESHNESS_INTERNAL_TABLES.include?(name)) ||
+              (type == "index" && sql.nil? && FRESHNESS_INTERNAL_TABLES.include?(table)) ||
+              name.start_with?("sqlite_")
           end
-          durable_tables.all? do |table|
-            database.get_first_value("SELECT COUNT(*) FROM #{quote_identifier(table)}").to_i.zero?
-          end
+          return false if durable_objects.any?
+
+          !database.table_info("schema_migrations").any? ||
+            database.get_first_value("SELECT COUNT(*) FROM schema_migrations").to_i.zero?
         end
       end
 

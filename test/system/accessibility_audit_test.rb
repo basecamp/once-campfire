@@ -52,7 +52,7 @@ class AccessibilityAuditTest < ApplicationSystemTestCase
     fill_in_rich_text_area "message_body", with: "Accessibility failure audit"
     click_on "Send Message"
 
-    assert_selector ".message--failed [role='alert']", text: "Message was not sent."
+    assert_selector ".message--failed [role='alert']", text: "Message outcome is unknown."
     assert_no_serious_accessibility_violations
   end
 

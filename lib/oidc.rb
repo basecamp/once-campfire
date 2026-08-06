@@ -11,6 +11,14 @@ module Oidc
   BROWSER_COOKIE = "__Host-campfire_oidc_browser"
   FLOW_LIFETIME = 10.minutes
   POLICY_UNAVAILABLE_MESSAGE = "Security policy is temporarily unavailable"
+  HEALTH_PATHS = %w[ /up /up/oidc /up/scim /up/work ].freeze
+  DEFAULT_SECURITY_HEADERS = {
+    "referrer-policy" => "strict-origin-when-cross-origin",
+    "x-content-type-options" => "nosniff",
+    "x-frame-options" => "SAMEORIGIN",
+    "x-permitted-cross-domain-policies" => "none",
+    "x-xss-protection" => "0"
+  }.freeze
   class ConfigurationError < StandardError; end
   class EndpointError < StandardError; end
   class PolicyUnavailable < StandardError; end
@@ -31,8 +39,15 @@ module Oidc
       :tls_domains, :https_port
 
     def initialize(env = ENV)
+      @environment = env.fetch("RAILS_ENV") { defined?(Rails) ? Rails.env.to_s : "development" }.to_s
+      @ssl_disabled = ssl_disabled_value(env)
       @mode = env.fetch("OIDC_MODE", "disabled").to_s.downcase
       validate_inclusion! "OIDC_MODE", mode, MODES
+      tls_domain_value = ssl_disabled? ? env.fetch("TLS_DOMAIN", "") : effective_thruster_setting(env, "TLS_DOMAIN", "").last
+      @tls_domains = tls_domain_value.to_s.split(",").filter_map { canonical_host(_1) }.uniq.freeze
+      if built_in_tls? && production_https? && tls_domains.empty?
+        raise ConfigurationError, "built-in Thruster TLS requires a nonempty effective TLS_DOMAIN"
+      end
       return set_disabled_defaults unless enabled?
 
       @issuer = required_value(env, "OIDC_ISSUER")
@@ -45,7 +60,7 @@ module Oidc
       @session_lifetime_seconds = integer_value(env, "OIDC_SESSION_LIFETIME", DEFAULT_SESSION_LIFETIME)
       @jit_provisioning = boolean_value(env, "OIDC_JIT_PROVISIONING", false)
       @allow_private_network = boolean_value(env, "OIDC_ALLOW_PRIVATE_NETWORK", false)
-      @proxy_required = env["DISABLE_SSL"].present?
+      @proxy_required = ssl_disabled?
       @break_glass_email = EmailAddress.normalize(env["OIDC_BREAK_GLASS_EMAIL"].to_s).presence
       @fingerprint_key = env["SECRET_KEY_BASE"].presence || Rails.application.secret_key_base
 
@@ -57,8 +72,6 @@ module Oidc
       unless redirect_uri.path == "/auth/openid_connect/callback" && !redirect_uri.query && !redirect_uri.fragment
         raise ConfigurationError, "OIDC_REDIRECT_URI must end with /auth/openid_connect/callback and cannot include a query or fragment"
       end
-      tls_domain_value = proxy_required? ? env.fetch("TLS_DOMAIN", "") : effective_thruster_setting(env, "TLS_DOMAIN", "").last
-      @tls_domains = tls_domain_value.split(",").filter_map { canonical_host(_1) }.uniq.freeze
       @https_port = integer_value(env, "HTTPS_PORT", 443, thruster: !proxy_required?)
       unless https_port.between?(1, 65_535)
         raise ConfigurationError, "HTTPS_PORT must be between 1 and 65535"
@@ -120,6 +133,38 @@ module Oidc
       @proxy_required
     end
 
+    def ssl_disabled?
+      @ssl_disabled
+    end
+
+    def built_in_tls?
+      !ssl_disabled?
+    end
+
+    def development_plaintext?
+      ssl_disabled? && !enabled? && @environment == "development"
+    end
+
+    def external_https?
+      ssl_disabled? && !development_plaintext?
+    end
+
+    def trusted_external_https?
+      external_https? && enabled? && trusted_proxy_ranges.any?
+    end
+
+    def https_transport?
+      built_in_tls? || external_https?
+    end
+
+    def secure_session_cookie?
+      https_transport? && @environment != "test"
+    end
+
+    def production_https?
+      @environment == "production"
+    end
+
     def trusted_proxy?(address)
       trusted_proxy_ranges.any? { _1.include?(IPAddr.new(address.to_s)) }
     rescue IPAddr::InvalidAddressError
@@ -169,9 +214,15 @@ module Oidc
         @allow_private_network = false
         @proxy_required = false
         @trusted_proxy_ranges = [].freeze
-        @tls_domains = [].freeze
         @https_port = 443
         @allowed_hosts = [].freeze
+      end
+
+      def ssl_disabled_value(env)
+        return false unless env.key?("DISABLE_SSL")
+        return true if env["DISABLE_SSL"] == "true"
+
+        raise ConfigurationError, "DISABLE_SSL must be exactly true when set"
       end
 
       def required_value(env, key)
@@ -247,9 +298,15 @@ module Oidc
     delegate :mode, :issuer, :client_id, :client_secret, :redirect_uri,
       :provider_name, :signing_algorithm, :client_auth_method,
       :session_lifetime_seconds, :allowed_hosts, :provider_fingerprint, :trusted_proxy_ranges,
-      :proxy_required?, to: :configuration
+      :tls_domains, :proxy_required?, to: :configuration
     delegate :enabled?, :required?, :jit_provisioning?, :allow_private_network?,
-      :break_glass_configured?, to: :configuration
+      :break_glass_configured?, :ssl_disabled?, :built_in_tls?, :development_plaintext?,
+      :external_https?, :trusted_external_https?, :https_transport?, :secure_session_cookie?, :production_https?,
+      to: :configuration
+
+    def security_headers(headers = {})
+      DEFAULT_SECURITY_HEADERS.merge(headers)
+    end
 
     def trusted_proxy?(address)
       configuration.trusted_proxy? address

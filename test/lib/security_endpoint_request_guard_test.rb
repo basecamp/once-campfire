@@ -22,6 +22,48 @@ class SecurityEndpointRequestGuardTest < ActiveSupport::TestCase
 
     assert_equal 413, status
     assert_equal "no-store", headers.fetch("cache-control")
+    assert_security_headers headers
+    assert_equal 0, @calls
+  end
+
+  test "rejects noncanonical security endpoint paths before downstream routing" do
+    middleware = SecurityEndpointRequestGuard.new(@app)
+    %w[
+      /auth/openid_connect.json
+      /AUTH/OPENID_CONNECT/CALLBACK
+      /auth/openid_connect/backchannel_logout/
+      /auth/failure.json
+      /oidc_link.json
+      /oidc_flow/
+      /scim/v2/ServiceProviderConfig.json
+      /scim/v2/Users.json
+      /scim/v2/Users/stable-id.json
+      /up/oidc.json
+      /up/scim/
+    ].each do |path|
+      status, headers, = middleware.call(environment(path))
+
+      assert_equal 404, status, path
+      assert_equal "no-store", headers.fetch("cache-control"), path
+      assert_security_headers headers
+    end
+
+    assert_equal 0, @calls
+  end
+
+  test "rejects a format-suffixed SCIM alias before MethodOverride reads its body" do
+    unreadable = Object.new
+    unreadable.expects(:read).never
+    env = environment(
+      "/scim/v2/Users.json", input: unreadable, content_length: nil
+    )
+    middleware = SecurityEndpointBodyLimiter.new(Rack::MethodOverride.new(@app))
+
+    status, headers, = middleware.call(env)
+
+    assert_equal 404, status
+    assert_equal "no-store", headers.fetch("cache-control")
+    assert_security_headers headers
     assert_equal 0, @calls
   end
 
@@ -106,9 +148,10 @@ class SecurityEndpointRequestGuardTest < ActiveSupport::TestCase
     store = stub
     store.expects(:increment).returns(SecurityEndpointRequestGuard::LOGOUT_REQUEST_LIMIT + 1)
 
-    status, = guard(store:).call(environment(SecurityEndpointRequestGuard::LOGOUT_PATH))
+    status, headers, = guard(store:).call(environment(SecurityEndpointRequestGuard::LOGOUT_PATH))
 
     assert_equal 429, status
+    assert_security_headers headers
     assert_equal 0, @calls
   end
 
@@ -155,6 +198,12 @@ class SecurityEndpointRequestGuardTest < ActiveSupport::TestCase
   end
 
   private
+    def assert_security_headers(headers)
+      Oidc::DEFAULT_SECURITY_HEADERS.each do |name, value|
+        assert_equal value, headers.fetch(name)
+      end
+    end
+
     def guard(store:, logout_semaphore: Concurrent::Semaphore.new(1),
         scim_semaphore: Concurrent::Semaphore.new(1))
       SecurityEndpointRequestGuard.new(

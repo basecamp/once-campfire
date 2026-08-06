@@ -1,4 +1,5 @@
 require File.expand_path("../config/environment", File.dirname(__FILE__))
+require "puma_chunked_body_limit"
 
 # Puma can serve each request in a thread from an internal thread pool.
 # The `threads` method setting takes two numbers: a minimum and maximum.
@@ -17,7 +18,11 @@ worker_timeout 3600 if ENV.fetch("RAILS_ENV", "development") == "development"
 
 # Bind http listener.
 port = ENV.fetch("PORT", 3000)
-bind_host = ENV["CAMPFIRE_INTERNAL_TLS_PROXY"].present? ? "127.0.0.1" : "0.0.0.0"
+bind_host = case ENV["CAMPFIRE_INTERNAL_TLS_PROXY"]
+when "true" then "127.0.0.1"
+when nil then "0.0.0.0"
+else raise "CAMPFIRE_INTERNAL_TLS_PROXY must be exactly true when set"
+end
 bind "tcp://#{bind_host}:#{port}"
 http_content_length_limit ContentLimits.request_body_bytes
 

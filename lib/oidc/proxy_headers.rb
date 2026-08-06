@@ -2,7 +2,7 @@ require "ipaddr"
 
 module Oidc
   class ProxyHeaders
-    HEALTH_PATHS = %w[ /up /up/oidc ].freeze
+    HEALTH_PATHS = Oidc::HEALTH_PATHS
     THRUSTER_PROXY_RANGES = %w[ 127.0.0.1/32 ::1/128 ].map { IPAddr.new(_1).freeze }.freeze
     UNTRUSTED_FORWARDED_HEADERS = %w[
       HTTP_CLIENT_IP
@@ -79,7 +79,7 @@ module Oidc
           "content-length" => INVALID_ATTRIBUTION_BODY.bytesize.to_s
         }
         headers["cache-control"] = "no-store" if security_endpoint?(env["PATH_INFO"])
-        [ 421, headers, [ INVALID_ATTRIBUTION_BODY ] ]
+        [ 421, Oidc.security_headers(headers), [ INVALID_ATTRIBUTION_BODY ] ]
       end
 
       def security_endpoint?(path)

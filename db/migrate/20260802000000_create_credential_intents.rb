@@ -1,5 +1,7 @@
+require "campfire_backup/upgrade_recovery_guard"
+
 class CreateCredentialIntents < ActiveRecord::Migration[8.2]
-  def change
+  def up
     create_table :credential_intents do |t|
       t.string :purpose, null: false
       t.string :token_digest, null: false
@@ -24,5 +26,11 @@ class CreateCredentialIntents < ActiveRecord::Migration[8.2]
     add_check_constraint :credential_intents,
       "credential_digest IS NULL OR (length(credential_digest) = 64 AND credential_digest NOT GLOB '*[^0-9a-f]*')",
       name: "credential_intents_credential_digest"
+  end
+
+  def down
+    CampfireBackup::UpgradeRecoveryGuard.authorize_destructive_rollback!(migration: self.class.name)
+
+    drop_table :credential_intents
   end
 end

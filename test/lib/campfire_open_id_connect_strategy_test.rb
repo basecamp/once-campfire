@@ -157,6 +157,29 @@ class CampfireOpenIdConnectStrategyTest < ActiveSupport::TestCase
     end
   end
 
+  test "uses only JWKs whose optional metadata permits signature verification" do
+    configure_oidc
+    signing_key = OpenSSL::PKey::RSA.generate(2048)
+    valid = JSON::JWK.new(signing_key.public_key).merge("use" => "sig", "key_ops" => [ "verify" ])
+    invalid_keys = [
+      JSON::JWK.new(signing_key.public_key).merge("use" => "enc"),
+      JSON::JWK.new(signing_key.public_key).merge("key_ops" => [ "sign" ]),
+      JSON::JWK.new(signing_key.public_key).merge("key_ops" => "verify"),
+      JSON::JWK.new(signing_key.public_key).merge("key_ops" => [ "verify", 1 ])
+    ]
+
+    invalid_keys.each do |invalid|
+      assert_raises(Oidc::EndpointError) do
+        @strategy.send(:validate_signing_key_strength!, JSON::JWK::Set.new(invalid), invalid["kid"])
+      end
+    end
+
+    filtered = @strategy.send(
+      :validate_signing_key_strength!, JSON::JWK::Set.new(valid, *invalid_keys), nil
+    )
+    assert_equal [ valid["kid"] ], filtered.map { _1["kid"] }
+  end
+
   test "rejects recursive SWD discovery redirects without following them" do
     configure_oidc
     discovery_url = "https://idp.example.com/.well-known/openid-configuration"

@@ -5,6 +5,7 @@ require "digest"
 require "fileutils"
 require "json"
 require "open3"
+require "securerandom"
 require "tempfile"
 require "time"
 require "uri"
@@ -14,6 +15,10 @@ class ReleaseObjectLockAnchors
   FORMAT_VERSION = 1
   ANCHOR_SET_FORMAT_VERSION = 2
   EVIDENCE_FORMAT_VERSION = 1
+  DESTRUCTIVE_CONTROL_RETENTION_SECONDS = 10
+  DESTRUCTIVE_CONTROL_EXPIRY_MARGIN_SECONDS = 2
+  DESTRUCTIVE_CONTROL_NAMESPACE = ".destructive-authority-controls"
+  DESTRUCTIVE_CONTROL_NAME_PATTERN = /\Acontrol-([0-9a-f]{32})\.json\z/
   IGNORE_CONFIGURED_ENDPOINT_URLS = true
   REQUIRED_CONFIGURATION = %w[ PROFILE ACCOUNT_ID BUCKET PREFIX ].freeze
   PROVIDER_ENVIRONMENT_VARIABLE = "RELEASE_JOURNAL_ANCHOR_PROVIDER"
@@ -37,7 +42,8 @@ class ReleaseObjectLockAnchors
 
   class << self
     def from_env!(env: ENV, clock: -> { Time.now.utc }, executor: nil,
-        fault_after: ->(_anchor, _kind, _revision) { })
+        fault_after: ->(_anchor, _kind, _revision) { },
+        control_clock: -> { Time.now.utc }, sleeper: ->(duration) { sleep duration })
       provider, anchors, anchor_set = configuration_from_env!(env)
       expected_digest = env[EXPECTED_ANCHOR_SET_DIGEST_ENVIRONMENT_VARIABLE].to_s
       if expected_digest.empty?
@@ -49,7 +55,8 @@ class ReleaseObjectLockAnchors
       end
 
       new(
-        anchors:, provider:, anchor_set:, environment: env, clock:, executor:, fault_after:
+        anchors:, provider:, anchor_set:, environment: env, clock:, executor:, fault_after:,
+        control_clock:, sleeper:
       ).tap(&:validate!)
     end
 
@@ -128,12 +135,17 @@ class ReleaseObjectLockAnchors
   alias_method :identity, :anchor_set
 
   def initialize(anchors:, provider:, anchor_set:, environment: ENV, clock: -> { Time.now.utc }, executor: nil,
-      fault_after: ->(_anchor, _kind, _revision) { })
+      fault_after: ->(_anchor, _kind, _revision) { },
+      control_clock: -> { Time.now.utc }, sleeper: ->(duration) { sleep duration })
     @anchors = anchors
     @provider = provider
     @anchor_set = JSON.parse(JSON.generate(anchor_set)).freeze
     @clock = clock
+    @control_clock = control_clock
+    @sleeper = sleeper
     @fault_after = fault_after
+    @destructive_authority = {}
+    @default_retentions = {}
     @environment = SAFE_ENVIRONMENT.filter_map do |name|
       [ name, environment[name] ] if environment.key?(name)
     end.to_h.merge(
@@ -172,6 +184,9 @@ class ReleaseObjectLockAnchors
       unless object_lock.fetch("ObjectLockEnabled", nil) == "Enabled"
         raise Error, "Release journal anchor #{anchor.number} Object Lock is not enabled"
       end
+      @default_retentions[anchor.number] = validate_default_retention!(
+        anchor, object_lock["Rule"]
+      )
     end
     @validated = true
   rescue SystemCallError
@@ -300,6 +315,26 @@ class ReleaseObjectLockAnchors
   end
 
   private
+    def validate_default_retention!(anchor, rule)
+      return unless rule
+
+      unless rule.is_a?(Hash) && rule.keys == [ "DefaultRetention" ]
+        raise Error, "Release journal anchor #{anchor.number} default retention rule is invalid"
+      end
+      retention = rule.fetch("DefaultRetention")
+      period_keys = %w[ Days Years ].select { retention&.key?(_1) }
+      unless retention.is_a?(Hash) &&
+          (retention.keys - %w[ Days Mode Years ]).empty? &&
+          %w[ COMPLIANCE GOVERNANCE ].include?(retention["Mode"]) &&
+          period_keys.one? && retention.fetch(period_keys.sole).is_a?(Integer) &&
+          retention.fetch(period_keys.sole).positive?
+        raise Error, "Release journal anchor #{anchor.number} default retention rule is invalid"
+      end
+      JSON.parse(JSON.generate(retention))
+    rescue KeyError, NoMethodError
+      raise Error, "Release journal anchor #{anchor.number} default retention rule is invalid"
+    end
+
     def evidence_context!(journal, contract_key)
       validate! unless @validated
       validate_local_anchor_set!({ journal: })
@@ -588,8 +623,17 @@ class ReleaseObjectLockAnchors
     end
 
     def load_operation_catalog(anchor)
-      prefix = full_key(anchor, "catalog/operations/")
+      scope = full_key(anchor, "catalog/operations")
+      prefix = "#{scope}/"
       inventory = list_versions(anchor, prefix)
+      control_prefix = destructive_control_prefix(scope)
+      controls = inventory.transform_values do |entries|
+        entries.select { _1.fetch("Key").start_with?(control_prefix) }
+      end
+      recover_stale_destructive_controls!(anchor, scope, inventory: controls) if controls.values.any?(&:any?)
+      inventory = inventory.transform_values do |entries|
+        entries.reject { _1.fetch("Key").start_with?(control_prefix) }
+      end
       unless inventory.fetch(:delete_markers).empty?
         raise Error, "Release journal anchor #{anchor.number} contains an operation-catalog deletion marker"
       end
@@ -951,13 +995,265 @@ class ReleaseObjectLockAnchors
         end
       end
 
-      _stdout, _stderr, deletion = execute(
+      prove_destructive_authority! anchor, protected_key: key
+      delete_stdout, delete_stderr, deletion = execute(
         anchor, "s3api", "delete-object", *bucket_arguments(anchor), "--key", key,
         "--version-id", version.fetch("VersionId")
       )
       if deletion.success?
         raise Error, "Release journal anchor #{anchor.number} accepted deletion during COMPLIANCE retention"
       end
+      exact_resource_delete_authorized =
+        s3_delete_error_code(delete_stdout, delete_stderr, deletion) == "AccessDenied" &&
+        prove_exact_resource_delete_authority!(anchor, key, version.fetch("VersionId"))
+      unless compliance_delete_rejection?(
+        delete_stdout, delete_stderr, deletion,
+        exact_resource_delete_authorized:
+      )
+        raise Error,
+          "Release journal anchor #{anchor.number} did not return the expected COMPLIANCE retention rejection"
+      end
+      preserved = exact_versions(anchor, key)
+      unless preserved.fetch(:versions).one? && preserved.fetch(:delete_markers).empty? &&
+          preserved.fetch(:versions).sole.fetch("VersionId") == version.fetch("VersionId")
+        raise Error, "Release journal anchor #{anchor.number} changed the retained object after rejected deletion"
+      end
+    end
+
+    def prove_exact_resource_delete_authority!(anchor, key, protected_version_id)
+      # Removing an unretained marker proves DeleteObjectVersion authority on the protected key itself.
+      stdout, stderr, status = execute(
+        anchor, "s3api", "delete-object", *bucket_arguments(anchor), "--key", key
+      )
+      unless status.success?
+        raise Error,
+          "Release journal anchor #{anchor.number} could not create its exact-resource delete marker: #{stderr}#{stdout}"
+      end
+      response = JSON.parse(stdout)
+      marker_version_id = response.fetch("VersionId")
+      unless response.fetch("DeleteMarker") == true && marker_version_id.is_a?(String) &&
+          marker_version_id.bytesize.between?(1, 1_024) && marker_version_id != "null" &&
+          !marker_version_id.match?(/[[:cntrl:]]/)
+        raise Error, "Release journal anchor #{anchor.number} exact-resource delete marker is invalid"
+      end
+
+      marked = exact_versions(anchor, key)
+      unless marked.fetch(:versions).one? &&
+          marked.fetch(:versions).sole.fetch("VersionId") == protected_version_id &&
+          marked.fetch(:delete_markers).one? &&
+          marked.fetch(:delete_markers).sole.fetch("VersionId") == marker_version_id
+        raise Error, "Release journal anchor #{anchor.number} exact-resource delete marker is invalid"
+      end
+
+      delete_stdout, delete_stderr, deletion = execute(
+        anchor, "s3api", "delete-object", *bucket_arguments(anchor), "--key", key,
+        "--version-id", marker_version_id
+      )
+      unless deletion.success?
+        raise Error,
+          "Release journal anchor #{anchor.number} lacks exact-resource destructive version-delete authority: #{delete_stderr}#{delete_stdout}"
+      end
+      restored = exact_versions(anchor, key)
+      unless restored.fetch(:versions).one? && restored.fetch(:delete_markers).empty? &&
+          restored.fetch(:versions).sole.fetch("VersionId") == protected_version_id
+        raise Error, "Release journal anchor #{anchor.number} exact-resource delete marker was not deleted"
+      end
+      true
+    rescue JSON::ParserError, KeyError, NoMethodError, ArgumentError
+      raise Error, "Release journal anchor #{anchor.number} exact-resource delete-marker response is invalid"
+    end
+
+    def prove_destructive_authority!(anchor, protected_key:)
+      scope = destructive_authority_scope!(anchor, protected_key)
+      authority_key = [ anchor.number, scope ]
+      return true if @destructive_authority[authority_key]
+
+      recover_stale_destructive_controls!(anchor, scope)
+      nonce = SecureRandom.hex(16)
+      key = "#{destructive_control_prefix(scope)}control-#{nonce}.json"
+      source = destructive_control_source(anchor, scope, nonce)
+      digest = Digest::SHA256.hexdigest(source)
+      response = nil
+      control_retain_until = if @default_retentions[anchor.number]
+        deadline = @control_clock.call.utc + DESTRUCTIVE_CONTROL_RETENTION_SECONDS
+        Time.at(deadline.to_i).utc
+      end
+      with_body(source) do |path|
+        retention_arguments = if control_retain_until
+          [
+            "--object-lock-mode", "COMPLIANCE",
+            "--object-lock-retain-until-date", control_retain_until.iso8601
+          ]
+        else
+          []
+        end
+        stdout, stderr, status = execute(
+          anchor, "s3api", "put-object", *bucket_arguments(anchor), "--key", key,
+          "--body", path, "--content-type", "application/json",
+          "--checksum-algorithm", "SHA256",
+          "--checksum-sha256", Base64.strict_encode64([ digest ].pack("H*")),
+          "--metadata", "sha256=#{digest},kind=destructive-authority-control",
+          *retention_arguments,
+          "--if-none-match", "*"
+        )
+        unless status.success?
+          raise Error,
+            "Release journal anchor #{anchor.number} could not create its destructive-authority control: #{stderr}#{stdout}"
+        end
+        response = JSON.parse(stdout)
+      end
+      version_id = response.fetch("VersionId")
+      inventory = exact_versions(anchor, key)
+      unless inventory.fetch(:versions).one? && inventory.fetch(:delete_markers).empty? &&
+          validate_destructive_control!(anchor, scope, key, inventory.fetch(:versions).sole) == version_id
+        raise Error, "Release journal anchor #{anchor.number} destructive-authority control is invalid"
+      end
+
+      wait_for_destructive_control_expiry!(anchor, key, version_id, expected_until: control_retain_until)
+      delete_destructive_control!(anchor, key, version_id, recovery: false)
+      @destructive_authority[authority_key] = true
+    rescue JSON::ParserError, KeyError, NoMethodError, ArgumentError
+      raise Error, "Release journal anchor #{anchor.number} destructive-authority response is invalid"
+    end
+
+    def recover_stale_destructive_controls!(anchor, scope, inventory: nil)
+      inventory ||= list_versions(anchor, destructive_control_prefix(scope))
+      grouped = inventory.fetch(:versions).group_by { _1.fetch("Key") }
+      unless inventory.fetch(:delete_markers).empty? && grouped.values.all?(&:one?)
+        raise Error, "Release journal anchor #{anchor.number} stale destructive-authority control inventory is invalid"
+      end
+
+      grouped.each do |key, versions|
+        version_id = validate_destructive_control!(anchor, scope, key, versions.sole)
+        wait_for_destructive_control_expiry!(anchor, key, version_id)
+        delete_destructive_control!(anchor, key, version_id, recovery: true)
+      end
+      true
+    rescue KeyError, NoMethodError, ArgumentError
+      raise Error, "Release journal anchor #{anchor.number} stale destructive-authority control response is invalid"
+    end
+
+    def validate_destructive_control!(anchor, scope, key, version)
+      control_prefix = destructive_control_prefix(scope)
+      name = key.delete_prefix(control_prefix)
+      nonce = DESTRUCTIVE_CONTROL_NAME_PATTERN.match(name)&.[](1) if key.start_with?(control_prefix)
+      unless nonce
+        raise Error, "Release journal anchor #{anchor.number} stale destructive-authority control address is invalid"
+      end
+
+      source = destructive_control_source(anchor, scope, nonce)
+      digest = Digest::SHA256.hexdigest(source)
+      checksum = Base64.strict_encode64([ digest ].pack("H*"))
+      version_id = version.fetch("VersionId")
+      head = json_command!(
+        anchor, "s3api", "head-object", *bucket_arguments(anchor), "--key", key,
+        "--version-id", version_id, "--checksum-mode", "ENABLED"
+      )
+      unless version_id.is_a?(String) && version_id.bytesize.between?(1, 1_024) &&
+          version_id != "null" && !version_id.match?(/[[:cntrl:]]/) &&
+          version.fetch("Size") == source.bytesize && head.fetch("VersionId") == version_id &&
+          head.fetch("ContentLength") == source.bytesize && head.fetch("ChecksumSHA256") == checksum &&
+          head.fetch("Metadata") == { "sha256" => digest, "kind" => "destructive-authority-control" }
+        raise Error, "Release journal anchor #{anchor.number} stale destructive-authority control is invalid"
+      end
+      version_id
+    end
+
+    def wait_for_destructive_control_expiry!(anchor, key, version_id, expected_until: nil)
+      retention = json_command!(
+        anchor, "s3api", "get-object-retention", *bucket_arguments(anchor),
+        "--key", key, "--version-id", version_id
+      ).fetch("Retention")
+      if retention.empty?
+        if expected_until
+          raise Error,
+            "Release journal anchor #{anchor.number} destructive-authority control must use exact COMPLIANCE retention"
+        end
+        return true
+      end
+
+      unless retention.keys.sort == %w[ Mode RetainUntilDate ] && retention.fetch("Mode") == "COMPLIANCE"
+        raise Error,
+          "Release journal anchor #{anchor.number} destructive-authority control must use exact COMPLIANCE retention"
+      end
+      observed_until = Time.iso8601(retention.fetch("RetainUntilDate")).utc
+      if expected_until && observed_until != expected_until
+        raise Error,
+          "Release journal anchor #{anchor.number} destructive-authority control must use exact COMPLIANCE retention"
+      end
+      now = @control_clock.call.utc
+      if !expected_until && observed_until >
+          now + DESTRUCTIVE_CONTROL_RETENTION_SECONDS + DESTRUCTIVE_CONTROL_EXPIRY_MARGIN_SECONDS
+        raise Error,
+          "Release journal anchor #{anchor.number} stale destructive-authority control retention exceeds its bounded recovery window"
+      end
+      wait = observed_until + DESTRUCTIVE_CONTROL_EXPIRY_MARGIN_SECONDS - now
+      @sleeper.call(wait) if wait.positive?
+      unless @control_clock.call.utc > observed_until
+        raise Error, "Release journal anchor #{anchor.number} destructive-authority control is still retained"
+      end
+      true
+    end
+
+    def delete_destructive_control!(anchor, key, version_id, recovery:)
+      stdout, stderr, status = execute(
+        anchor, "s3api", "delete-object", *bucket_arguments(anchor), "--key", key,
+        "--version-id", version_id
+      )
+      remaining = exact_versions(anchor, key)
+      deleted = remaining.fetch(:versions).empty? && remaining.fetch(:delete_markers).empty?
+      return true if recovery && !status.success? && deleted
+      unless status.success?
+        raise Error,
+          "Release journal anchor #{anchor.number} lacks destructive version-delete authority: #{stderr}#{stdout}"
+      end
+      unless deleted
+        raise Error, "Release journal anchor #{anchor.number} destructive-authority control was not deleted"
+      end
+      true
+    end
+
+    def destructive_control_prefix(scope)
+      "#{scope}/#{DESTRUCTIVE_CONTROL_NAMESPACE}/"
+    end
+
+    def destructive_control_source(anchor, scope, nonce)
+      JSON.generate(
+        "format_version" => 1, "kind" => "destructive-authority-control",
+        "namespace" => scope.delete_prefix("#{anchor.prefix}/"), "nonce" => nonce
+      ) << "\n"
+    end
+
+    def destructive_authority_scope!(anchor, key)
+      prefix = "#{anchor.prefix}/"
+      unless key.start_with?(prefix)
+        raise Error, "Release journal anchor #{anchor.number} destructive-authority key is outside its namespace"
+      end
+      relative = key.delete_prefix(prefix)
+      if relative.start_with?("catalog/operations/")
+        full_key(anchor, "catalog/operations")
+      elsif match = relative.match(/\Areleases\/([0-9a-f]{64})\//)
+        full_key(anchor, "releases/#{match[1]}")
+      else
+        raise Error,
+          "Release journal anchor #{anchor.number} retained object has no destructive-authority namespace"
+      end
+    end
+
+    def compliance_delete_rejection?(stdout, stderr, status, exact_resource_delete_authorized:)
+      exact_resource_delete_authorized &&
+        s3_delete_error_code(stdout, stderr, status) == "AccessDenied"
+    end
+
+    def s3_delete_error_code(stdout, stderr, status)
+      return false unless status.respond_to?(:exited?) && status.exited? &&
+        !status.success? && status.exitstatus&.positive?
+
+      output = "#{stdout}\n#{stderr}"
+      return false if output.match?(
+        /timeout|timed out|connection|network|no such host|tls|certificate|unknown command|unsupported|not implemented/i
+      )
+      output[/An error occurred \(([^)]+)\) when calling the DeleteObject operation:/i, 1]
     end
 
     def read_object!(anchor, key, expected_sha256: nil, expected_kind:, required_until: nil, version: nil)

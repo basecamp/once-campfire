@@ -1,35 +1,49 @@
 class Identity < ApplicationRecord
   class AuthenticationError < StandardError; end
 
+  PreparedAuthentication = Data.define(:claims, :issuer, :subject) do
+    def complete!(linking_user: nil, linking_authorization: nil)
+      Identity.send(
+        :complete_authentication!, self, linking_user:, linking_authorization:
+      )
+    end
+  end
+
   CLOCK_SKEW = 1.minute.to_i
   MAXIMUM_IDENTIFIER_LENGTH = 255
   SCIM_ID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+  SUBJECT_DEPROVISIONING_SCIM_ID = "00000000-0000-0000-0000-000000000000"
 
   belongs_to :user
   has_many :sessions, dependent: :delete_all
 
   before_validation :set_provider_fingerprint, :set_scim_id, on: :create
+  before_create :reject_deprovisioned_subject
 
   validates :issuer, :subject, :provider_fingerprint, presence: true, length: { maximum: MAXIMUM_IDENTIFIER_LENGTH }
-  validates :scim_id, presence: true, uniqueness: true, format: { with: SCIM_ID_PATTERN }
+  validates :scim_id, presence: true, uniqueness: true, format: { with: SCIM_ID_PATTERN },
+    exclusion: { in: [ SUBJECT_DEPROVISIONING_SCIM_ID ] }
   validates :subject, uniqueness: { scope: :issuer }
   validates :user_id, uniqueness: { scope: :issuer }
   validate :immutable_identity_binding, :permanent_provider_revocation, on: :update
 
   class << self
     def authenticate(auth, linking_user: nil, linking_authorization: nil)
-      claims = validated_claims(auth)
-      issuer = claims.fetch("iss")
-      subject = claims.fetch("sub")
-      validate_linking_authorization! linking_user, linking_authorization, issuer, subject if linking_user
-
-      if identity = find_by(issuer:, subject:)
-        return authenticate_existing! identity, claims, linking_user
+      with_authentication_fence(auth) do |authentication|
+        authentication.complete!(linking_user:, linking_authorization:)
       end
+    end
 
-      link_identity!(issuer:, subject:, claims:, linking_user:)
-    rescue ActiveRecord::RecordNotUnique
-      authenticate_existing! find_by(issuer:, subject:), claims, linking_user
+    def with_authentication_fence(auth)
+      claims = validated_claims(auth)
+      authentication = PreparedAuthentication.new(
+        claims:, issuer: claims.fetch("iss"), subject: claims.fetch("sub")
+      )
+      User::MutationFence.with_identity_subject(
+        issuer: authentication.issuer, subject: authentication.subject
+      ) { yield authentication }
+    rescue User::MutationFence::Unavailable
+      raise AuthenticationError, "identity_policy_unavailable"
     rescue KeyError, TypeError, ArgumentError
       raise AuthenticationError, "invalid_claims"
     end
@@ -120,6 +134,29 @@ class Identity < ApplicationRecord
         else
           raise AuthenticationError, "password_reauthentication_required"
         end
+      end
+
+      def complete_authentication!(authentication, linking_user:, linking_authorization:)
+        claims = authentication.claims
+        issuer = authentication.issuer
+        subject = authentication.subject
+        unless User::MutationFence.identity_subject_held?(issuer:, subject:)
+          raise AuthenticationError, "identity_policy_unavailable"
+        end
+        validate_linking_authorization! linking_user, linking_authorization, issuer, subject if linking_user
+        raise AuthenticationError, "identity_revoked" if Identity::Deprovisioning.blocked?(issuer:, subject:)
+
+        if identity = find_by(issuer:, subject:)
+          return authenticate_existing! identity, claims, linking_user
+        end
+
+        link_identity!(issuer:, subject:, claims:, linking_user:)
+      rescue ActiveRecord::RecordNotUnique
+        raise AuthenticationError, "identity_revoked" if Identity::Deprovisioning.blocked?(issuer:, subject:)
+
+        authenticate_existing! find_by(issuer:, subject:), claims, linking_user
+      rescue KeyError, TypeError, ArgumentError
+        raise AuthenticationError, "invalid_claims"
       end
 
       def link_identity!(issuer:, subject:, claims:, linking_user:)
@@ -243,6 +280,13 @@ class Identity < ApplicationRecord
 
     def set_scim_id
       self.scim_id ||= SecureRandom.uuid
+    end
+
+    def reject_deprovisioned_subject
+      if Identity::Deprovisioning.blocked?(issuer:, subject:)
+        errors.add :base, "identity was deprovisioned by its provider"
+        throw :abort
+      end
     end
 
     def immutable_identity_binding

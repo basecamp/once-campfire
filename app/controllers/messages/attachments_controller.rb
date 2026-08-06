@@ -2,6 +2,8 @@ class Messages::AttachmentsController < ApplicationController
   include ActiveStorage::Streaming, RoomScoped
 
   RANGE_CHUNK_SIZE = 1.megabyte
+  FullStreamClosed = Class.new(StandardError)
+  private_constant :FullStreamClosed
 
   rescue_from ActiveRecord::RecordNotFound, with: :not_found
   before_action :set_private_cache
@@ -18,6 +20,8 @@ class Messages::AttachmentsController < ApplicationController
       send_blob_full_stream(representation, disposition:)
     end
   rescue ActiveStorage::FileNotFoundError, ActiveStorage::InvariableError, ActiveStorage::UnpreviewableError
+    raise if response.committed?
+
     not_found
   end
 
@@ -71,15 +75,27 @@ class Messages::AttachmentsController < ApplicationController
     end
 
     def send_blob_full_stream(blob, disposition:)
+      download = Fiber.new(blocking: true) do
+        blob.download { |chunk| Fiber.yield chunk }
+        nil
+      end
+      chunk = download.resume
+
       send_stream(
         filename: blob.filename.sanitized,
         disposition: blob.forced_disposition_for_serving || disposition,
         type: blob.content_type_for_serving
       ) do |stream|
-        blob.download { |chunk| stream.write chunk }
+        while chunk
+          stream.write chunk
+          chunk = download.resume
+        end
       end
-    rescue ActiveStorage::FileNotFoundError
-      not_found
+    ensure
+      begin
+        download.raise FullStreamClosed if download&.alive?
+      rescue FullStreamClosed
+      end
     end
 
     def download_exact_chunk(blob, range)
@@ -101,9 +117,9 @@ class Messages::AttachmentsController < ApplicationController
 
     def not_found
       set_private_cache
-      response.headers.delete("Accept-Ranges")
-      response.headers.delete("Content-Range")
-      response.headers.delete("Content-Length")
+      response.delete_header("Accept-Ranges")
+      response.delete_header("Content-Range")
+      response.delete_header("Content-Length")
       head :not_found
     end
 end

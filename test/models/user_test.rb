@@ -44,9 +44,20 @@ class UserTest < ActiveSupport::TestCase
   end
 
   test "deactivating a user deletes their sessions" do
-    assert_changes -> { users(:david).sessions.count }, from: 1, to: 0 do
+    user = users(:david)
+    user.sessions.start!(user_agent: "Second browser", ip_address: "192.0.2.2")
+    channel = ApplicationCable::Connection.user_internal_channel(user)
+
+    assert_difference -> { ActionCable.server.pubsub.broadcasts(channel).size }, 1 do
+    assert_changes -> { user.sessions.count }, from: 2, to: 0 do
       users(:david).deactivate_by! actor: users(:jason)
     end
+    end
+
+    payload = ActiveSupport::JSON.decode(ActionCable.server.pubsub.broadcasts(channel).last)
+    assert_equal({
+      "type" => "disconnect", "reason" => Session::REVOKED_REASON, "reconnect" => false
+    }, payload)
   end
 
   private

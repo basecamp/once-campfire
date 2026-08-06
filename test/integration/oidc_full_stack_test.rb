@@ -7,6 +7,7 @@ class OidcFullStackTest < ActionDispatch::IntegrationTest
     @forgery_protection = ActionController::Base.allow_forgery_protection
     ActionController::Base.allow_forgery_protection = true
     Rails.cache.stubs(:increment).returns(1)
+    Oidc::Readiness.stubs(:ready?).returns(true)
     host! Oidc.configuration.redirect_host
     https!
     Resolv.stubs(:getaddresses).with("idp.example.com").returns([ "93.184.216.34" ])

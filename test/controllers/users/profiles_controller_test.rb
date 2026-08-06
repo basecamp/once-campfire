@@ -68,6 +68,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
       authentication_method: "oidc",
       identity_id: identity.id,
       oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+      oidc_session_generation: Oidc::SessionGeneration.current!,
       oidc_issued_at: Time.current.to_i,
       expires_at: 1.hour.from_now
     )
@@ -95,6 +96,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
       authentication_method: "oidc",
       identity_id: identity.id,
       oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+      oidc_session_generation: Oidc::SessionGeneration.current!,
       oidc_issued_at: Time.current.to_i,
       expires_at: 1.hour.from_now
     )

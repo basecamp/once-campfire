@@ -6,6 +6,7 @@ class BindTransferIntentsToAuthorizationTest < ActiveSupport::TestCase
   self.use_transactional_tests = false
 
   PREVIOUS_SCHEMA_VERSION = 20260802010000
+  MIGRATION_VERSION = 20260803000000
 
   test "revokes existing transfer intents and requires authorization binding" do
     with_temporary_database do |connection, context|
@@ -15,7 +16,7 @@ class BindTransferIntentsToAuthorizationTest < ActiveSupport::TestCase
       insert_intent(connection, id: 2, purpose: "transfer_grant", token: "c", user_id: 1)
       insert_intent(connection, id: 3, purpose: "transfer", token: "d", user_id: 1)
 
-      context.up
+      context.up(MIGRATION_VERSION)
 
       assert_equal [ [ 1, "join" ] ], connection.select_rows(
         "SELECT id, purpose FROM credential_intents ORDER BY id"
@@ -30,7 +31,7 @@ class BindTransferIntentsToAuthorizationTest < ActiveSupport::TestCase
 
   test "rollback restores the previous nullable transfer contract" do
     with_temporary_database do |connection, context|
-      context.up
+      context.up(MIGRATION_VERSION)
       insert_user(connection)
       insert_intent(connection, id: 1, purpose: "transfer", token: "a", credential: "b", user_id: 1)
 
@@ -40,6 +41,27 @@ class BindTransferIntentsToAuthorizationTest < ActiveSupport::TestCase
       insert_intent(connection, id: 2, purpose: "transfer_grant", token: "c", user_id: 1)
       assert_raises(ActiveRecord::StatementInvalid) do
         insert_intent(connection, id: 3, purpose: "transfer", token: "d", credential: "e", user_id: 1)
+      end
+    end
+  end
+
+  test "direct production rollback authorizes before clearing credential bindings" do
+    with_temporary_database do |connection, context|
+      context.up(MIGRATION_VERSION)
+      insert_user(connection)
+      insert_intent(connection, id: 1, purpose: "transfer", token: "a", credential: "b", user_id: 1)
+
+      error = with_environment("RAILS_ENV" => "production") do
+        assert_raises(ActiveRecord::IrreversibleMigration) do
+          BindTransferIntentsToAuthorization.new.down
+        end
+      end
+
+      assert_match "separately authenticated rollback archive", error.message
+      assert_equal "b" * 64,
+        connection.select_value("SELECT credential_digest FROM credential_intents WHERE id = 1")
+      assert_raises(ActiveRecord::StatementInvalid) do
+        insert_intent(connection, id: 2, purpose: "transfer_grant", token: "c", user_id: 1)
       end
     end
   end
@@ -76,5 +98,13 @@ class BindTransferIntentsToAuthorizationTest < ActiveSupport::TestCase
            #{connection.quote(credential && credential * 64)}, #{connection.quote(user_id)},
            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       SQL
+    end
+
+    def with_environment(values)
+      previous = values.to_h { |key, _| [ key, ENV[key] ] }
+      values.each { |key, value| value ? ENV[key] = value : ENV.delete(key) }
+      yield
+    ensure
+      previous.each { |key, value| value ? ENV[key] = value : ENV.delete(key) }
     end
 end

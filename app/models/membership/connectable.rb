@@ -53,6 +53,7 @@ module Membership::Connectable
       changed = delete_presence(tokens, presence)
       update_presence_tokens(tokens, now:) if changed || tokens != stored_tokens
     end
+    Message::Effect.advance_presence_reconciliation_for(self) if changed
     changed
   rescue ActiveRecord::RecordNotFound
     false

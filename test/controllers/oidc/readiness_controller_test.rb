@@ -27,6 +27,36 @@ class Oidc::ReadinessControllerTest < ActionDispatch::IntegrationTest
     assert_equal({ "status" => "not_ready" }, response.parsed_body)
   end
 
+  test "reports enabled mode as unavailable without required cache semantics" do
+    configure_oidc
+    Oidc::Readiness.stubs(:ready?).returns(false)
+
+    get oidc_readiness_check_url
+
+    assert_response :service_unavailable
+    assert_equal({ "status" => "not_ready" }, response.parsed_body)
+  end
+
+  test "reports enabled mode as unavailable without subject tombstone storage" do
+    configure_oidc
+    Identity::Deprovisioning.stubs(:ready?).returns(false)
+
+    get oidc_readiness_check_url
+
+    assert_response :service_unavailable
+    assert_equal({ "status" => "not_ready" }, response.parsed_body)
+  end
+
+  test "reports enabled mode as unavailable without the subject-fence filesystem" do
+    configure_oidc
+    User::MutationFence.stubs(:ready?).returns(false)
+
+    get oidc_readiness_check_url
+
+    assert_response :service_unavailable
+    assert_equal({ "status" => "not_ready" }, response.parsed_body)
+  end
+
   test "reports rollback quarantine as unavailable even with OIDC disabled" do
     accounts(:signal).update!(oidc_transition_state: "rollback_prepared")
 

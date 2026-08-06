@@ -85,11 +85,13 @@ class CreateIdentities < ActiveRecord::Migration[8.2]
       name: MESSAGE_CLIENT_ID_INDEX_NAME
 
     add_column :rooms, :direct_participant_key, :string
-    backfill_canonical_direct_rooms!
+    backfill_direct_rooms!
     add_index :rooms, :direct_participant_key, unique: true,
       where: "direct_participant_key IS NOT NULL", name: DIRECT_ROOM_INDEX_NAME
     add_check_constraint :rooms,
-      "type = 'Rooms::Direct' OR direct_participant_key IS NULL", name: DIRECT_ROOM_CONSTRAINT_NAME
+      "(type = 'Rooms::Direct' AND direct_participant_key IS NOT NULL) OR " \
+        "(type <> 'Rooms::Direct' AND direct_participant_key IS NULL)",
+      name: DIRECT_ROOM_CONSTRAINT_NAME
 
     add_column :memberships, :presence_generation, :integer, null: false, default: 0
     add_column :memberships, :presence_tokens, :json, null: false, default: {}
@@ -386,14 +388,18 @@ class CreateIdentities < ActiveRecord::Migration[8.2]
       end
     end
 
-    def backfill_canonical_direct_rooms!
+    def backfill_direct_rooms!
       claimed_keys = Set.new
       select_values("SELECT id FROM rooms WHERE type = 'Rooms::Direct' ORDER BY id").each do |room_id|
         participant_ids = select_values(<<~SQL).map(&:to_i).sort
           SELECT user_id FROM memberships WHERE room_id = #{connection.quote(room_id)}
         SQL
-        key = "v1:#{Digest::SHA256.hexdigest(participant_ids.join(":"))}"
-        next unless claimed_keys.add?(key)
+        canonical_key = "v1:#{Digest::SHA256.hexdigest(participant_ids.join(":"))}"
+        key = if claimed_keys.add?(canonical_key)
+          canonical_key
+        else
+          "legacy:#{room_id}:#{canonical_key}"
+        end
 
         execute <<~SQL
           UPDATE rooms

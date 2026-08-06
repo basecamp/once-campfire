@@ -21,6 +21,7 @@ class Oidc::LogoutCallbackConcurrencyTest < ActiveSupport::TestCase
 
   test "a callback committing concurrently before logout leaves no provider session" do
     issued_at = Time.current.to_i
+    generation = Oidc::SessionGeneration.current!
     callback_guarded = Queue.new
     release_callback = Queue.new
     logout_started = Queue.new
@@ -38,6 +39,7 @@ class Oidc::LogoutCallbackConcurrencyTest < ActiveSupport::TestCase
           Session.create!(
             user:, identity: @identity, authentication_method: "oidc",
             oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+            oidc_session_generation: generation,
             oidc_session_id: "concurrent-provider-session", oidc_issued_at: issued_at,
             expires_at: 1.hour.from_now, user_agent: "Browser", ip_address: "192.0.2.1"
           )

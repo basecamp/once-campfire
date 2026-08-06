@@ -98,7 +98,7 @@ class Oidc::SessionsControllerTest < ActionDispatch::IntegrationTest
     subscription.update_column(:session_id, existing_session.id)
     flow = consumed_flow(initiating_session_id: existing_session.id)
     Oidc::Flow.cancel!(@browser_token)
-    Identity.expects(:authenticate).never
+    Identity::PreparedAuthentication.any_instance.expects(:complete!).never
     Oidc::Activation.expects(:record_successful_authentication!).never
 
     assert_no_changes -> { [ Session.count, subscription.reload.session_id, identity.reload.verified_at ] } do

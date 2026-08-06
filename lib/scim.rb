@@ -77,8 +77,12 @@ module Scim
         Identity.table_exists? &&
         Identity.column_names.include?("scim_id") &&
         Identity.column_names.include?("provider_revoked_at") &&
+        Identity::Deprovisioning.ready? &&
         Session.column_names.include?("oidc_session_id") &&
-        Oidc::LogoutToken.ready?
+        Oidc::SessionGeneration.ready? &&
+        Oidc::LogoutToken.ready? &&
+        Oidc::Readiness.ready? &&
+        User::MutationFence.ready?
     rescue Oidc::PolicyUnavailable, ActiveRecord::ActiveRecordError
       false
     end

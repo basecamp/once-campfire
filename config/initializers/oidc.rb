@@ -2,6 +2,34 @@ require "oidc"
 
 Oidc.configuration = Oidc::Configuration.new
 
+if Oidc.production_https?
+  Rails.application.config.assume_ssl = Oidc.built_in_tls?
+  Rails.application.config.force_ssl = true
+  if Oidc.external_https?
+    Rails.application.config.ssl_options = Rails.application.config.ssl_options.deep_merge(
+      redirect: { exclude: ->(request) { Oidc::HEALTH_PATHS.include?(request.path) } }
+    )
+  end
+end
+
+if Oidc.production_https? && Oidc.built_in_tls?
+  Rails.application.config.hosts.replace(Oidc.tls_domains)
+  blocked_host_body = "Use a configured TLS host"
+  Rails.application.config.host_authorization = Rails.application.config.host_authorization.merge(
+    response_app: ->(_env) do
+      [
+        421,
+        Oidc.security_headers(
+          "cache-control" => "no-store",
+          "content-length" => blocked_host_body.bytesize.to_s,
+          "content-type" => "text/plain"
+        ),
+        [ blocked_host_body ]
+      ]
+    end
+  )
+end
+
 if Oidc.enabled?
   require "action_dispatch/middleware/remote_ip"
   require "oidc/activation"

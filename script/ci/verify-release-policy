@@ -283,6 +283,14 @@ if root.join("bin/release").file?
       "script/ci/verify-image-recovery",
       "TARGET_MANIFEST_PATH",
       "CONTAINER_VALIDATION_EVIDENCE",
+      "verify-receipts:",
+      "name: Verify exact architecture receipts",
+      'needs: validate',
+      '"native_host_architecture": "passed"',
+      'run_receipt="$directory/run.json"',
+      'upgrade_receipt="$directory/upgrade-recovery.json"',
+      "run_receipt_sha256",
+      "upgrade_receipt_sha256",
       "name: container-evidence-${{ matrix.arch }}-${{ github.run_attempt }}",
       "retention-days: 30"
     ]
@@ -306,6 +314,12 @@ if root.join("bin/release").file?
     ]
     unless matrix_targets == expected_targets
       errors << "#{relative}: validation matrix must contain exactly linux/amd64 and linux/arm64"
+    end
+    aggregate_receipts = container_workflow.dig("jobs", "verify-receipts")
+    unless aggregate_receipts.is_a?(Hash) &&
+        aggregate_receipts["name"] == "Verify exact architecture receipts" &&
+        aggregate_receipts["needs"] == "validate"
+      errors << "#{relative}: aggregate verify-receipts must depend on the complete native architecture matrix"
     end
     if application_ci
       expected_scopes = [ %w[ main release/** ], %w[ main release/** ] ].sort
@@ -430,9 +444,17 @@ if root.join("bin/release").file?
       "BUILDKIT_MULTI_PLATFORM=1",
       "SOURCE_DATE_EPOCH=${{ steps.vars.outputs.source_date_epoch }}",
       "subject-digest: ${{ steps.image.outputs.runnable_digest }}",
+      '--repo "$GITHUB_REPOSITORY"',
+      '--cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main"',
+      "--cert-oidc-issuer https://token.actions.githubusercontent.com",
       "--signer-workflow \"$GITHUB_REPOSITORY/.github/workflows/publish-image.yml\"",
+      '--bundle "$evidence_directory/${kind}-provenance.bundle.jsonl"',
+      '--bundle "$evidence_directory/index-provenance.bundle.jsonl"',
+      "--cert-identity",
+      '--signer-digest "$RELEASE_SHA"',
       "--source-ref refs/heads/main",
       "--source-digest \"$RELEASE_SHA\"",
+      "--predicate-type https://slsa.dev/provenance/v1",
       "--deny-self-hosted-runners",
       "script/ci/validate-container-image",
       "script/ci/verify-image-recovery",
@@ -463,6 +485,43 @@ if root.join("bin/release").file?
     ]
     required.each do |token|
       errors << "#{relative}: required release evidence control is missing: #{token}" unless publish.include?(token)
+    end
+    release_environment_job = publish_workflow.dig("jobs", "release-environment")
+    release_build_job = publish_workflow.dig("jobs", "build")
+    release_manifest_job = publish_workflow.dig("jobs", "manifest")
+    environment_step = Array(release_environment_job&.fetch("steps", nil)).find do |step|
+      step["name"] == "Verify required reviewers and deployment branch policy"
+    end
+    environment_source = environment_step&.fetch("run", "").to_s
+    unless release_environment_job.is_a?(Hash) &&
+        release_environment_job["if"] == "github.event_name == 'workflow_dispatch'" &&
+        release_environment_job["permissions"] == { "contents" => "read" } &&
+        release_environment_job["needs"] == "verify" &&
+        environment_step&.dig("env", "GH_TOKEN") == "${{ github.token }}"
+      errors << "#{relative}: release environment preflight must be dispatch-only and read-only"
+    end
+    [
+      "repos/$GITHUB_REPOSITORY/environments/release",
+      "required_reviewers", '.prevent_self_review == true', "deployment-branch-policies",
+      '.branch_policies[0].name == "main"', '.branch_policies[0].type == "branch"'
+    ].each do |token|
+      unless environment_source.include?(token)
+        errors << "#{relative}: release environment preflight is missing: #{token}"
+      end
+    end
+    unless Array(release_build_job&.fetch("needs", nil)).sort == %w[ release-environment verify ] &&
+        release_build_job&.fetch("environment", nil) == "release" &&
+        release_manifest_job&.fetch("environment", nil) == "release"
+      errors << "#{relative}: registry-writing jobs must depend on the protected release environment preflight"
+    end
+    if publish.include?("--no-public-good")
+      errors << "#{relative}: Sigstore public-good attestations must permit public-good verification"
+    end
+    current_image_stop_timeout = publish[
+      /docker stop --timeout ([0-9]+) "\$source_container"/, 1
+    ]&.to_i
+    unless current_image_stop_timeout && current_image_stop_timeout >= 70
+      errors << "#{relative}: current-image stop timeout must be at least 70 seconds"
     end
     unless publish.include?('archive_json=$(docker run --rm --user "$(id -u):$(id -g)" --group-add 1000')
       errors << "#{relative}: release archive must use the host identity with Campfire runtime group access"
@@ -546,6 +605,8 @@ if root.join("bin/release").file?
       "artifact_sha256", '"$legacy_artifact_container" "$legacy_artifact_container"',
       "TARGET_MANIFEST_PATH", "CONTAINER_VALIDATION_EVIDENCE",
       "container_validation_sha256", "target_manifest_digest",
+      'transport_mode: "external-https-loopback-probe"',
+      'transport_contract: "passed"',
       "retained_upgrade_receipt_path", '"$evidence_parent/upgrade-recovery.json"',
       '[[ "$retained_receipt" != *"$backup_authentication_key"* ]]',
       '[[ "$retained_receipt" != *"$backup_encryption_key"* ]]',
@@ -624,6 +685,12 @@ if root.join("bin/release").file?
   end
 
   release_source = root.join("bin/release").read
+  unless release_source.include?("RELEASE_JOURNAL_FORMAT_VERSION = 6")
+    errors << "bin/release: generation-bound moving-channel state requires journal format 6"
+  end
+  if release_source.include?("--no-public-good")
+    errors << "bin/release: Sigstore public-good attestations must permit public-good verification"
+  end
   [ root.join("bin/release"), root.join("lib/release_object_lock_anchors.rb") ].each do |path|
     _stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-c", path.to_s)
     errors << "#{path.relative_path_from(root)}: Ruby syntax is invalid: #{stderr}" unless status.success?
@@ -650,6 +717,22 @@ if root.join("bin/release").file?
       registry_immutable_tag_rejection?("", "denied: tag is immutable", rejected) &&
       !registry_immutable_tag_rejection?("", "unauthorized: authentication required", rejected) &&
       !registry_immutable_tag_rejection?("", "dial tcp: connection timed out", rejected)
+    success = Struct.new(:successful) do
+      def success? = successful
+    end.new(true)
+    publication_commands = []
+    publication_runner = lambda do |*command, env:|
+      publication_commands << [ command, env ]
+      success
+    end
+    publish_github_release_without_latest!(
+      repository: "basecamp/once-campfire", tag: "v1.2.3", runner: publication_runner
+    )
+    abort "GitHub publication command count changed" unless publication_commands.length == 1
+    publication_command, publication_environment = publication_commands.fetch(0)
+    abort "GitHub publication still couples latest-channel mutation" unless
+      publication_environment.empty? && publication_command.include?("--latest=false") &&
+      !publication_command.include?("--latest")
     entry = {
       reconciling: false, resuming: false, reconcile_sha: "", git_sha: "c" * 40,
       existing_tag_sha: nil, release_public: false, remote_main_sha: "c" * 40,
@@ -703,7 +786,13 @@ if root.join("bin/release").file?
     "retain_pending_evidence!",
     "restore_pending_evidence!",
     "authenticated_github_release_state!",
-    "validate_github_publication_boundary!"
+    "validate_github_publication_boundary!",
+    "parse_release_reconcile_action!",
+    "authenticate_reconcile_action!",
+    "abandon_pre_promotion_reconciliation!",
+    "verify_retained_provenance_bundle!",
+    "validate_format!",
+    "convergence_generation"
   ].each do |control|
     unless release_main_source.include?(control)
       errors << "bin/release: durable release transition control is missing: #{control}"
@@ -808,7 +897,11 @@ if root.join("bin/release").file?
   releasing_document = root.join("docs/releasing.md")
   if releasing_document.file?
     documentation = releasing_document.read
-    [ "Object Lock", "independently administered Object Lock", "branch protection", "Container validation", "before `promotion.converge!`" ].each do |token|
+    [
+      "Object Lock", "independently administered Object Lock", "branch protection",
+      "Container validation", "Verify exact architecture receipts", "native `linux/arm64`",
+      "Sigstore public-good", "journal format 6", "s3:ListBucket", "before `promotion.converge!`"
+    ].each do |token|
       errors << "docs/releasing.md: required release evidence guidance is missing: #{token}" unless documentation.include?(token)
     end
   else

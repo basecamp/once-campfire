@@ -38,6 +38,7 @@ class WebhookTest < ActiveSupport::TestCase
 
     reply_message = Message.last
     assert_equal "Hello back!", reply_message.body.to_plain_text
+    assert_equal Message::ORIGIN_WEBHOOK_REPLY, reply_message.origin
     assert reply_message.message_effects.exists?(effect: "broadcast_create")
     assert reply_message.message_effects.exists?(effect: "room_receive")
     assert_not reply_message.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
@@ -54,12 +55,14 @@ class WebhookTest < ActiveSupport::TestCase
     assert_not reply_message.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
   end
 
-  test "an explicit bot message still fans out to other webhooks" do
+  test "a bot API origin does not fan out to other webhooks" do
     message = rooms(:designers).messages.create_with_attachment!(
-      body: "Bot API message", creator: users(:bender), client_message_id: SecureRandom.hex(8), webhook_reply: true
+      body: "Bot API message", creator: users(:bender), client_message_id: SecureRandom.hex(8),
+      origin: Message::ORIGIN_BOT_API
     )
 
-    assert message.message_effects.exists?(effect: "webhook_fanout")
+    assert_equal Message::ORIGIN_BOT_API, message.origin
+    assert_not message.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
   end
 
   test "a rich text webhook reply cannot invoke another bot" do

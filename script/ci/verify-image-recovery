@@ -44,6 +44,7 @@ docker_run() {
 
 runtime_env=(
   --env DISABLE_SSL=true
+  --env OIDC_MODE=disabled
   --env SKIP_TELEMETRY=true
   --env SECRET_KEY_BASE=recovery-smoke-secret-key-base-recovery-smoke-secret-key-base
   --env VAPID_PUBLIC_KEY=recovery-smoke-public-key
@@ -65,7 +66,10 @@ cleanup() {
 trap cleanup EXIT
 
 wait_for_http() {
-  curl --fail --retry 30 --retry-all-errors --retry-delay 1 "$1"
+  local port=$1
+  [[ "$(curl --fail --silent --show-error --retry 30 --retry-all-errors --retry-delay 1 \
+    --resolve "localhost:${port}:127.0.0.1" --header 'X-Forwarded-Proto: https' \
+    --output /dev/null --write-out '%{http_code}' "http://localhost:${port}/up")" == 200 ]]
 }
 
 report_container_failure() {
@@ -81,11 +85,11 @@ start_container() {
   local image=$1 volume=$2 port=$3
   shift 3
   local container
-  container=$(docker_run --detach --publish "$port:80" \
+  container=$(docker_run --detach --publish "127.0.0.1:$port:80" \
     --mount "type=volume,src=$volume,dst=/rails/storage" \
     "${runtime_env[@]}" "$@" "$image")
   containers+=("$container")
-  if ! wait_for_http "http://127.0.0.1:$port/up"; then
+  if ! wait_for_http "$port"; then
     report_container_failure "Container failed to become healthy" "$container"
     return 1
   fi
@@ -93,8 +97,8 @@ start_container() {
 }
 
 stop_container() {
-  local container=$1 running
-  if ! docker stop --timeout 35 "$container" >/dev/null; then
+  local container=$1 timeout=${2:-70} running
+  if ! docker stop --timeout "$timeout" "$container" >/dev/null; then
     report_container_failure "Container failed to stop" "$container"
     return 1
   fi
@@ -252,8 +256,9 @@ assert_no_upgrade_receipt() {
 
 verify_http_state() {
   local container=$1 port=$2 email=$3 room_name=$4 message_text=$5 attachment_text=$6
-  local metadata room_path attachment_path session_page csrf_token cookie_jar room_page attachment_file
+  local metadata room_path attachment_path session_page csrf_token cookie_jar room_page attachment_file sign_in_status
   local browser_user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  local transport=(--resolve "localhost:${port}:127.0.0.1" --header 'X-Forwarded-Proto: https')
   metadata=$(docker exec --env RECOVERY_ROOM_NAME="$room_name" "$container" bin/rails runner '
     room = Room.find_by!(name: ENV.fetch("RECOVERY_ROOM_NAME"))
     message = room.messages.order(:id).last!
@@ -270,28 +275,33 @@ verify_http_state() {
   attachment_file="$work_directory/attachment-${port}"
   cookie_jar="$work_directory/cookies-${port}"
 
-  curl --fail --silent --show-error --user-agent "$browser_user_agent" --cookie-jar "$cookie_jar" \
-    "http://127.0.0.1:${port}/session/new" --output "$session_page"
+  curl --fail --silent --show-error "${transport[@]}" \
+    --user-agent "$browser_user_agent" --cookie-jar "$cookie_jar" \
+    "http://localhost:${port}/session/new" --output "$session_page"
   csrf_token=$(ruby -rcgi -e '
     token = STDIN.read[/<meta name="csrf-token" content="([^"]+)"/, 1]
     abort "sign-in page has no CSRF token" unless token
     puts CGI.unescapeHTML(token)
   ' < "$session_page")
-  curl --fail --silent --show-error --location \
+  sign_in_status=$(curl --fail --silent --show-error \
+    "${transport[@]}" \
     --user-agent "$browser_user_agent" \
     --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
     --data-urlencode "authenticity_token=$csrf_token" \
     --data-urlencode "email_address=$email" \
     --data-urlencode 'password=secret123456' \
-    "http://127.0.0.1:${port}/session" --output /dev/null
-  curl --fail --silent --show-error --user-agent "$browser_user_agent" --cookie "$cookie_jar" \
-    "http://127.0.0.1:${port}${room_path}" --output "$room_page"
+    "http://localhost:${port}/session" --output /dev/null --write-out '%{http_code}')
+  [[ "$sign_in_status" == 302 ]]
+  curl --fail --silent --show-error "${transport[@]}" \
+    --user-agent "$browser_user_agent" --cookie "$cookie_jar" \
+    "http://localhost:${port}${room_path}" --output "$room_page"
   if ! grep -Fq "$message_text" "$room_page"; then
     printf 'Recovered room page is missing expected history: %s\n' "$room_name" >&2
     return 1
   fi
-  curl --fail --silent --show-error --user-agent "$browser_user_agent" --cookie "$cookie_jar" \
-    "http://127.0.0.1:${port}${attachment_path}" --output "$attachment_file"
+  curl --fail --silent --show-error "${transport[@]}" \
+    --user-agent "$browser_user_agent" --cookie "$cookie_jar" \
+    "http://localhost:${port}${attachment_path}" --output "$attachment_file"
   if [[ "$(<"$attachment_file")" != "$attachment_text" ]]; then
     printf 'Recovered room attachment does not match: %s\n' "$room_name" >&2
     return 1
@@ -419,7 +429,7 @@ docker exec "$legacy_source" bin/rails runner '
   upload = room.messages.create!(creator: user, body: "Legacy recovery upload")
   upload.attachment.attach(io: StringIO.new("legacy upload"), filename: "legacy.txt", content_type: "text/plain")
 '
-stop_container "$legacy_source"
+stop_container "$legacy_source" 35
 legacy_exit_code=$STOPPED_EXIT_CODE
 backup_and_install \
   "$legacy_source_volume" "$legacy_restore_volume" "$work_directory/legacy" \
@@ -436,7 +446,7 @@ docker exec "$legacy_restored" bin/rails runner '
   abort "legacy user missing" unless User.exists?(email_address: "legacy@example.com")
   abort "legacy upload missing" unless ActiveStorage::Blob.sole.download == "legacy upload"
 '
-stop_container "$legacy_restored"
+stop_container "$legacy_restored" 35
 migration_test_volume=$legacy_restore_volume
 legacy_upgrade_volume=$legacy_source_volume
 
@@ -654,6 +664,7 @@ if [[ -n "$recovery_evidence_path" ]]; then
       target_manifest_digest: $target_manifest_digest,
       target_config_digest: $target_config_digest,
       runtime_binding: $runtime_binding,
+      transport_mode: "external-https-loopback-probe",
       container_validation_sha256: $container_validation_sha256,
       target_build_identity: $target_build_identity,
       legacy_reference: $legacy_reference,
@@ -676,6 +687,7 @@ if [[ -n "$recovery_evidence_path" ]]; then
         tamper_denials: "passed",
         authorized_upgrade: "passed",
         http_history_and_uploads: "passed",
+        transport_contract: "passed",
         worker_execution: "passed"
       },
       recovery: "passed",

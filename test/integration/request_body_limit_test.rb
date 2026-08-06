@@ -1,6 +1,8 @@
 require "test_helper"
 require "puma/server"
+require "puma_chunked_body_limit"
 require "socket"
+require "timeout"
 
 class RequestBodyLimitTest < ActiveSupport::TestCase
   test "configured limit permits multipart overhead but rejects unsafe overrides" do
@@ -57,6 +59,41 @@ class RequestBodyLimitTest < ActiveSupport::TestCase
 
       assert_match %r{HTTP/1\.1 413}, response
       assert_equal 0, calls.call
+    end
+  end
+
+  test "Puma 7.2.1 cumulatively rejects a segmented chunked body and closes the socket" do
+    assert_includes Puma::Client.ancestors, PumaChunkedBodyLimit::ClientPatch
+
+    with_puma_limit(32) do |port, calls|
+      socket = TCPSocket.open("127.0.0.1", port)
+      socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+      socket.write <<~HTTP.gsub("\n", "\r\n")
+        POST / HTTP/1.1
+        Host: localhost
+        Connection: keep-alive
+        Transfer-Encoding: chunked
+
+      HTTP
+      sleep 0.05
+
+      2.times do
+        socket.write "10\r\n#{"x" * 16}\r\n"
+        sleep 0.05
+      end
+      assert_not socket.wait_readable(0.05)
+
+      socket.write "1\r\n"
+      sleep 0.05
+      socket.write "x"
+      assert socket.wait_readable(2), "Puma did not reject the cumulative body at the limit"
+      response = Timeout.timeout(2) { socket.read }
+
+      assert_match %r{HTTP/1\.1 413}, response
+      assert_match(/connection: close/i, response)
+      assert_equal 0, calls.call
+    ensure
+      socket&.close
     end
   end
 

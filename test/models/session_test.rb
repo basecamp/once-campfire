@@ -20,7 +20,7 @@ class SessionTest < ActiveSupport::TestCase
   test "expired federated sessions are invalid" do
     session = users(:jz).sessions.create!(
       identity: @identity, authentication_method: "oidc", expires_at: 1.second.ago,
-      oidc_issued_at: Time.current.to_i
+      oidc_session_generation: Oidc::SessionGeneration.current!, oidc_issued_at: Time.current.to_i
     )
 
     assert_not session.valid_for_authentication?
@@ -55,7 +55,7 @@ class SessionTest < ActiveSupport::TestCase
     )
     session = users(:kevin).sessions.create!(
       identity: old_identity, authentication_method: "oidc", expires_at: 1.hour.from_now,
-      oidc_issued_at: Time.current.to_i
+      oidc_session_generation: Oidc::SessionGeneration.current!, oidc_issued_at: Time.current.to_i
     )
     activate_required_policy
 
@@ -85,6 +85,7 @@ class SessionTest < ActiveSupport::TestCase
         identity_id: @identity.id,
         authentication_method: "oidc",
         oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+        oidc_session_generation: Oidc::SessionGeneration.current!,
         oidc_issued_at: Time.current.to_i,
         token: SecureRandom.hex,
         last_active_at: Time.current,
@@ -108,6 +109,7 @@ class SessionTest < ActiveSupport::TestCase
   test "provider session identifiers are byte bounded" do
     session = users(:jz).sessions.build(
       identity: @identity, authentication_method: "oidc", expires_at: 1.hour.from_now,
+      oidc_session_generation: Oidc::SessionGeneration.current!,
       oidc_session_id: "é" * 128, oidc_issued_at: Time.current.to_i
     )
 
@@ -122,6 +124,7 @@ class SessionTest < ActiveSupport::TestCase
         identity_id: @identity.id,
         authentication_method: "oidc",
         oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+        oidc_session_generation: Oidc::SessionGeneration.current!,
         oidc_issued_at: Time.current.to_i,
         expires_at: 1.hour.from_now,
         token: SecureRandom.hex,
@@ -151,6 +154,33 @@ class SessionTest < ActiveSupport::TestCase
     configure_oidc("OIDC_CLIENT_SECRET" => "rotated-secret")
 
     assert_not session.valid_for_authentication?
+  end
+
+  test "cycling from configuration A to B and back retires both prior generations" do
+    first = users(:jz).sessions.start!(
+      user_agent: "Browser", ip_address: "192.0.2.1", identity: @identity,
+      oidc_issued_at: Time.current.to_i
+    )
+    first_generation = first.oidc_session_generation
+    subscription = push_subscriptions(:jz_chrome)
+    subscription.update!(session: first)
+
+    configure_oidc("OIDC_CLIENT_SECRET" => "configuration-b-secret")
+    second_generation = Oidc::SessionGeneration.current!
+    assert_operator second_generation, :>, first_generation
+    assert_not Session.exists?(first.id)
+    assert_not Push::Subscription.exists?(subscription.id)
+
+    second = users(:jz).sessions.start!(
+      user_agent: "Browser", ip_address: "192.0.2.1", identity: @identity,
+      oidc_issued_at: Time.current.to_i
+    )
+    configure_oidc
+    third_generation = Oidc::SessionGeneration.current!
+
+    assert_operator third_generation, :>, second_generation
+    assert_not Session.exists?(first.id)
+    assert_not Session.exists?(second.id)
   end
 
   test "broadening a trusted proxy prefix invalidates its old sessions" do

@@ -5,6 +5,8 @@ import { onNextEventLoopTick } from "helpers/timing_helpers"
 import { getCookie, setCookie } from "lib/cookie"
 
 const pageSynchronizations = new Map()
+const recentSynchronizations = new Map()
+const SYNCHRONIZATION_TTL = 30_000
 
 export default class extends Controller {
   static values = { subscriptionsUrl: String }
@@ -131,7 +133,9 @@ export default class extends Controller {
 
   async #syncPushSubscription(subscription, { force = false } = {}) {
     const key = this.#synchronizationKey(subscription)
-    if (!force && pageSynchronizations.has(key)) return pageSynchronizations.get(key)
+    if (pageSynchronizations.has(key)) return pageSynchronizations.get(key)
+    const age = Date.now() - (recentSynchronizations.get(key) || 0)
+    if (!force && age >= 0 && age < SYNCHRONIZATION_TTL) return true
 
     const synchronization = (async () => {
       try {
@@ -146,8 +150,13 @@ export default class extends Controller {
     })()
 
     pageSynchronizations.set(key, synchronization)
-    if (!await synchronization) pageSynchronizations.delete(key)
-    return synchronization
+    try {
+      const synchronized = await synchronization
+      if (synchronized) recentSynchronizations.set(key, Date.now())
+      return synchronized
+    } finally {
+      if (pageSynchronizations.get(key) == synchronization) pageSynchronizations.delete(key)
+    }
   }
 
   #synchronizationKey(subscription) {

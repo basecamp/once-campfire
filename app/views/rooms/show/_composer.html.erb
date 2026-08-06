@@ -34,7 +34,7 @@
 
                 <label class="btn btn--borderless txt-small flex-item-no-shrink composer__attachment-btn input--file">
                   <%= image_tag "attachment.svg", size: 22, class: "colorize--black", aria: { hidden: "true" } %>
-                  <input type="file" data-action="composer#filePicked" multiple />
+                  <input type="file" data-action="composer#filePicked" data-composer-target="fileInput" multiple />
                   <span class="for-screen-reader">Attach a file</span>
                 </label>
 

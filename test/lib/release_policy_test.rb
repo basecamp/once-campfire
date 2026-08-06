@@ -146,6 +146,34 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     end
   end
 
+  test "policy requires the aggregate native architecture receipt check" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub("  verify-receipts:\n", "  ignored-receipts:\n")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "required container control is missing: verify-receipts:", stderr
+      assert_match "aggregate verify-receipts must depend on the complete native architecture matrix", stderr
+    end
+  end
+
+  test "policy requires direct run and upgrade receipt hash bindings" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read
+        .gsub("run_receipt_sha256", "unbound_run_receipt")
+        .gsub("upgrade_receipt_sha256", "unbound_upgrade_receipt")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "required container control is missing: run_receipt_sha256", stderr
+      assert_match "required container control is missing: upgrade_receipt_sha256", stderr
+    end
+  end
+
   test "policy rejects an unpinned legacy recovery image" do
     with_repository_policy_fixture do |root|
       workflow = root.join(".github/workflows/container.yml")
@@ -191,6 +219,57 @@ class ReleasePolicyTest < ActiveSupport::TestCase
       assert_not status.success?
       assert_match "required release evidence control is missing: recovery_receipts:", stderr
       assert_match 'required release evidence control is missing: --source-digest "$RELEASE_SHA"', stderr
+    end
+  end
+
+  test "policy requires retained-bundle verification and a sufficient current-image stop timeout" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      workflow.write workflow.read
+        .sub('--bundle "$evidence_directory/${kind}-provenance.bundle.jsonl"', '--bundle "$RUNNER_TEMP/other.jsonl"')
+        .sub('docker stop --timeout 70 "$source_container"', 'docker stop --timeout 35 "$source_container"')
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "required release evidence control is missing: --bundle", stderr
+      assert_match "current-image stop timeout must be at least 70 seconds", stderr
+    end
+  end
+
+  test "policy permits Sigstore public-good verification for GitHub attestations" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      workflow.write workflow.read.sub(
+        "              --deny-self-hosted-runners \\\n",
+        "              --no-public-good \\\n              --deny-self-hosted-runners \\\n"
+      )
+      release = root.join("bin/release")
+      release.write release.read.sub(
+        '    "--deny-self-hosted-runners",',
+        "    \"--no-public-good\",\n    \"--deny-self-hosted-runners\","
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match ".github/workflows/publish-image.yml: Sigstore public-good", stderr
+      assert_match "bin/release: Sigstore public-good", stderr
+    end
+  end
+
+  test "policy requires a fail-closed release environment preflight" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      workflow.write workflow.read
+        .sub(".prevent_self_review == true", ".prevent_self_review == false")
+        .sub("needs: [ verify, release-environment ]", "needs: verify")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "release environment preflight is missing: .prevent_self_review == true", stderr
+      assert_match "registry-writing jobs must depend on the protected release environment preflight", stderr
     end
   end
 
@@ -469,6 +548,33 @@ class ReleasePolicyTest < ActiveSupport::TestCase
 
       assert_not status.success?
       assert_match "executable immutable-release contract failed", stderr
+    end
+  end
+
+  test "policy executes the independent GitHub publication and latest-channel contract" do
+    with_repository_policy_fixture do |root|
+      release = root.join("bin/release")
+      release.write release.read.sub('"--latest=false", runner:', '"--latest", runner:')
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "executable immutable-release contract failed", stderr
+      assert_match "couples latest-channel mutation", stderr
+    end
+  end
+
+  test "policy requires journal format 6 for generation-bound moving channels" do
+    with_repository_policy_fixture do |root|
+      release = root.join("bin/release")
+      release.write release.read.sub(
+        "RELEASE_JOURNAL_FORMAT_VERSION = 6", "RELEASE_JOURNAL_FORMAT_VERSION = 5"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "generation-bound moving-channel state requires journal format 6", stderr
     end
   end
 

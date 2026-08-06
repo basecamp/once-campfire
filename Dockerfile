@@ -8,7 +8,8 @@ WORKDIR /rails
 
 # Install base packages
 RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y curl libsqlite3-0 libvips libjemalloc2 ffmpeg redis && \
+    apt-get install --no-install-recommends -y curl libsqlite3-0 libvips libjemalloc2 ffmpeg procps redis && \
+    command -v ps >/dev/null && \
     ln -s /usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archive
 
@@ -35,14 +36,14 @@ COPY vendor ./vendor
 
 RUN bundle install && \
     bundle exec ruby -r sqlite3 -r campfire_sqlite_native -r tmpdir -e \
-      'Dir.mktmpdir { |dir| path = File.join(dir, "native.sqlite3"); db = SQLite3::Database.new(path); abort "campfire_sqlite_native verification failed" if CampfireSQLiteNative.main_database_moved?(db); File.rename(path, "#{path}.moved"); abort "campfire_sqlite_native move detection failed" unless CampfireSQLiteNative.main_database_moved?(db); db.close }' && \
+      'Dir.mktmpdir { |dir| path = File.join(dir, "native.sqlite3"); db = SQLite3::Database.new(path); descriptor = CampfireSQLiteNative.main_database_descriptor(db); opened = IO.for_fd(descriptor, autoclose: false).stat; canonical = File.lstat(path); abort "campfire_sqlite_native descriptor identity failed" unless [ opened.dev, opened.ino, opened.ftype ] == [ canonical.dev, canonical.ino, canonical.ftype ]; abort "campfire_sqlite_native verification failed" if CampfireSQLiteNative.main_database_moved?(db); File.rename(path, "#{path}.moved"); abort "campfire_sqlite_native move detection failed" unless CampfireSQLiteNative.main_database_moved?(db); db.close }' && \
     rm -rf ~/.bundle/ "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git
 
 # Copy application code
 COPY . .
 
-# Precompiling assets for production without requiring secret RAILS_MASTER_KEY
-RUN SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile
+# Scope an explicit transport mode to asset compilation without persisting runtime defaults.
+RUN DISABLE_SSL=true OIDC_MODE=disabled SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile
 
 ARG GIT_REVISION
 ARG BUILD_IDENTITY
@@ -71,22 +72,27 @@ LABEL org.opencontainers.image.title="Campfire" \
       org.opencontainers.image.revision="${GIT_REVISION}" \
       com.basecamp.campfire.build-identity="${BUILD_IDENTITY}"
 
-# Run and own only the runtime files as a non-root user for security
+# Create the unprivileged runtime identity without a separate writable home.
 RUN groupadd --system --gid 1000 rails && \
-    useradd rails --uid 1000 --gid 1000 --create-home --shell /bin/bash && \
+    useradd rails --uid 1000 --gid 1000 --home-dir /rails --no-create-home --shell /bin/bash && \
     install -d --mode=1777 /tmp/campfire-operation-locks
-USER 1000:1000
 
 # Configure environment defaults
+ENV HOME=/rails
 ENV HTTP_IDLE_TIMEOUT=60
 ENV HTTP_READ_TIMEOUT=300
 ENV HTTP_WRITE_TIMEOUT=300
 ENV MAX_REQUEST_BODY=106954752
 
-# Copy built artifacts: gems, application
-COPY --from=build --chown=rails:rails /usr/local/bundle /usr/local/bundle
-COPY --from=build --chown=rails:rails /rails /rails
+# Copy immutable gems and application code as root, then grant only runtime state directories to UID 1000.
+COPY --from=build --chown=0:0 /usr/local/bundle /usr/local/bundle
+COPY --from=build --chown=0:0 /rails /rails
 COPY --from=build /tmp/campfire-build-identity.json /etc/campfire-build-identity.json
+RUN install -d --owner=rails --group=rails --mode=0755 \
+      /rails/log /rails/storage /rails/tmp /rails/tmp/pids && \
+    chown -R rails:rails /rails/log /rails/storage /rails/tmp
+
+USER 1000:1000
 
 # Set version and revision
 ENV APP_VERSION=$APP_VERSION

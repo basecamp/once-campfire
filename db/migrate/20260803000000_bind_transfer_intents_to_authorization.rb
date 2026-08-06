@@ -1,3 +1,5 @@
+require "campfire_backup/upgrade_recovery_guard"
+
 class BindTransferIntentsToAuthorization < ActiveRecord::Migration[8.2]
   CONSTRAINT_NAME = "credential_intents_attributes"
 
@@ -11,6 +13,8 @@ class BindTransferIntentsToAuthorization < ActiveRecord::Migration[8.2]
   end
 
   def down
+    CampfireBackup::UpgradeRecoveryGuard.authorize_destructive_rollback!(migration: self.class.name)
+
     remove_check_constraint :credential_intents, name: CONSTRAINT_NAME
     execute "UPDATE credential_intents SET credential_digest = NULL WHERE purpose IN ('transfer_grant', 'transfer')"
     add_check_constraint :credential_intents,

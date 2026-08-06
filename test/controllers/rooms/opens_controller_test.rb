@@ -57,4 +57,15 @@ class Rooms::OpensControllerTest < ActionDispatch::IntegrationTest
     put rooms_open_url(rooms(:designers)), params: { room: { name: "Doesn't matter" } }
     assert_equal rooms(:designers).memberships.count, User.count
   end
+
+  test "cannot update a direct room to be open" do
+    room = rooms(:david_and_jason)
+    participant_ids = room.user_ids.sort
+
+    put rooms_open_url(room), params: { room: { name: "Not open" } }
+
+    assert_response :forbidden
+    assert room.reload.direct?
+    assert_equal participant_ids, room.user_ids.sort
+  end
 end

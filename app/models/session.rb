@@ -1,5 +1,6 @@
 class Session < ApplicationRecord
   ACTIVITY_REFRESH_RATE = 1.hour
+  REVOKED_REASON = "Session revoked"
 
   has_secure_token
 
@@ -10,23 +11,26 @@ class Session < ApplicationRecord
   validates :authentication_method, inclusion: { in: %w[ legacy password oidc transfer ] }
   validates :oidc_session_id, length: { in: 1..Identity::MAXIMUM_IDENTIFIER_LENGTH }, allow_nil: true
   validates :oidc_issued_at, numericality: { only_integer: true, greater_than: 0 }, allow_nil: true
+  validates :oidc_session_generation, numericality: { only_integer: true, greater_than: 0 }, allow_nil: true
   validate :identity_belongs_to_user, :identity_matches_authentication_method,
     :authentication_method_allowed_by_policy, :user_is_active, :identity_is_active,
     :oidc_session_id_is_bounded
 
   before_create { self.last_active_at ||= Time.now }
   before_validation :set_oidc_configuration_fingerprint, :set_expiration, on: :create
-  after_destroy_commit :disconnect_remote_connections
+  after_destroy_commit :disconnect_revoked_session
 
   scope :unexpired, -> { where(expires_at: nil).or(where(expires_at: Time.current..)) }
 
   def self.authenticatable
+    current_oidc_generation = Oidc::SessionGeneration.current!
     return none if Oidc.rollback_prepared?
 
     relation = unexpired.joins(:user).merge(User.active)
     federated = relation.where(
       authentication_method: "oidc",
       oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+      oidc_session_generation: current_oidc_generation,
       identity_id: Identity.where(
         issuer: Oidc.issuer, provider_fingerprint: Oidc.provider_fingerprint,
         provider_revoked_at: nil
@@ -46,19 +50,21 @@ class Session < ApplicationRecord
 
   def self.start!(user:, user_agent:, ip_address:, identity: nil, authentication_method: nil,
       oidc_session_id: nil, oidc_issued_at: nil)
-    transaction do
-      user = User.lock_active! user
-      authentication_method ||= identity ? "oidc" : "password"
-      if authentication_method == "oidc" && identity
-        Oidc::Revocation.prune_expired!
-        Oidc::Revocation.guard_session!(
-          issuer: identity.issuer, subject: identity.subject, sid: oidc_session_id,
-          issued_at: oidc_issued_at
-        )
+    Oidc::SessionGeneration.with_current do |generation|
+      transaction do
+        user = User.lock_active! user
+        authentication_method ||= identity ? "oidc" : "password"
+        if authentication_method == "oidc" && identity
+          Oidc::Revocation.prune_expired!
+          Oidc::Revocation.guard_session!(
+            issuer: identity.issuer, subject: identity.subject, sid: oidc_session_id,
+            issued_at: oidc_issued_at
+          )
+        end
+        prune_expired!
+        create! user:, user_agent:, ip_address:, identity:, authentication_method:, oidc_session_id:,
+          oidc_issued_at:, oidc_session_generation: (generation if authentication_method == "oidc")
       end
-      prune_expired!
-      create! user:, user_agent:, ip_address:, identity:, authentication_method:, oidc_session_id:,
-        oidc_issued_at:
     end
   end
 
@@ -74,6 +80,7 @@ class Session < ApplicationRecord
   end
 
   def valid_for_authentication?
+    current_oidc_generation = Oidc::SessionGeneration.current!
     return false if Oidc.rollback_prepared?
     return false unless authentication_method.in?(%w[ legacy password oidc transfer ])
     return false unless user.active?
@@ -81,15 +88,24 @@ class Session < ApplicationRecord
     return false unless valid_identity_binding?
     if authentication_method == "oidc"
       return Oidc.current_identity?(identity) && !identity.provider_revoked_at? &&
-        oidc_configuration_fingerprint == Oidc.configuration.fingerprint
+        oidc_configuration_fingerprint == Oidc.configuration.fingerprint &&
+        oidc_session_generation == current_oidc_generation
     end
     return true unless Oidc.required_active?
 
     authentication_method == "password" && expires_at.present? && Oidc.break_glass?(user)
   end
 
-  def disconnect_remote_connections(reconnect: false)
-    ActionCable.server.remote_connections.where(current_user: user, current_session_id: id).disconnect reconnect: reconnect
+  def disconnect_remote_connections(reconnect: false, reason: nil)
+    if reason
+      ApplicationCable::Connection.disconnect_session(
+        user:, session_id: id, reason:, reconnect:
+      )
+    else
+      ActionCable.server.remote_connections.where(
+        current_user: user, current_session_id: id
+      ).disconnect reconnect:
+    end
   rescue StandardError => error
     Rails.logger.error "Failed to disconnect Action Cable session_id=#{id} error=#{error.class.name}"
   end
@@ -101,9 +117,11 @@ class Session < ApplicationRecord
 
     def identity_matches_authentication_method
       invalid_oidc = authentication_method == "oidc" &&
-        (!identity || oidc_configuration_fingerprint.blank? || oidc_issued_at.blank?)
+        (!identity || oidc_configuration_fingerprint.blank? || oidc_session_generation.blank? ||
+          oidc_issued_at.blank?)
       invalid_local = authentication_method != "oidc" &&
-        (identity || oidc_configuration_fingerprint.present? || oidc_session_id.present? || oidc_issued_at.present?)
+        (identity || oidc_configuration_fingerprint.present? || oidc_session_generation.present? ||
+          oidc_session_id.present? || oidc_issued_at.present?)
       if invalid_oidc || invalid_local
         errors.add :identity, "must match the authentication method"
       end
@@ -112,9 +130,10 @@ class Session < ApplicationRecord
     def valid_identity_binding?
       if authentication_method == "oidc"
         identity && identity.user_id == user_id && expires_at.present? &&
-          oidc_configuration_fingerprint.present? && oidc_issued_at.present?
+          oidc_configuration_fingerprint.present? && oidc_session_generation.present? && oidc_issued_at.present?
       else
-        identity.nil? && oidc_configuration_fingerprint.nil? && oidc_session_id.nil? && oidc_issued_at.nil?
+        identity.nil? && oidc_configuration_fingerprint.nil? && oidc_session_generation.nil? &&
+          oidc_session_id.nil? && oidc_issued_at.nil?
       end
     end
 
@@ -155,5 +174,9 @@ class Session < ApplicationRecord
       if authentication_method == "oidc" || identity
         self.oidc_configuration_fingerprint ||= Oidc.configuration.fingerprint
       end
+    end
+
+    def disconnect_revoked_session
+      disconnect_remote_connections reason: REVOKED_REASON
     end
 end

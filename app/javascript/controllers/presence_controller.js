@@ -3,8 +3,7 @@ import { cable } from "@hotwired/turbo-rails"
 
 const REFRESH_INTERVAL = 50 * 1000 // 50 seconds
 
-// We delay transmitting visibility changes to ignore brief periods of invisibility,
-// like switching to another tab and back
+// Delay absence to ignore brief periods of invisibility, like switching tabs and back.
 const VISIBILITY_CHANGE_DELAY = 5000 // 5 seconds
 
 export default class extends Controller {
@@ -16,6 +15,10 @@ export default class extends Controller {
   async connect() {
     this.#active = true
     this.wasVisible = this.#isVisible
+    window.addEventListener("pagehide", this.#pageHiding)
+    window.addEventListener("pageshow", this.#pageShowing)
+    document.addEventListener("freeze", this.#pageHiding)
+    document.addEventListener("resume", this.#pageShowing)
     const connectionVersion = ++this.#connectionVersion
     let channel
 
@@ -40,6 +43,10 @@ export default class extends Controller {
   disconnect() {
     this.#active = false
     this.#connectionVersion += 1
+    window.removeEventListener("pagehide", this.#pageHiding)
+    window.removeEventListener("pageshow", this.#pageShowing)
+    document.removeEventListener("freeze", this.#pageHiding)
+    document.removeEventListener("resume", this.#pageShowing)
     clearTimeout(this.#visibilityTimer)
     this.#visibilityTimer = null
     this.#stopRefreshTimer()
@@ -55,13 +62,9 @@ export default class extends Controller {
     if (!this.#active) return
 
     if (this.#isVisible) {
-      this.#visibilityTimer = setTimeout(() => {
-        this.#visibilityTimer = null
-        if (!this.#active) return
-        this.#visible()
-      }, VISIBILITY_CHANGE_DELAY)
+      this.#visible()
     } else {
-      this.#hidden()
+      this.#scheduleHidden()
     }
   }
 
@@ -74,25 +77,65 @@ export default class extends Controller {
 
   #websocketDisconnected = (connectionVersion) => {
     if (connectionVersion != this.#connectionVersion) return
+    clearTimeout(this.#visibilityTimer)
+    this.#visibilityTimer = null
     this.connected = false
     this.#connectionNeedsAbsent = false
     this.#stopRefreshTimer()
   }
 
   #visible = () => {
-    if (this.connected && this.#isVisible && !this.wasVisible) {
-      this.channel.send({ action: "present" })
-      this.#startRefreshTimer()
-      this.wasVisible = true
-    }
+    if (!this.connected || !this.#isVisible) return
+
+    const connectionBecamePresent = this.#connectionNeedsAbsent
+    if (!this.wasVisible && !connectionBecamePresent) this.channel.send({ action: "present" })
+    this.#connectionNeedsAbsent = false
+    this.wasVisible = true
+    this.#startRefreshTimer()
+    if (connectionBecamePresent) this.dispatch("present", { detail: { roomId: Current.room.id } })
   }
 
   #hidden = () => {
-    if (this.connected && this.wasVisible && !this.#isVisible) {
-      this.#stopRefreshTimer()
-      this.channel.send({ action: "absent" })
-      this.wasVisible = false
+    if (this.connected && (this.wasVisible || this.#connectionNeedsAbsent) && !this.#isVisible) {
+      this.#becomeAbsent()
     }
+  }
+
+  #pageHiding = () => {
+    clearTimeout(this.#visibilityTimer)
+    this.#visibilityTimer = null
+    if (this.#active) this.#becomeAbsent()
+  }
+
+  #pageShowing = () => {
+    if (!this.#active) return
+
+    if (this.#isVisible) {
+      this.#visible()
+    } else {
+      this.#scheduleHidden()
+    }
+  }
+
+  #becomeAbsent() {
+    if (!this.connected || (!this.wasVisible && !this.#connectionNeedsAbsent)) return
+
+    this.#stopRefreshTimer()
+    this.channel.send({ action: "absent" })
+    this.wasVisible = false
+    this.#connectionNeedsAbsent = false
+  }
+
+  #scheduleHidden() {
+    clearTimeout(this.#visibilityTimer)
+    this.#visibilityTimer = null
+    if (!this.#active || !this.connected || this.#isVisible) return
+
+    this.#visibilityTimer = setTimeout(() => {
+      this.#visibilityTimer = null
+      if (!this.#active) return
+      this.#hidden()
+    }, VISIBILITY_CHANGE_DELAY)
   }
 
   #startRefreshTimer = () => {
@@ -112,18 +155,12 @@ export default class extends Controller {
     if (!this.connected) return
 
     if (this.#isVisible) {
-      const becamePresent = this.#connectionNeedsAbsent
-      this.#connectionNeedsAbsent = false
-      this.wasVisible = true
-      this.#startRefreshTimer()
-      if (becamePresent) this.dispatch("present", { detail: { roomId: Current.room.id } })
+      this.#visible()
     } else {
       this.#stopRefreshTimer()
-      this.wasVisible = false
-      if (this.channel && this.#connectionNeedsAbsent) {
-        this.channel.send({ action: "absent" })
-        this.#connectionNeedsAbsent = false
-      }
+      // Subscribing makes the server present immediately; debounce the matching absence.
+      this.wasVisible = true
+      this.#scheduleHidden()
     }
   }
 

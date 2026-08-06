@@ -26,7 +26,9 @@ EXPORT_DEPLOY_LOCATION = "/local/app/product_releases"
 PUBLISH_WORKFLOW_NAME = "Build and publish container image to GHCR"
 PUBLISH_WORKFLOW_FILE = "publish-image.yml"
 WORKFLOW_EVIDENCE_FORMAT_VERSION = 1
-RELEASE_JOURNAL_FORMAT_VERSION = 5
+RELEASE_JOURNAL_FORMAT_VERSION = 6
+RELEASE_RECONCILE_ACTIONS = %w[ complete rollback ].freeze
+MOVING_CHANNEL_GENERATION_PATTERN = /\A[0-9a-f]{32}\z/
 RELEASE_EVIDENCE_ARCHITECTURES = %w[ amd64 arm64 ].freeze
 RELEASE_EVIDENCE_FILES = [
   "index-provenance.bundle.jsonl",
@@ -87,6 +89,7 @@ class ReleaseJournal
   HISTORY_PREFIX = "journal-history-"
   GENESIS_DIGEST = "0" * 64
   DIGEST_PATTERN = /\A[0-9a-f]{64}\z/
+  LEGACY_MOVING_CHANNEL_FORMAT_VERSION = 5
 
   class << self
     def key_from_env(env = ENV)
@@ -246,6 +249,19 @@ class ReleaseJournal
 
     def validate_contract!(journal, contract)
       raise ReleaseStateError, "Release journal does not match this release" unless contains_contract?(journal, contract)
+    end
+
+    def validate_format!(journal)
+      version = journal["format_version"] if journal.is_a?(Hash)
+      return true if version == RELEASE_JOURNAL_FORMAT_VERSION
+
+      if version == LEGACY_MOVING_CHANNEL_FORMAT_VERSION
+        raise ReleaseStateError,
+          "Release journal format 5 predates generation-bound moving-channel state; " \
+            "automatic migration is unsafe. Preserve the journal and use audited format-5 " \
+            "recovery tooling before retrying"
+      end
+      raise ReleaseStateError, "Unsupported release journal format #{version.inspect}"
     end
 
     private
@@ -998,6 +1014,14 @@ class ReleaseMutationFence
         !marker.fetch("kind").empty? && marker.fetch("started_at").is_a?(String)
       raise ReleaseStateError, "Authenticated in-flight mutation state is invalid"
     end
+    if marker.fetch("kind") == "moving_channel"
+      target = marker.fetch("target")
+      unless target.is_a?(Hash) && target.keys.sort == %w[ channel generation value ] &&
+          target.fetch("channel").is_a?(String) && !target.fetch("channel").empty? &&
+          target.fetch("generation").to_s.match?(MOVING_CHANNEL_GENERATION_PATTERN)
+        raise ReleaseStateError, "Authenticated moving-channel generation is invalid"
+      end
+    end
     marker
   rescue KeyError, NoMethodError
     raise ReleaseStateError, "Authenticated in-flight mutation state is invalid"
@@ -1440,7 +1464,7 @@ def create_registry_alias_with_policy!(reference:, digest:, read:)
 end
 
 class MovingChannelPromotion
-  OUTCOMES = %w[ complete rollback ].freeze
+  OUTCOMES = RELEASE_RECONCILE_ACTIONS
 
   attr_reader :journal
 
@@ -1453,9 +1477,15 @@ class MovingChannelPromotion
 
   def converge!(outcome)
     raise ReleaseStateError, "Unknown release convergence outcome #{outcome}" unless OUTCOMES.include?(outcome)
+    if outcome == "complete" && %w[ rolled_back abandoned ].include?(journal["status"])
+      raise ReleaseStateError, "Rollback invalidated authority to complete this release operation"
+    end
     ReleaseMutationFence.ensure_settled! journal
+    if @channels.any? { _1.previous == _1.target }
+      raise ReleaseStateError, "A moving channel target was already present when its previous value was captured"
+    end
     ensure_rollback_is_possible! if outcome == "rollback"
-    record_outcome! outcome
+    generation = record_outcome! outcome
 
     ordered_channels(outcome).each do |channel|
       ensure_rollback_is_possible! if outcome == "rollback"
@@ -1465,13 +1495,21 @@ class MovingChannelPromotion
       unless allowed.include?(current)
         raise ReleaseStateError, "#{channel.key} changed outside this release: #{current.inspect}"
       end
+      if outcome == "complete" && current == channel.target &&
+          !authenticated_moving_channel_target?(
+            journal, channel: channel.key, value: channel.target, generation:
+          )
+        raise ReleaseStateError,
+          "#{channel.key} reached its target without an authenticated mutation in this convergence generation"
+      end
 
       if current != desired
         unless channel.read.call == current
           raise ReleaseStateError, "#{channel.key} changed during compare-before-write"
         end
         ReleaseMutationFence.new(lock: @lock, journal:).run!(
-          kind: "moving_channel", target: { "channel" => channel.key, "value" => desired }
+          kind: "moving_channel",
+          target: { "channel" => channel.key, "value" => desired, "generation" => generation }
         ) do |runner|
           channel.write.call desired, runner
           @fault_after.call channel.key
@@ -1482,11 +1520,18 @@ class MovingChannelPromotion
       elsif channel.read.call != desired || channel.read.call != desired
         raise ReleaseStateError, "#{channel.key} did not remain at #{desired}"
       end
-      record_step! channel, desired, outcome
+      record_step! channel, desired, outcome, generation
     end
 
     verify!(outcome)
     journal["status"] = outcome == "complete" ? "completed" : "rolled_back"
+    if outcome == "complete"
+      journal["completion_authority"] = {
+        "generation" => generation, "granted_at" => Time.now.utc.iso8601
+      }
+    else
+      journal.delete "completion_authority"
+    end
     journal["updated_at"] = Time.now.utc.iso8601
     @lock.write_journal journal
     true
@@ -1519,25 +1564,64 @@ class MovingChannelPromotion
     end
 
     def record_outcome!(outcome)
-      if journal["outcome"] != outcome
+      now = Time.now.utc.iso8601
+      generation = journal["convergence_generation"]
+      if journal["outcome"] != outcome || !generation.to_s.match?(MOVING_CHANNEL_GENERATION_PATTERN)
         journal["completed_steps"] = {}
+        generation = SecureRandom.hex(16)
+        journal["convergence_generation"] = generation
+      end
+      if outcome == "rollback"
+        journal.delete "completion_authority"
+        journal["completion_authority_invalidated_at"] ||= now
       end
       journal["outcome"] = outcome
       journal["status"] = "converging"
-      journal["updated_at"] = Time.now.utc.iso8601
+      journal["updated_at"] = now
       @lock.write_journal journal
+      generation
     end
 
-    def record_step!(channel, value, outcome)
+    def record_step!(channel, value, outcome, generation)
       journal["completed_steps"] ||= {}
       journal["completed_steps"][channel.key] = {
         "outcome" => outcome,
         "value" => value,
+        "generation" => generation,
         "verified_at" => Time.now.utc.iso8601
       }
       journal["updated_at"] = Time.now.utc.iso8601
       @lock.write_journal journal
     end
+end
+
+def authenticated_moving_channel_target?(journal, channel:, value:, generation: nil)
+  generation ||= journal["convergence_generation"]
+  return false unless generation.to_s.match?(MOVING_CHANNEL_GENERATION_PATTERN)
+
+  target = { "channel" => channel, "value" => value, "generation" => generation }
+  marker = journal["mutation_in_flight"]
+  return true if marker.is_a?(Hash) && marker["target"] == target
+
+  settled = journal.fetch("settled_mutations", [])
+  unless settled.is_a?(Array)
+    raise ReleaseStateError, "Authenticated moving-channel settlement inventory is invalid"
+  end
+  return true if settled.any? { _1.is_a?(Hash) && _1["target"] == target }
+
+  completed = journal.dig("completed_steps", channel)
+  completed.is_a?(Hash) && completed["outcome"] == "complete" &&
+    completed["value"] == value && completed["generation"] == generation
+end
+
+def capture_moving_channel_previous!(journal:, channel:, current:, target:)
+  if current == target && !authenticated_moving_channel_target?(
+      journal, channel:, value: target
+    )
+    raise ReleaseStateError,
+      "#{channel} already matched its target before an authenticated previous value was captured"
+  end
+  current
 end
 
 def git_ancestor?(ancestor, descendant)
@@ -1602,6 +1686,7 @@ def validate_durable_release_entry!(state:, expected_release:, reconciling:, set
     expected_anchor_set: nil, acquired: false)
   return true unless state
 
+  ReleaseJournal.validate_format! state[:journal]
   settled_mutation_token = settled_mutation_token.to_s
   unless expected_release.all? { |key, value| state.dig(:journal, "release", key) == value }
     raise ReleaseStateError, "Another release owns the durable operation journal"
@@ -1643,6 +1728,111 @@ def workflow_dispatch_required!(reconciling:, candidates:, phase_previously_star
       "Reconciliation found no original image workflow and will not dispatch a conflicting same-SHA build"
   end
   candidates.empty?
+end
+
+def parse_release_reconcile_action!(env: ENV, reconciling:)
+  action = env["RELEASE_RECONCILE_ACTION"].to_s
+  if reconciling
+    unless RELEASE_RECONCILE_ACTIONS.include?(action)
+      raise ReleaseStateError,
+        "RELEASE_RECONCILE_ACTION must be explicitly set to complete or rollback"
+    end
+    action
+  elsif action.empty?
+    nil
+  else
+    raise ReleaseStateError, "RELEASE_RECONCILE_ACTION requires RELEASE_RECONCILE_SHA"
+  end
+end
+
+def authenticate_reconcile_action!(lock:, journal:, action:, fault_after: ->(_boundary) { })
+  return unless action
+
+  scope = journal["channels"] ? "promotion" : "pre_promotion"
+  existing = journal["reconcile_action"]
+  if existing
+    unless existing.is_a?(Hash) && existing.keys.sort == %w[ action authenticated_at generation scope ] &&
+        RELEASE_RECONCILE_ACTIONS.include?(existing["action"]) &&
+        %w[ pre_promotion promotion ].include?(existing["scope"]) &&
+        existing["generation"].to_s.match?(MOVING_CHANNEL_GENERATION_PATTERN) &&
+        existing["authenticated_at"].is_a?(String)
+      raise ReleaseStateError, "Authenticated reconciliation action is invalid"
+    end
+    return existing if existing["action"] == action
+    if existing["action"] == "rollback" || %w[ rolled_back abandoned ].include?(journal["status"])
+      raise ReleaseStateError, "Authenticated rollback cannot be replaced by completion authority"
+    end
+  end
+
+  request = {
+    "action" => action,
+    "scope" => scope,
+    "generation" => SecureRandom.hex(16),
+    "authenticated_at" => Time.now.utc.iso8601
+  }
+  journal["reconcile_action"] = request
+  journal["updated_at"] = Time.now.utc.iso8601
+  lock.write_journal journal
+  fault_after.call "reconcile_action_authenticated"
+  request
+end
+
+def abandon_pre_promotion_reconciliation!(lock:, journal:, action:,
+    fault_after: ->(_boundary) { })
+  return false unless action == "rollback"
+  return false if journal["channels"]
+  if release_phase_started?(journal, "promotion_prepared") ||
+      release_phase_started?(journal, "promotion") ||
+      release_phase_started?(journal, "publication")
+    raise ReleaseStateError,
+      "Promotion phase state exists without an authenticated moving-channel contract"
+  end
+
+  request = journal["reconcile_action"]
+  unless request.is_a?(Hash) && request["action"] == "rollback" &&
+      request["generation"].to_s.match?(MOVING_CHANNEL_GENERATION_PATTERN)
+    raise ReleaseStateError, "Pre-promotion abandonment requires an authenticated rollback action"
+  end
+  if journal["status"] == "abandoned"
+    phase = journal.dig("phases", "abandonment")
+    unless phase.is_a?(Hash) && phase["status"] == "completed" &&
+        phase.dig("data", "action_generation") == request["generation"]
+      raise ReleaseStateError, "Authenticated pre-promotion abandonment state is invalid"
+    end
+    return true
+  end
+  if ReleaseLock::TERMINAL_STATUSES.include?(journal["status"])
+    raise ReleaseStateError, "A terminal release operation cannot be reclassified as abandoned"
+  end
+
+  data = {
+    "action" => "rollback", "scope" => "pre_promotion",
+    "action_generation" => request["generation"]
+  }
+  unless release_phase_started?(journal, "abandonment")
+    start_release_phase! lock, journal, "abandonment", data
+  end
+  unless journal.dig("phases", "abandonment", "data") == data
+    raise ReleaseStateError, "Authenticated pre-promotion abandonment contract changed"
+  end
+  fault_after.call "pre_promotion_abandon_started"
+
+  started_at = journal.dig("phases", "abandonment", "started_at")
+  now = Time.now.utc.iso8601
+  journal["phases"]["abandonment"] = {
+    "status" => "completed", "data" => data, "started_at" => started_at,
+    "completed_at" => now
+  }
+  journal["phase"] = "abandonment"
+  journal["outcome"] = "rollback"
+  journal["status"] = "abandoned"
+  journal["completed_steps"] = {}
+  journal.delete "completion_authority"
+  journal["completion_authority_invalidated_at"] ||= now
+  journal["updated_at"] = now
+  lock.write_journal journal
+  fault_after.call "pre_promotion_abandoned"
+  true
 end
 
 def release_phase_started?(journal, name)
@@ -1882,6 +2072,37 @@ rescue KeyError, ArgumentError
   abort "Release aborted: workflow run metadata is invalid."
 end
 
+def authenticated_retained_workflow_identity!(journal)
+  if journal["workflow_evidence"] && journal["workflow_evidence_pending"]
+    raise ReleaseStateError, "Workflow evidence cannot be pending and retained simultaneously"
+  end
+  contract = journal["workflow_evidence"] || journal["workflow_evidence_pending"]
+  return unless contract
+
+  unless contract.is_a?(Hash) &&
+      contract.keys.sort == %w[ files format_version operation_nonce run_attempt run_id ] &&
+      contract["format_version"] == ReleaseObjectLockAnchors::EVIDENCE_FORMAT_VERSION &&
+      contract["operation_nonce"].to_s.match?(/\A[0-9a-f]{64}\z/) &&
+      contract["run_id"].to_s.match?(/\A[1-9][0-9]*\z/) &&
+      contract["run_attempt"].to_s.match?(/\A[1-9][0-9]*\z/) &&
+      contract["files"].is_a?(Hash) && contract["files"].any?
+    raise ReleaseStateError, "Authenticated retained workflow identity is invalid"
+  end
+  identity = contract.slice("run_id", "run_attempt", "operation_nonce")
+  phase_identity = journal.dig("phases", "workflow", "data")&.slice(
+    "run_id", "run_attempt", "operation_nonce"
+  )
+  if phase_identity && phase_identity.values.any? && phase_identity != identity
+    raise ReleaseStateError,
+      "Retained workflow identity differs from the authenticated workflow phase"
+  end
+  if journal["workflow_run"] && journal["workflow_run"] != identity
+    raise ReleaseStateError,
+      "Retained workflow identity differs from the authenticated promotion contract"
+  end
+  identity
+end
+
 def atomic_no_replace_rename_command(source, destination)
   program = <<~RUBY
     source, destination = ARGV
@@ -1970,6 +2191,10 @@ def upload_immutable(local_path, remote_name, revision)
         "test \"$(sha256sum \"$candidate\" | cut -d' ' -f1)\" = #{Shellwords.escape(expected_digest)}; " \
         "rm -- \"$candidate\"; sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; fi; " \
         "test \"$(stat -c %h #{Shellwords.escape(destination)})\" -eq 1; " \
+        "test \"$(stat -c %u #{Shellwords.escape(destination)})\" = \"$(id -u)\"; " \
+        "chgrp \"$(id -g)\" #{Shellwords.escape(destination)}; chmod 0444 #{Shellwords.escape(destination)}; " \
+        "test \"$(stat -c %g #{Shellwords.escape(destination)})\" = \"$(id -g)\"; " \
+        "test \"$(stat -c %a #{Shellwords.escape(destination)})\" = 444; " \
         "sync -d #{Shellwords.escape(destination)}; sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
         "sha256sum #{Shellwords.escape(destination)}; " \
         "else echo 'Existing export is not a regular file' >&2; exit 1; fi"
@@ -1997,6 +2222,10 @@ def upload_immutable(local_path, remote_name, revision)
       "rm #{Shellwords.escape(temporary)}; fi; " \
       "test -f #{Shellwords.escape(destination)}; test ! -L #{Shellwords.escape(destination)}; " \
       "test \"$(stat -c %h #{Shellwords.escape(destination)})\" -eq 1; " \
+      "test \"$(stat -c %u #{Shellwords.escape(destination)})\" = \"$(id -u)\"; " \
+      "chgrp \"$(id -g)\" #{Shellwords.escape(destination)}; chmod 0444 #{Shellwords.escape(destination)}; " \
+      "test \"$(stat -c %g #{Shellwords.escape(destination)})\" = \"$(id -g)\"; " \
+      "test \"$(stat -c %a #{Shellwords.escape(destination)})\" = 444; " \
       "sync -d #{Shellwords.escape(destination)}; sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
       "sha256sum #{Shellwords.escape(destination)}"
     unless output.split.first == expected_digest
@@ -2029,9 +2258,37 @@ def stage_static_release!(archive_path, checksum_path, version, revision)
       test -f #{Shellwords.escape(checksum_temporary)}; test ! -L #{Shellwords.escape(checksum_temporary)};
       test "$(stat -c %h #{Shellwords.escape(checksum_temporary)})" -eq 1;
       test "$(sha256sum #{Shellwords.escape(checksum_temporary)} | cut -d' ' -f1)" = #{Shellwords.escape(checksum_digest)};
-      test "$(readlink campfire.zip)" = "campfire-current/campfire.zip";
-      test "$(readlink campfire.zip.sha256)" = "campfire-current/campfire.zip.sha256";
+      deploy_uid=$(id -u); deploy_gid=$(id -g);
+      test -L campfire.zip; test "$(readlink campfire.zip)" = "campfire-current/campfire.zip";
+      test -L campfire.zip.sha256; test "$(readlink campfire.zip.sha256)" = "campfire-current/campfire.zip.sha256";
       test -L campfire-current;
+      current_target=$(readlink campfire-current);
+      printf '%s\n' "$current_target" | grep -Eq '^campfire-(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$';
+      test -d "$current_target"; test ! -L "$current_target";
+      test -z "$(find "$current_target" -mindepth 1 -maxdepth 1 ! -name campfire.zip ! -name campfire.zip.sha256 -print -quit)";
+      test "$(find "$current_target" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 2;
+      test -f "$current_target/campfire.zip"; test ! -L "$current_target/campfire.zip";
+      test -f "$current_target/campfire.zip.sha256"; test ! -L "$current_target/campfire.zip.sha256";
+      test "$(stat -c %h "$current_target/campfire.zip")" -eq 1;
+      test "$(stat -c %h "$current_target/campfire.zip.sha256")" -eq 1;
+      test "$(stat -c %u "$current_target")" = "$deploy_uid";
+      test "$(stat -c %u "$current_target/campfire.zip")" = "$deploy_uid";
+      test "$(stat -c %u "$current_target/campfire.zip.sha256")" = "$deploy_uid";
+      chgrp "$deploy_gid" "$current_target" "$current_target/campfire.zip" "$current_target/campfire.zip.sha256";
+      chmod 0444 "$current_target/campfire.zip" "$current_target/campfire.zip.sha256";
+      chmod 0555 "$current_target";
+      test "$(stat -c %a "$current_target")" = 555;
+      test "$(stat -c %a "$current_target/campfire.zip")" = 444;
+      test "$(stat -c %a "$current_target/campfire.zip.sha256")" = 444;
+      test "$(stat -c %g "$current_target")" = "$deploy_gid";
+      test "$(stat -c %g "$current_target/campfire.zip")" = "$deploy_gid";
+      test "$(stat -c %g "$current_target/campfire.zip.sha256")" = "$deploy_gid";
+      test campfire.zip -ef "$current_target/campfire.zip";
+      test campfire.zip.sha256 -ef "$current_target/campfire.zip.sha256";
+      current_archive_digest=$(sha256sum "$current_target/campfire.zip" | cut -d' ' -f1);
+      test "$(wc -c < "$current_target/campfire.zip.sha256" | tr -d ' ')" = 79;
+      test "$(cat "$current_target/campfire.zip.sha256")" = "$current_archive_digest  campfire.zip";
+      sha256sum --check campfire.zip.sha256;
       if test -e #{Shellwords.escape(target_path)} || test -L #{Shellwords.escape(target_path)}; then
         test -d #{Shellwords.escape(target_path)}; test ! -L #{Shellwords.escape(target_path)};
         test -z "$(find #{Shellwords.escape(target_path)} -mindepth 1 -maxdepth 1 ! -name campfire.zip ! -name campfire.zip.sha256 -print -quit)";
@@ -2069,10 +2326,31 @@ def stage_static_release!(archive_path, checksum_path, version, revision)
       test "$(stat -c %h #{Shellwords.escape(target_checksum)})" -eq 1;
       test "$(sha256sum #{Shellwords.escape(target_archive)} | cut -d' ' -f1)" = #{Shellwords.escape(archive_digest)};
       test "$(sha256sum #{Shellwords.escape(target_checksum)} | cut -d' ' -f1)" = #{Shellwords.escape(checksum_digest)};
+      test "$(stat -c %u #{Shellwords.escape(target_path)})" = "$deploy_uid";
+      test "$(stat -c %u #{Shellwords.escape(target_archive)})" = "$deploy_uid";
+      test "$(stat -c %u #{Shellwords.escape(target_checksum)})" = "$deploy_uid";
+      chgrp "$deploy_gid" #{Shellwords.escape(target_path)} #{Shellwords.escape(target_archive)} #{Shellwords.escape(target_checksum)};
+      chmod 0444 #{Shellwords.escape(target_archive)} #{Shellwords.escape(target_checksum)};
+      chmod 0555 #{Shellwords.escape(target_path)};
+      test "$(stat -c %a #{Shellwords.escape(target_path)})" = 555;
+      test "$(stat -c %a #{Shellwords.escape(target_archive)})" = 444;
+      test "$(stat -c %a #{Shellwords.escape(target_checksum)})" = 444;
+      test "$(stat -c %g #{Shellwords.escape(target_path)})" = "$deploy_gid";
+      test "$(stat -c %g #{Shellwords.escape(target_archive)})" = "$deploy_gid";
+      test "$(stat -c %g #{Shellwords.escape(target_checksum)})" = "$deploy_gid";
       sync -d #{Shellwords.escape(target_archive)} #{Shellwords.escape(target_checksum)};
       sync -f #{Shellwords.escape(target_path)};
       sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)};
       (cd #{Shellwords.escape(target_path)} && sha256sum --check campfire.zip.sha256);
+      test "$(wc -c < #{Shellwords.escape(target_checksum)} | tr -d ' ')" = 79;
+      test "$(cat #{Shellwords.escape(target_checksum)})" = "#{archive_digest}  campfire.zip";
+      if test "$(readlink campfire-current)" = #{Shellwords.escape(target_name)}; then
+        test campfire.zip -ef #{Shellwords.escape(target_archive)};
+        test campfire.zip.sha256 -ef #{Shellwords.escape(target_checksum)};
+        test "$(sha256sum campfire.zip | cut -d' ' -f1)" = #{Shellwords.escape(archive_digest)};
+        test "$(sha256sum campfire.zip.sha256 | cut -d' ' -f1)" = #{Shellwords.escape(checksum_digest)};
+        sha256sum --check campfire.zip.sha256;
+      fi;
     SH
     run! "ssh", "#{EXPORT_REMOTE_USER}@#{host}", command
   end
@@ -2082,7 +2360,24 @@ end
 def static_release_target(host)
   target = capture!(
     "ssh", "#{EXPORT_REMOTE_USER}@#{host}",
-    "cd #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)} && test -L campfire-current && readlink campfire-current"
+    "set -eu; cd #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
+      "test -L campfire-current; test -L campfire.zip; " \
+      "test \"$(readlink campfire.zip)\" = campfire-current/campfire.zip; " \
+      "test -L campfire.zip.sha256; " \
+      "test \"$(readlink campfire.zip.sha256)\" = campfire-current/campfire.zip.sha256; " \
+      "target=$(readlink campfire-current); " \
+      "printf '%s\\n' \"$target\" | grep -Eq '^campfire-(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$'; " \
+      "test -d \"$target\"; test ! -L \"$target\"; " \
+      "test -z \"$(find \"$target\" -mindepth 1 -maxdepth 1 ! -name campfire.zip ! -name campfire.zip.sha256 -print -quit)\"; " \
+      "test \"$(find \"$target\" -mindepth 1 -maxdepth 1 -print | wc -l)\" -eq 2; " \
+      "test -f \"$target/campfire.zip\"; test ! -L \"$target/campfire.zip\"; " \
+      "test -f \"$target/campfire.zip.sha256\"; test ! -L \"$target/campfire.zip.sha256\"; " \
+      "test campfire.zip -ef \"$target/campfire.zip\"; " \
+      "test campfire.zip.sha256 -ef \"$target/campfire.zip.sha256\"; " \
+      "digest=$(sha256sum campfire.zip | cut -d' ' -f1); " \
+      "test \"$(wc -c < campfire.zip.sha256 | tr -d ' ')\" = 79; " \
+      "test \"$(cat campfire.zip.sha256)\" = \"$digest  campfire.zip\"; " \
+      "sha256sum --check campfire.zip.sha256 >/dev/null; printf '%s\\n' \"$target\""
   )
   unless target.match?(/\Acampfire-(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z/)
     abort "Release aborted: invalid static pointer on #{host}: #{target.inspect}."
@@ -2101,11 +2396,32 @@ def static_release_file_digests(host, target_name)
   checksum = File.join(target, "campfire.zip.sha256")
   output = capture!(
     "ssh", "#{EXPORT_REMOTE_USER}@#{host}",
-    "set -eu; test -d #{Shellwords.escape(target)}; test ! -L #{Shellwords.escape(target)}; " \
+    "set -eu; cd #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
+      "test \"$(readlink campfire-current)\" = #{Shellwords.escape(target_name)}; " \
+      "test -L campfire.zip; test \"$(readlink campfire.zip)\" = campfire-current/campfire.zip; " \
+      "test -L campfire.zip.sha256; test \"$(readlink campfire.zip.sha256)\" = campfire-current/campfire.zip.sha256; " \
+      "test -d #{Shellwords.escape(target)}; test ! -L #{Shellwords.escape(target)}; " \
+      "test -z \"$(find #{Shellwords.escape(target)} -mindepth 1 -maxdepth 1 ! -name campfire.zip ! -name campfire.zip.sha256 -print -quit)\"; " \
+      "test \"$(find #{Shellwords.escape(target)} -mindepth 1 -maxdepth 1 -print | wc -l)\" -eq 2; " \
       "test -f #{Shellwords.escape(archive)}; test ! -L #{Shellwords.escape(archive)}; " \
       "test -f #{Shellwords.escape(checksum)}; test ! -L #{Shellwords.escape(checksum)}; " \
-      "cd #{Shellwords.escape(target)}; sha256sum --check campfire.zip.sha256 >/dev/null; " \
-      "sha256sum campfire.zip campfire.zip.sha256"
+      "test \"$(stat -c %h #{Shellwords.escape(archive)})\" -eq 1; " \
+      "test \"$(stat -c %h #{Shellwords.escape(checksum)})\" -eq 1; " \
+      "test \"$(stat -c %a #{Shellwords.escape(target)})\" = 555; " \
+      "test \"$(stat -c %a #{Shellwords.escape(archive)})\" = 444; " \
+      "test \"$(stat -c %a #{Shellwords.escape(checksum)})\" = 444; " \
+      "test \"$(stat -c %u #{Shellwords.escape(target)})\" = \"$(id -u)\"; " \
+      "test \"$(stat -c %u #{Shellwords.escape(archive)})\" = \"$(id -u)\"; " \
+      "test \"$(stat -c %u #{Shellwords.escape(checksum)})\" = \"$(id -u)\"; " \
+      "test \"$(stat -c %g #{Shellwords.escape(target)})\" = \"$(id -g)\"; " \
+      "test \"$(stat -c %g #{Shellwords.escape(archive)})\" = \"$(id -g)\"; " \
+      "test \"$(stat -c %g #{Shellwords.escape(checksum)})\" = \"$(id -g)\"; " \
+      "test campfire.zip -ef #{Shellwords.escape(archive)}; " \
+      "test campfire.zip.sha256 -ef #{Shellwords.escape(checksum)}; " \
+      "test \"$(wc -c < #{Shellwords.escape(checksum)} | tr -d ' ')\" = 79; " \
+      "test \"$(cat #{Shellwords.escape(checksum)})\" = \"$(sha256sum #{Shellwords.escape(archive)} | cut -d' ' -f1)  campfire.zip\"; " \
+      "sha256sum --check campfire.zip.sha256 >/dev/null; " \
+      "sha256sum #{Shellwords.escape(archive)} #{Shellwords.escape(checksum)}"
   )
   values = output.lines.map { _1.split.first }
   unless values.length == 2 && values.all? { _1.match?(/\A[0-9a-f]{64}\z/) }
@@ -2122,26 +2438,57 @@ def verify_static_release_files!(host, target_name, archive_digest:, checksum_di
   target = File.join(EXPORT_DEPLOY_LOCATION, target_name)
   archive = File.join(target, "campfire.zip")
   checksum = File.join(target, "campfire.zip.sha256")
-  command = "set -eu; test -d #{Shellwords.escape(target)}; test ! -L #{Shellwords.escape(target)}; " \
+  command = "set -eu; cd #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
+    "test -L campfire.zip; test \"$(readlink campfire.zip)\" = campfire-current/campfire.zip; " \
+    "test -L campfire.zip.sha256; test \"$(readlink campfire.zip.sha256)\" = campfire-current/campfire.zip.sha256; " \
+    "test -L campfire-current; " \
+    "test -d #{Shellwords.escape(target)}; test ! -L #{Shellwords.escape(target)}; " \
+    "test -z \"$(find #{Shellwords.escape(target)} -mindepth 1 -maxdepth 1 ! -name campfire.zip ! -name campfire.zip.sha256 -print -quit)\"; " \
+    "test \"$(find #{Shellwords.escape(target)} -mindepth 1 -maxdepth 1 -print | wc -l)\" -eq 2; " \
     "test -f #{Shellwords.escape(archive)}; test ! -L #{Shellwords.escape(archive)}; " \
     "test -f #{Shellwords.escape(checksum)}; test ! -L #{Shellwords.escape(checksum)}; " \
+    "test \"$(stat -c %h #{Shellwords.escape(archive)})\" -eq 1; " \
+    "test \"$(stat -c %h #{Shellwords.escape(checksum)})\" -eq 1; " \
+    "test \"$(stat -c %a #{Shellwords.escape(target)})\" = 555; " \
+    "test \"$(stat -c %a #{Shellwords.escape(archive)})\" = 444; " \
+    "test \"$(stat -c %a #{Shellwords.escape(checksum)})\" = 444; " \
+    "test \"$(stat -c %u #{Shellwords.escape(target)})\" = \"$(id -u)\"; " \
+    "test \"$(stat -c %u #{Shellwords.escape(archive)})\" = \"$(id -u)\"; " \
+    "test \"$(stat -c %u #{Shellwords.escape(checksum)})\" = \"$(id -u)\"; " \
+    "test \"$(stat -c %g #{Shellwords.escape(target)})\" = \"$(id -g)\"; " \
+    "test \"$(stat -c %g #{Shellwords.escape(archive)})\" = \"$(id -g)\"; " \
+    "test \"$(stat -c %g #{Shellwords.escape(checksum)})\" = \"$(id -g)\"; " \
     "test \"$(sha256sum #{Shellwords.escape(archive)} | cut -d' ' -f1)\" = #{Shellwords.escape(archive_digest)}; " \
     "test \"$(sha256sum #{Shellwords.escape(checksum)} | cut -d' ' -f1)\" = #{Shellwords.escape(checksum_digest)}; " \
-    "cd #{Shellwords.escape(target)}; sha256sum --check campfire.zip.sha256"
+    "test \"$(wc -c < #{Shellwords.escape(checksum)} | tr -d ' ')\" = 79; " \
+    "test \"$(cat #{Shellwords.escape(checksum)})\" = \"#{archive_digest}  campfire.zip\"; " \
+    "(cd #{Shellwords.escape(target)} && sha256sum --check campfire.zip.sha256); " \
+    "if test \"$(readlink campfire-current)\" = #{Shellwords.escape(target_name)}; then " \
+    "test campfire.zip -ef #{Shellwords.escape(archive)}; " \
+    "test campfire.zip.sha256 -ef #{Shellwords.escape(checksum)}; " \
+    "test \"$(sha256sum campfire.zip | cut -d' ' -f1)\" = #{Shellwords.escape(archive_digest)}; " \
+    "test \"$(sha256sum campfire.zip.sha256 | cut -d' ' -f1)\" = #{Shellwords.escape(checksum_digest)}; " \
+    "sha256sum --check campfire.zip.sha256; fi"
   capture! "ssh", "#{EXPORT_REMOTE_USER}@#{host}", command
   true
 end
 
-def set_static_release_target!(host, target_name, revision, expected:, runner:)
+def set_static_release_target!(host, target_name, revision, expected:, archive_digest:,
+    checksum_digest:, runner:)
   unless target_name.match?(/\Acampfire-(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z/)
     raise ReleaseStateError, "Invalid static release target #{target_name.inspect}"
   end
   unless expected.match?(/\Acampfire-(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z/)
     raise ReleaseStateError, "Invalid expected static release target #{expected.inspect}"
   end
+  unless archive_digest.match?(/\A[0-9a-f]{64}\z/) && checksum_digest.match?(/\A[0-9a-f]{64}\z/)
+    raise ReleaseStateError, "Invalid static release artifact digest"
+  end
 
   temporary = ".campfire-current.#{revision}.tmp"
   pointer_lock = ".campfire-current.release.lock"
+  target_archive = File.join(target_name, "campfire.zip")
+  target_checksum = File.join(target_name, "campfire.zip.sha256")
   command = "set -eu; umask 077; cd #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
     "if test ! -e #{Shellwords.escape(pointer_lock)} && test ! -L #{Shellwords.escape(pointer_lock)}; then " \
     "(set -C; : > #{Shellwords.escape(pointer_lock)}) 2>/dev/null || true; fi; " \
@@ -2149,18 +2496,44 @@ def set_static_release_target!(host, target_name, revision, expected:, runner:)
     "test \"$(stat -c %h #{Shellwords.escape(pointer_lock)})\" -eq 1; " \
     "exec 9<>#{Shellwords.escape(pointer_lock)}; flock -x 9; " \
     "test \"$(stat -Lc '%d:%i' /proc/$$/fd/9)\" = \"$(stat -Lc '%d:%i' #{Shellwords.escape(pointer_lock)})\"; " \
+    "test -L campfire.zip; test \"$(readlink campfire.zip)\" = campfire-current/campfire.zip; " \
+    "test -L campfire.zip.sha256; test \"$(readlink campfire.zip.sha256)\" = campfire-current/campfire.zip.sha256; " \
     "test \"$(readlink campfire-current)\" = #{Shellwords.escape(expected)}; " \
     "if test -e #{Shellwords.escape(temporary)} || test -L #{Shellwords.escape(temporary)}; then " \
     "test -L #{Shellwords.escape(temporary)}; rm #{Shellwords.escape(temporary)}; fi; " \
-    "test -d #{Shellwords.escape(target_name)}; " \
+    "test -d #{Shellwords.escape(target_name)}; test ! -L #{Shellwords.escape(target_name)}; " \
+    "test -z \"$(find #{Shellwords.escape(target_name)} -mindepth 1 -maxdepth 1 ! -name campfire.zip ! -name campfire.zip.sha256 -print -quit)\"; " \
+    "test \"$(find #{Shellwords.escape(target_name)} -mindepth 1 -maxdepth 1 -print | wc -l)\" -eq 2; " \
+    "test -f #{Shellwords.escape(target_archive)}; test ! -L #{Shellwords.escape(target_archive)}; " \
+    "test -f #{Shellwords.escape(target_checksum)}; test ! -L #{Shellwords.escape(target_checksum)}; " \
+    "test \"$(stat -c %h #{Shellwords.escape(target_archive)})\" -eq 1; " \
+    "test \"$(stat -c %h #{Shellwords.escape(target_checksum)})\" -eq 1; " \
+    "test \"$(stat -c %a #{Shellwords.escape(target_name)})\" = 555; " \
+    "test \"$(stat -c %a #{Shellwords.escape(target_archive)})\" = 444; " \
+    "test \"$(stat -c %a #{Shellwords.escape(target_checksum)})\" = 444; " \
+    "test \"$(stat -c %u #{Shellwords.escape(target_name)})\" = \"$(id -u)\"; " \
+    "test \"$(stat -c %u #{Shellwords.escape(target_archive)})\" = \"$(id -u)\"; " \
+    "test \"$(stat -c %u #{Shellwords.escape(target_checksum)})\" = \"$(id -u)\"; " \
+    "test \"$(stat -c %g #{Shellwords.escape(target_name)})\" = \"$(id -g)\"; " \
+    "test \"$(stat -c %g #{Shellwords.escape(target_archive)})\" = \"$(id -g)\"; " \
+    "test \"$(stat -c %g #{Shellwords.escape(target_checksum)})\" = \"$(id -g)\"; " \
+    "test \"$(sha256sum #{Shellwords.escape(target_archive)} | cut -d' ' -f1)\" = #{Shellwords.escape(archive_digest)}; " \
+    "test \"$(sha256sum #{Shellwords.escape(target_checksum)} | cut -d' ' -f1)\" = #{Shellwords.escape(checksum_digest)}; " \
+    "test \"$(wc -c < #{Shellwords.escape(target_checksum)} | tr -d ' ')\" = 79; " \
+    "test \"$(cat #{Shellwords.escape(target_checksum)})\" = \"#{archive_digest}  campfire.zip\"; " \
     "(cd #{Shellwords.escape(target_name)} && sha256sum --check campfire.zip.sha256); " \
-    "sync -d #{Shellwords.escape(File.join(target_name, 'campfire.zip'))} #{Shellwords.escape(File.join(target_name, 'campfire.zip.sha256'))}; " \
+    "sync -d #{Shellwords.escape(target_archive)} #{Shellwords.escape(target_checksum)}; " \
     "sync -f #{Shellwords.escape(target_name)}; " \
     "ln -s #{Shellwords.escape(target_name)} #{Shellwords.escape(temporary)}; " \
     "test \"$(readlink campfire-current)\" = #{Shellwords.escape(expected)}; " \
     "mv -Tf #{Shellwords.escape(temporary)} campfire-current; " \
     "sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
-    "test \"$(readlink campfire-current)\" = #{Shellwords.escape(target_name)}"
+    "test \"$(readlink campfire-current)\" = #{Shellwords.escape(target_name)}; " \
+    "test campfire.zip -ef #{Shellwords.escape(target_archive)}; " \
+    "test campfire.zip.sha256 -ef #{Shellwords.escape(target_checksum)}; " \
+    "test \"$(sha256sum campfire.zip | cut -d' ' -f1)\" = #{Shellwords.escape(archive_digest)}; " \
+    "test \"$(sha256sum campfire.zip.sha256 | cut -d' ' -f1)\" = #{Shellwords.escape(checksum_digest)}; " \
+    "sha256sum --check campfire.zip.sha256"
   mutate! "ssh", "#{EXPORT_REMOTE_USER}@#{host}", command, runner:
 end
 
@@ -2208,6 +2581,15 @@ def github_latest_tag(repository)
   return if [ stdout, stderr ].join.match?(/404|not found/i)
 
   abort "Release aborted: could not inspect the latest GitHub release.\n#{stderr}#{stdout}"
+end
+
+def publish_github_release_without_latest!(repository:, tag:, runner:)
+  unless repository == EXPECTED_REPOSITORY && tag.delete_prefix("v").match?(STABLE_VERSION) &&
+      tag.start_with?("v")
+    raise ReleaseStateError, "GitHub publication identity is invalid"
+  end
+  mutate! "gh", "release", "edit", tag, "--repo", repository,
+    "--draft=false", "--prerelease=false", "--latest=false", runner:
 end
 
 def verify_tag_signature!(tag, expected_fingerprint)
@@ -2277,6 +2659,82 @@ rescue JSON::ParserError, KeyError, NoMethodError
   raise ReleaseStateError, "#{architecture} upgrade receipt is invalid"
 end
 
+def verify_retained_provenance_bundle!(bundle_path:, repository:, image:, digest:, source_sha:,
+    runner: Open3.method(:capture3))
+  unless repository == EXPECTED_REPOSITORY && image == "ghcr.io/#{repository.downcase}" &&
+      digest.match?(/\Asha256:[0-9a-f]{64}\z/) && source_sha.match?(/\A[0-9a-f]{40}\z/)
+    raise ReleaseStateError, "Retained provenance verification identity is invalid"
+  end
+  stat = File.lstat(bundle_path)
+  unless stat.file? && !stat.symlink? && stat.nlink == 1 && stat.size.positive?
+    raise ReleaseStateError, "Retained provenance bundle is not a fixed regular file"
+  end
+
+  certificate_identity =
+    "https://github.com/#{repository}/.github/workflows/#{PUBLISH_WORKFLOW_FILE}@refs/heads/main"
+  command = [
+    "gh", "attestation", "verify", "oci://#{image}@#{digest}",
+    "--bundle", bundle_path,
+    "--repo", repository,
+    "--cert-identity", certificate_identity,
+    "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+    "--signer-workflow", "#{repository}/.github/workflows/#{PUBLISH_WORKFLOW_FILE}",
+    "--signer-digest", source_sha,
+    "--source-ref", "refs/heads/main",
+    "--source-digest", source_sha,
+    "--predicate-type", "https://slsa.dev/provenance/v1",
+    "--deny-self-hosted-runners",
+    "--format", "json"
+  ]
+  stdout, stderr, status = runner.call(*command)
+  unless status.success?
+    raise ReleaseStateError,
+      "Cryptographic verification failed for retained provenance bundle #{File.basename(bundle_path)}: #{stderr}#{stdout}"
+  end
+
+  results = JSON.parse(stdout)
+  expected_digest = digest.delete_prefix("sha256:")
+  valid = results.is_a?(Array) && results.any? && results.all? do |result|
+    statement = result.dig("verificationResult", "statement")
+    statement.is_a?(Hash) &&
+      statement["predicateType"] == "https://slsa.dev/provenance/v1" &&
+      statement["subject"] == [ {
+        "name" => image, "digest" => { "sha256" => expected_digest }
+      } ]
+  end
+  unless valid
+    raise ReleaseStateError,
+      "Cryptographically verified provenance does not bind exact subject #{image}@#{digest}"
+  end
+  true
+rescue JSON::ParserError, Errno::ENOENT, NoMethodError => error
+  raise ReleaseStateError, "Retained provenance bundle verification is invalid: #{error.message}"
+end
+
+def verify_retained_release_provenance!(evidence:, destination:, repository:, image:, sha:,
+    runner: Open3.method(:capture3))
+  bundles = [
+    [ "index-provenance.bundle.jsonl", evidence.fetch("index_digest") ],
+    *RELEASE_EVIDENCE_ARCHITECTURES.flat_map do |architecture|
+      [
+        [ "parent-provenance-#{architecture}.bundle.jsonl",
+          evidence.fetch("build_indexes").fetch(architecture) ],
+        [ "runnable-provenance-#{architecture}.bundle.jsonl",
+          evidence.fetch("children").fetch(architecture) ]
+      ]
+    end
+  ]
+  bundles.each do |name, digest|
+    verify_retained_provenance_bundle!(
+      bundle_path: File.join(destination, name), repository:, image:, digest:,
+      source_sha: sha, runner:
+    )
+  end
+  true
+rescue KeyError, NoMethodError
+  raise ReleaseStateError, "Retained provenance subject inventory is incomplete"
+end
+
 def validate_architecture_evidence!(evidence, architecture:, repository:, sha:, tag:, image:,
     run_id:, run_attempt:, files:, destination:)
   validate_exact_keys! evidence, %w[
@@ -2284,11 +2742,11 @@ def validate_architecture_evidence!(evidence, architecture:, repository:, sha:, 
     image_inspection_sha256 kind legacy_digest legacy_recovery legacy_reference legacy_revision
     parent_digest platform recovery release_tag run_attempt run_id runtime_binding signed_provenance
     source_schema_version source_sha target_build_identity target_config_digest target_digest
-    target_manifest_digest target_reference upgrade_receipt_sha256
+    target_manifest_digest target_reference transport_mode upgrade_receipt_sha256
   ], "#{architecture} recovery evidence"
   checks = validate_exact_keys!(evidence.fetch("checks"), %w[
     authorized_upgrade current_restore http_history_and_uploads legacy_restore
-    migration_denials tamper_denials worker_execution
+    migration_denials tamper_denials transport_contract worker_execution
   ], "#{architecture} recovery checks")
   buildkit = validate_exact_keys!(
     evidence.fetch("buildkit"), %w[ provenance_sha256 sbom_sha256 ],
@@ -2342,6 +2800,7 @@ def validate_architecture_evidence!(evidence, architecture:, repository:, sha:, 
       evidence.fetch("target_digest").match?(/\Asha256:[0-9a-f]{64}\z/) &&
       evidence.fetch("target_manifest_digest") == evidence.fetch("target_digest") &&
       evidence.fetch("runtime_binding") == "registry-manifest-digest" &&
+      evidence.fetch("transport_mode") == "external-https-loopback-probe" &&
       evidence.fetch("parent_digest").match?(/\Asha256:[0-9a-f]{64}\z/) &&
       evidence.fetch("target_config_digest").match?(/\Asha256:[0-9a-f]{64}\z/) &&
       evidence.fetch("target_build_identity") == expected_build_identity &&
@@ -2350,6 +2809,7 @@ def validate_architecture_evidence!(evidence, architecture:, repository:, sha:, 
       evidence.fetch("legacy_revision").match?(/\A[0-9a-f]{40}\z/) &&
       evidence.fetch("source_schema_version").is_a?(String) && !evidence.fetch("source_schema_version").empty? &&
       evidence.fetch("upgrade_receipt_sha256").match?(/\A[0-9a-f]{64}\z/) &&
+      checks.fetch("transport_contract") == "passed" &&
       checks.values.all? { _1 == "passed" } && evidence.fetch("recovery") == "passed" &&
       recovery_artifacts_valid && signed.fetch("source_digest") == sha &&
       signed.fetch("source_ref") == "refs/heads/main" &&
@@ -2370,7 +2830,7 @@ rescue KeyError, NoMethodError
 end
 
 def validate_release_evidence!(repository:, run_id:, run_attempt:, destination:, sha:, tag:, image:,
-    operation_nonce:)
+    operation_nonce:, attestation_runner: Open3.method(:capture3))
   entries = Dir.children(destination).sort
   unless entries == RELEASE_EVIDENCE_INVENTORY
     raise ReleaseStateError, "Workflow evidence bundle has missing or unexpected files"
@@ -2496,6 +2956,10 @@ def validate_release_evidence!(repository:, run_id:, run_attempt:, destination:,
       evidence.fetch("promotion_requirements_sha256") == files.fetch("promotion-requirements.json")
     raise ReleaseStateError, "Workflow promotion requirements are invalid or unbound"
   end
+
+  verify_retained_release_provenance!(
+    evidence:, destination:, repository:, image:, sha:, runner: attestation_runner
+  )
 
   %w[ container-validation-amd64.json container-validation-arm64.json
       sbom-amd64.spdx.json sbom-arm64.spdx.json buildkit-provenance-amd64.json
@@ -2636,19 +3100,14 @@ def validate_observed_github_release_state!(journal:, release:)
         public_channel.fetch("previous") == "draft" && public_channel.fetch("target") == "public"
       raise ReleaseStateError, "Public GitHub release appeared before authenticated promotion preparation"
     end
-    mutation = journal["mutation_in_flight"]
-    settled = journal.fetch("settled_mutations", [])
-    completed = journal.dig("completed_steps", "github_public")
-    public_target = { "channel" => "github_public", "value" => "public" }
-    authorized = mutation&.fetch("target", nil) == public_target ||
-      settled.any? { _1.fetch("target", nil) == public_target } ||
-      completed&.fetch("value", nil) == "public" ||
-      journal.dig("phases", "publication", "data", "github_release") == "public"
-    unless authorized
+    unless authenticated_moving_channel_target?(
+        journal, channel: "github_public", value: "public"
+      )
       raise ReleaseStateError, "Public GitHub release has no authenticated publication transition"
     end
-  elsif journal.dig("phases", "publication", "data", "github_release") == "public" ||
-      journal.dig("completed_steps", "github_public", "value") == "public"
+  elsif authenticated_moving_channel_target?(
+      journal, channel: "github_public", value: "public"
+    )
     raise ReleaseStateError, "GitHub release returned to draft after authenticated publication"
   end
   true
@@ -2993,6 +3452,8 @@ class ReleaseLock
           raise ReleaseStateError, "Release journal history chain is broken at revision #{entry.fetch(:revision)}"
         end
       end
+
+      ordered.each { ReleaseJournal.validate_format! _1.fetch(:journal) }
 
       artifacts = validate_phase_zero_artifact_records!(
         snapshot.fetch(:artifacts, []), ordered.last.fetch(:journal)
@@ -3817,6 +4278,14 @@ if $PROGRAM_NAME == __FILE__
 abort "You must specify a version, e.g. `bin/release 1.5.0`." unless VERSION
 abort "Release aborted: version must use stable MAJOR.MINOR.PATCH syntax." unless VERSION.match?(STABLE_VERSION)
 
+reconcile_sha = ENV["RELEASE_RECONCILE_SHA"].to_s
+reconciling = !reconcile_sha.empty?
+resuming = !ENV["RELEASE_RESUME_SHA"].to_s.empty?
+begin
+  reconcile_action = parse_release_reconcile_action!(env: ENV, reconciling:)
+rescue ReleaseStateError => error
+  abort "Release aborted: #{error.message}."
+end
 journal_key = ReleaseJournal.key_from_env
 GIT_SHA = capture!("git", "rev-parse", "HEAD")
 TAG = "v#{VERSION}"
@@ -3827,9 +4296,6 @@ GHCR_IMAGE = "ghcr.io/#{REPOSITORY.downcase}"
 COSIGN_IDENTITY = ENV["RELEASE_COSIGN_IDENTITY"].to_s
 COSIGN_ISSUER = ENV.fetch("RELEASE_COSIGN_ISSUER", "https://github.com/login/oauth")
 TAG_SIGNER_FINGERPRINT = ENV["RELEASE_TAG_SIGNER_FINGERPRINT"].to_s.delete(" ").upcase
-reconcile_sha = ENV["RELEASE_RECONCILE_SHA"].to_s
-reconciling = !reconcile_sha.empty?
-resuming = !ENV["RELEASE_RESUME_SHA"].to_s.empty?
 settled_mutation_token = ENV["RELEASE_RECONCILE_SETTLED_MUTATION_TOKEN"].to_s
 abort "Release aborted: RELEASE_COSIGN_IDENTITY is required to verify the registry.once.com signature." if COSIGN_IDENTITY.empty?
 begin
@@ -3903,13 +4369,6 @@ if existing_state
     state: existing_state, expected_release:, reconciling:, settled_mutation_token:,
     expected_anchor_set: journal_anchors.identity
   )
-end
-if release_public && reconciling &&
-    (existing_state&.dig(:journal, "phases", "workflow", "data", "run_id").to_s.empty? ||
-      existing_state&.dig(:journal, "phases", "workflow", "data", "run_attempt").to_s.empty?) &&
-    (ENV["RELEASE_RECONCILE_RUN_ID"].to_s.empty? || ENV["RELEASE_RECONCILE_RUN_ATTEMPT"].to_s.empty?)
-  raise ReleaseStateError,
-    "Public-release reconciliation requires the original RELEASE_RECONCILE_RUN_ID and RELEASE_RECONCILE_RUN_ATTEMPT"
 end
 
 verification_commands = [
@@ -4052,6 +4511,75 @@ ReleaseLock.materialize_phase_zero_artifacts!(
 settle_release_mutation!(
   lock: release_lock, journal:, reconciling:, token: settled_mutation_token
 )
+authenticate_reconcile_action!(
+  lock: release_lock, journal:, action: reconcile_action,
+  fault_after: ->(boundary) { fault_after_external_mutation! boundary }
+)
+if reconcile_action == "rollback" && release_public
+  raise ReleaseStateError, "A public GitHub release cannot be rolled back"
+end
+if abandon_pre_promotion_reconciliation!(
+    lock: release_lock, journal:, action: reconcile_action,
+    fault_after: ->(boundary) { fault_after_external_mutation! boundary }
+  )
+  FileUtils.rm_f notes_file
+  FileUtils.rm_rf "tmp/release-evidence-#{VERSION}"
+  unless release_lock.release(fault_after: ->(step) { fault_after_external_mutation!(step) })
+    raise ReleaseStateError,
+      "Pre-promotion release was abandoned, but durable lock cleanup requires reconciliation"
+  end
+  puts "Abandoned Campfire #{TAG} before promotion; no forward publication mutation was performed."
+  exit 0
+end
+
+rollback_prepared_promotion = reconcile_action == "rollback" && journal["channels"]
+if rollback_prepared_promotion
+  workflow_run = journal.fetch("workflow_run")
+  unless workflow_run.is_a?(Hash) &&
+      workflow_run.keys.sort == %w[ operation_nonce run_attempt run_id ] &&
+      workflow_run["operation_nonce"].to_s.match?(/\A[0-9a-f]{64}\z/) &&
+      workflow_run["run_id"].to_s.match?(/\A[1-9][0-9]*\z/) &&
+      workflow_run["run_attempt"].to_s.match?(/\A[1-9][0-9]*\z/)
+    raise ReleaseStateError, "Authenticated rollback workflow identity is invalid"
+  end
+  retained_identity = authenticated_retained_workflow_identity!(journal)
+  if retained_identity && retained_identity != workflow_run
+    raise ReleaseStateError, "Retained evidence differs from the rollback workflow identity"
+  end
+  workflow_run_id = workflow_run.fetch("run_id")
+  workflow_run_attempt = workflow_run.fetch("run_attempt")
+  operation_nonce = workflow_run.fetch("operation_nonce")
+  artifacts = journal.fetch("artifacts")
+  ghcr_digest = artifacts.fetch("ghcr_digest")
+  once_digest = artifacts.fetch("once_digest")
+  unless [ ghcr_digest, once_digest ].all? { _1.to_s.match?(/\Asha256:[0-9a-f]{64}\z/) } &&
+      artifacts.fetch("export_sha256") == Digest::SHA256.file(versioned_export).hexdigest &&
+      artifacts.fetch("checksum_sha256") == Digest::SHA256.file(versioned_checksum).hexdigest &&
+      artifacts.fetch("notes_sha256") == Digest::SHA256.file(notes_file).hexdigest
+    raise ReleaseStateError, "Authenticated rollback artifact contract is invalid"
+  end
+  release_assets = [ versioned_export, versioned_checksum ]
+  static_export = "tmp/campfire.zip"
+  static_checksum = "#{static_export}.sha256"
+  FileUtils.cp versioned_export, static_export
+  File.write static_checksum, "#{Digest::SHA256.file(static_export).hexdigest}  campfire.zip\n"
+  static_targets = journal.fetch("channels").values.filter_map do |channel|
+    channel.fetch("target") if channel.fetch("kind") == "static"
+  end.uniq
+  unless static_targets.one?
+    raise ReleaseStateError, "Authenticated rollback static target is invalid"
+  end
+  static_target = static_targets.sole
+  static_phase = journal.dig("phases", "static_staging", "data")
+  unless static_phase.is_a?(Hash) && static_phase["target"] == static_target &&
+      static_phase["archive_sha256"] == Digest::SHA256.file(static_export).hexdigest &&
+      static_phase["checksum_sha256"] == Digest::SHA256.file(static_checksum).hexdigest
+    raise ReleaseStateError, "Authenticated rollback static evidence is invalid"
+  end
+  publication_preflight = ->(**) {
+    raise ReleaseStateError, "Rollback cannot invoke the forward publication preflight"
+  }
+else
 run! "git", "fetch", RELEASE_REMOTE, "main", "--tags"
 abort "Release aborted: verification changed the working tree." unless capture!("git", "status", "--porcelain", "--untracked-files=all").empty?
 ensure_latest_version! VERSION
@@ -4107,6 +4635,12 @@ complete_release_phase! release_lock, journal, "draft",
 workflow_run_id = journal.dig("phases", "workflow", "data", "run_id")
 workflow_run_attempt = journal.dig("phases", "workflow", "data", "run_attempt")
 operation_nonce = journal.dig("phases", "workflow", "data", "operation_nonce")
+retained_workflow_identity = authenticated_retained_workflow_identity!(journal)
+if retained_workflow_identity
+  workflow_run_id = retained_workflow_identity.fetch("run_id")
+  workflow_run_attempt = retained_workflow_identity.fetch("run_attempt")
+  operation_nonce = retained_workflow_identity.fetch("operation_nonce")
+end
 reconcile_run_id = ENV["RELEASE_RECONCILE_RUN_ID"].to_s
 reconcile_run_attempt = ENV["RELEASE_RECONCILE_RUN_ATTEMPT"].to_s
 unless reconcile_run_id.empty? == reconcile_run_attempt.empty?
@@ -4130,10 +4664,12 @@ if workflow_run_id
   unless operation_nonce&.match?(/\A[0-9a-f]{64}\z/)
     abort "Release aborted: authenticated workflow operation nonce is missing."
   end
-  validated_workflow_run!(
-    repository: REPOSITORY, run_id: workflow_run_id, sha: GIT_SHA,
-    release_tag: TAG, operation_nonce:, attempt: workflow_run_attempt
-  )
+  unless retained_workflow_identity
+    validated_workflow_run!(
+      repository: REPOSITORY, run_id: workflow_run_id, sha: GIT_SHA,
+      release_tag: TAG, operation_nonce:, attempt: workflow_run_attempt
+    )
+  end
   complete_release_phase! release_lock, journal, "workflow",
     "run_id" => workflow_run_id.to_s, "run_attempt" => workflow_run_attempt.to_s,
     "operation_nonce" => operation_nonce
@@ -4569,7 +5105,9 @@ else
     if channel.fetch("kind") == "registry" && current && !current.match?(/\Asha256:[0-9a-f]{64}\z/)
       abort "Release aborted: previous registry channel #{key} is not an immutable digest."
     end
-    [ key, current ]
+    [ key, capture_moving_channel_previous!(
+      journal:, channel: key, current:, target: channel.fetch("target")
+    ) ]
   end
 
   if current_channels.fetch("github_public") == "public"
@@ -4595,6 +5133,7 @@ else
 end
 complete_release_phase! release_lock, journal, "promotion_prepared",
   "channel_keys" => journal.fetch("channels").keys.sort
+end
 
 channels = journal.fetch("channels").map do |key, channel|
   case channel.fetch("kind")
@@ -4632,16 +5171,27 @@ channels = journal.fetch("channels").map do |key, channel|
         current
       },
       write: ->(desired, runner) {
+        desired_artifacts = if desired == target
+          {
+            "archive_sha256" => Digest::SHA256.file(static_export).hexdigest,
+            "checksum_sha256" => Digest::SHA256.file(static_checksum).hexdigest
+          }
+        else
+          channel.fetch("previous_artifacts")
+        end
         if desired == channel.fetch("previous")
-          previous = channel.fetch("previous_artifacts")
           verify_static_release_files!(
             host, desired,
-            archive_digest: previous.fetch("archive_sha256"),
-            checksum_digest: previous.fetch("checksum_sha256")
+            archive_digest: desired_artifacts.fetch("archive_sha256"),
+            checksum_digest: desired_artifacts.fetch("checksum_sha256")
           )
         end
         expected = desired == target ? channel.fetch("previous") : target
-        set_static_release_target! host, desired, GIT_SHA, expected:, runner:
+        set_static_release_target!(
+          host, desired, GIT_SHA, expected:,
+          archive_digest: desired_artifacts.fetch("archive_sha256"),
+          checksum_digest: desired_artifacts.fetch("checksum_sha256"), runner:
+        )
       }
     )
   when "github_release"
@@ -4655,8 +5205,9 @@ channels = journal.fetch("channels").map do |key, channel|
       write: ->(target, runner) {
         raise ReleaseStateError, "GitHub releases cannot be returned to draft after publication" unless target == "public"
         publication_preflight.call(require_draft: true)
-        mutate! "gh", "release", "edit", TAG, "--repo", REPOSITORY,
-          "--draft=false", "--prerelease=false", "--latest", runner:
+        publish_github_release_without_latest!(
+          repository: REPOSITORY, tag: TAG, runner:
+        )
         unless authenticated_github_release_state!(
             journal:, repository: REPOSITORY, tag: TAG, notes_file:, asset_paths: release_assets
           ) == "public"
@@ -4688,15 +5239,15 @@ end
 current_github_release_state = authenticated_github_release_state!(
   journal:, repository: REPOSITORY, tag: TAG, notes_file:, asset_paths: release_assets
 )
-requested_outcome = if current_github_release_state == "public"
+requested_outcome = if reconciling
+  reconcile_action
+elsif current_github_release_state == "public"
   "complete"
-elsif reconciling && ENV["RELEASE_RECONCILE_ACTION"]
-  ENV.fetch("RELEASE_RECONCILE_ACTION")
 else
   journal.fetch("outcome", "complete")
 end
-unless MovingChannelPromotion::OUTCOMES.include?(requested_outcome)
-  abort "Release aborted: RELEASE_RECONCILE_ACTION must be complete or rollback."
+if current_github_release_state == "public" && requested_outcome != "complete"
+  raise ReleaseStateError, "A public GitHub release cannot be rolled back"
 end
 promotion = MovingChannelPromotion.new(
   lock: release_lock, journal:, channels:,

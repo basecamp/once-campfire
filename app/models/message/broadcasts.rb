@@ -10,9 +10,6 @@ module Message::Broadcasts
 
   def broadcast_create
     broadcast_append_to room, :messages, target: [ room, :messages ]
-    unread_recipients.find_each do |user|
-      UnreadRoomsChannel.broadcast_to user, { roomId: room.id }
-    end
   end
 
   def broadcast_update
@@ -23,9 +20,4 @@ module Message::Broadcasts
   def broadcast_remove
     broadcast_remove_to room, :messages
   end
-
-  private
-    def unread_recipients
-      User.active.where(id: room.memberships.visible.select(:user_id)).where.not(id: creator_id)
-    end
 end

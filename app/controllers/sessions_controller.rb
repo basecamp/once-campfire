@@ -7,6 +7,14 @@ class SessionsController < ApplicationController
   before_action :ensure_user_exists, only: :new
   before_action :limit_password_attempts, only: :create
 
+  def show
+    response.headers["Cache-Control"] = "private, no-store"
+    matches_page_session = params[:session_id].present? &&
+      ActiveSupport::SecurityUtils.secure_compare(params[:session_id].to_s, Current.session.id.to_s)
+
+    head matches_page_session ? :no_content : :conflict
+  end
+
   def new
     Oidc.ensure_browser_binding! cookies if Oidc.enabled?
   end

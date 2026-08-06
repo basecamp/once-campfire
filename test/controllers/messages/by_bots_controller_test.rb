@@ -9,6 +9,7 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
     assert_difference -> { Message.count }, +1 do
       post room_bot_messages_url(@room), params: +"Hello Bot World!", headers: bot_headers
       assert_equal "Hello Bot World!", Message.last.plain_text_body
+      assert_equal Message::ORIGIN_BOT_API, Message.last.origin
     end
   end
 
@@ -63,7 +64,7 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "an explicit bot message can invoke a different mentioned bot" do
+  test "a bot API message cannot invoke a different mentioned bot" do
     recipient = User.create_bot!({
       name: "Second Bot", webhook_url: "https://example.com/second-bot"
     }, actor: users(:david))
@@ -74,8 +75,28 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
 
     assert_response :created
     message = Message.last
-    assert message.message_effects.exists?(effect: "webhook_fanout")
-    assert message.message_effects.exists?(effect: "bot_webhook", recipient_id: recipient.id)
+    assert_not message.message_effects.exists?(effect: "webhook_fanout")
+    assert_not message.message_effects.exists?(effect: "bot_webhook", recipient_id: recipient.id)
+  end
+
+  test "two bots in a direct room cannot recurse through their webhooks" do
+    recipient = User.create_bot!({
+      name: "Second Bot", webhook_url: "https://example.com/second-bot"
+    }, actor: users(:david))
+    room = Rooms::Direct.find_or_create_for(
+      [ users(:bender), recipient ], actor: users(:bender)
+    )
+    request = WebMock.stub_request(:post, recipient.webhook.url).to_raise("must not deliver")
+
+    perform_enqueued_jobs only: MessageEffectJob do
+      post room_bot_messages_url(room), params: +"Automated direct message", headers: bot_headers
+    end
+
+    assert_response :created
+    message = Message.last
+    assert_equal users(:bender), message.creator
+    assert_not message.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
+    assert_not_requested request
   end
 
   test "create can't be abused to post messages as any user" do

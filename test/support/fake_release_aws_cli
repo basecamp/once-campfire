@@ -80,7 +80,9 @@ when "head-bucket"
 when "get-bucket-versioning"
   output("Status" => bucket.fetch("versioning"))
 when "get-object-lock-configuration"
-  output("ObjectLockEnabled" => bucket.fetch("object_lock"))
+  configuration = { "ObjectLockEnabled" => bucket.fetch("object_lock") }
+  configuration["Rule"] = bucket.fetch("default_retention") if bucket["default_retention"]
+  output(configuration)
 when "list-object-versions"
   prefix = take_option!(arguments, "--prefix")
   versions = bucket.fetch("objects", {}).flat_map do |key, entries|
@@ -112,6 +114,15 @@ when "put-object"
   source = File.binread(body)
   checksum = Base64.strict_encode64(Digest::SHA256.digest(source))
   fail!(state, "fake checksum mismatch") unless checksum == requested_checksum
+  if requested_mode.nil? && (default = bucket.dig("default_retention", "DefaultRetention"))
+    requested_mode = default.fetch("Mode")
+    duration = if default["Days"]
+      default.fetch("Days") * 86_400
+    else
+      default.fetch("Years") * 365 * 86_400
+    end
+    retain_until = (Time.now.utc + duration).iso8601
+  end
   entries = (bucket["objects"] ||= {})[key] ||= []
   fail!(state, "fake precondition failed") if if_none_match == "*" && entries.any?
 
@@ -145,19 +156,54 @@ when "get-object-retention"
   version_id = take_option!(arguments, "--version-id")
   entry = bucket.fetch("objects", {}).fetch(key, []).find { _1.fetch("version_id") == version_id }
   fail!(state, "fake object retention not found") unless entry
-  output("Retention" => { "Mode" => entry.fetch("mode"), "RetainUntilDate" => entry.fetch("retain_until") })
+  retention = {}
+  retention["Mode"] = entry.fetch("mode") if entry["mode"]
+  retention["RetainUntilDate"] = entry.fetch("retain_until") if entry["retain_until"]
+  output("Retention" => retention)
 when "delete-object"
   key = take_option!(arguments, "--key")
   version_id = take_option!(arguments, "--version-id")
   entries = bucket.fetch("objects", {}).fetch(key, [])
-  entry = entries.find { _1.fetch("version_id") == version_id }
-  fail!(state, "fake object not found") unless entry
-  retained = Time.iso8601(entry.fetch("retain_until")) > Time.now.utc
-  if entry.fetch("mode") == "COMPLIANCE" && retained && bucket["allow_compliance_delete"] != true
-    fail!(state, "fake compliance deletion rejected")
+  markers = bucket.fetch("delete_markers")
+  if version_id
+    entry = entries.find { _1.fetch("version_id") == version_id }
+    marker = markers.find { _1.fetch("Key") == key && _1.fetch("VersionId") == version_id }
+    fail!(state, "fake object not found") unless entry || marker
+    denied_prefix = bucket.fetch("denied_version_delete_prefixes", []).find do |prefix|
+      key.start_with?(prefix)
+    end
+    if denied_prefix
+      fail!(state,
+        "An error occurred (AccessDenied) when calling the DeleteObject operation: denied for prefix #{denied_prefix}")
+    end
+    if bucket.fetch("denied_version_delete_keys", []).include?(key) ||
+        bucket["deny_version_delete"] == true
+      fail!(state, "An error occurred (AccessDenied) when calling the DeleteObject operation: denied by IAM")
+    end
+
+    if marker
+      markers.delete(marker)
+      output("DeleteMarker" => true, "VersionId" => version_id)
+    else
+      retained = entry["retain_until"] && Time.iso8601(entry.fetch("retain_until")) > Time.now.utc
+      if entry.fetch("mode") == "COMPLIANCE" && retained && bucket["allow_compliance_delete"] != true
+        fail!(state, bucket.fetch(
+          "compliance_delete_error",
+          "An error occurred (AccessDenied) when calling the DeleteObject operation: Access Denied"
+        ))
+      end
+      entries.delete(entry)
+      bucket.fetch("objects").delete(key) if entries.empty?
+      output("VersionId" => version_id)
+    end
+  else
+    sequence = bucket["version_sequence"] = bucket.fetch("version_sequence", 0) + 1
+    marker = {
+      "Key" => key, "VersionId" => "version-#{sequence}", "IsLatest" => true
+    }
+    markers << marker
+    output("DeleteMarker" => true, "VersionId" => marker.fetch("VersionId"))
   end
-  entries.delete(entry)
-  output("VersionId" => version_id)
 else
   fail!(state, "unsupported fake S3 operation #{operation}")
 end

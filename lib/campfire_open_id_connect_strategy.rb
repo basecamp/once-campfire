@@ -95,7 +95,7 @@ class CampfireOpenIdConnectStrategy < OmniAuth::Strategies::OpenIDConnect
   end
 
   def public_key
-    super.tap { validate_signing_key_strength!(_1, @id_token_key_id) }
+    validate_signing_key_strength! super, @id_token_key_id
   end
 
   private
@@ -104,10 +104,23 @@ class CampfireOpenIdConnectStrategy < OmniAuth::Strategies::OpenIDConnect
       keys.select! { |key| key.as_json["kid"] == kid } if kid
       keys.select! do |key|
         attributes = key.as_json
-        attributes["kty"] == "RSA" && (!attributes.key?("alg") || attributes["alg"] == Oidc.signing_algorithm)
+        attributes["kty"] == "RSA" &&
+          (!attributes.key?("use") || attributes["use"] == "sig") &&
+          (!attributes.key?("alg") || attributes["alg"] == Oidc.signing_algorithm) &&
+          (!attributes.key?("key_ops") ||
+            (attributes["key_ops"].is_a?(Array) && attributes["key_ops"].all?(String) &&
+              attributes["key_ops"].include?("verify")))
       end
       if keys.empty? || keys.any? { |key| !RSA_KEY_BITS.cover?(key.to_key.n.num_bits) }
         raise Oidc::EndpointError, "OIDC provider RSA signing key strength is invalid"
+      end
+
+      if keyset.is_a?(JSON::JWK::Set)
+        JSON::JWK::Set.new(*keys)
+      elsif keyset.is_a?(Array)
+        keys
+      else
+        keys.sole
       end
     rescue OpenSSL::OpenSSLError, NoMethodError
       raise Oidc::EndpointError, "OIDC provider signing key is invalid"

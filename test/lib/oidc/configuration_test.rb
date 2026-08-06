@@ -48,6 +48,74 @@ class Oidc::ConfigurationTest < ActiveSupport::TestCase
     end
   end
 
+  test "requires the documented exact DISABLE_SSL value" do
+    [ "", "false", "False", "TRUE", "1", "yes" ].each do |value|
+      error = assert_raises(Oidc::ConfigurationError) do
+        Oidc::Configuration.new("DISABLE_SSL" => value)
+      end
+
+      assert_match "DISABLE_SSL must be exactly true when set", error.message
+    end
+
+    assert Oidc::Configuration.new(
+      "OIDC_MODE" => "disabled", "DISABLE_SSL" => "true"
+    ).ssl_disabled?
+  end
+
+  test "requires an effective TLS domain for built-in production TLS even when OIDC is disabled" do
+    error = assert_raises(Oidc::ConfigurationError) do
+      Oidc::Configuration.new("RAILS_ENV" => "production", "OIDC_MODE" => "disabled")
+    end
+    assert_match "requires a nonempty effective TLS_DOMAIN", error.message
+
+    error = assert_raises(Oidc::ConfigurationError) do
+      Oidc::Configuration.new(
+        "RAILS_ENV" => "production", "OIDC_MODE" => "disabled",
+        "TLS_DOMAIN" => "campfire.example.com", "THRUSTER_TLS_DOMAIN" => "  ,  "
+      )
+    end
+    assert_match "requires a nonempty effective TLS_DOMAIN", error.message
+
+    configuration = Oidc::Configuration.new(
+      "RAILS_ENV" => "production", "OIDC_MODE" => "disabled",
+      "THRUSTER_TLS_DOMAIN" => "campfire.example.com, chat.example.com"
+    )
+    assert configuration.built_in_tls?
+    assert configuration.production_https?
+    assert_equal %w[ campfire.example.com chat.example.com ], configuration.tls_domains
+  end
+
+  test "distinguishes external production HTTPS from explicit development plaintext" do
+    external = Oidc::Configuration.new(
+      "RAILS_ENV" => "production", "OIDC_MODE" => "disabled", "DISABLE_SSL" => "true"
+    )
+    plaintext = Oidc::Configuration.new(
+      "RAILS_ENV" => "development", "OIDC_MODE" => "disabled", "DISABLE_SSL" => "true"
+    )
+
+    assert external.external_https?
+    assert external.https_transport?
+    assert external.production_https?
+    assert_not external.development_plaintext?
+    assert plaintext.development_plaintext?
+    assert_not plaintext.external_https?
+    assert_not plaintext.https_transport?
+    assert_not plaintext.production_https?
+  end
+
+  test "secures the Rails session cookie for non-production HTTPS transport" do
+    staging = Oidc::Configuration.new(VALID_ENV.merge("RAILS_ENV" => "staging"))
+    test_like = Oidc::Configuration.new(VALID_ENV.merge("RAILS_ENV" => "test"))
+
+    assert staging.https_transport?
+    assert staging.secure_session_cookie?
+    assert test_like.https_transport?
+    assert_not test_like.secure_session_cookie?
+    assert Oidc.https_transport?
+    assert_not Oidc.secure_session_cookie?
+    assert_equal false, Rails.application.config.session_options.fetch(:secure)
+  end
+
   test "requires HTTPS issuer and redirect URLs" do
     assert_raises(Oidc::ConfigurationError) do
       Oidc::Configuration.new(VALID_ENV.merge("OIDC_ISSUER" => "http://idp.example.com"))
@@ -124,6 +192,7 @@ class Oidc::ConfigurationTest < ActiveSupport::TestCase
     assert configuration.trusted_proxy?("2001:db8:1234::10")
     assert_not configuration.trusted_proxy?("10.21.3.4")
     assert_not configuration.trusted_proxy?("not-an-address")
+    assert configuration.trusted_external_https?
   end
 
   test "direct TLS never trusts forwarding proxies" do

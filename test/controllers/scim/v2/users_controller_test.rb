@@ -76,20 +76,21 @@ class Scim::V2::UsersControllerTest < ActionDispatch::IntegrationTest
       oidc_session_id: "scim-provider-session", oidc_issued_at: Time.current.to_i
     )
     push_subscriptions(:jz_chrome).update!(session: federated_session)
-    remote = mock
-    ActionCable.server.remote_connections.expects(:where).with(current_user: users(:jz)).returns(remote)
-    remote.expects(:disconnect).with(reconnect: false)
+    channel = ApplicationCable::Connection.user_internal_channel(users(:jz))
 
-    patch_scim_user @identity, {
-      schemas: [ Scim::PATCH_OPERATION_SCHEMA ],
-      Operations: [ { op: "Replace", path: "active", value: false } ]
-    }
+    assert_difference -> { ActionCable.server.pubsub.broadcasts(channel).size }, 1 do
+      patch_scim_user @identity, {
+        schemas: [ Scim::PATCH_OPERATION_SCHEMA ],
+        Operations: [ { op: "Replace", path: "active", value: false } ]
+      }
+    end
 
     assert_response :success
     assert_equal false, scim_body.fetch("active")
     assert users(:jz).reload.deactivated?
     assert_empty users(:jz).sessions
     assert_empty users(:jz).push_subscriptions
+    assert_revocation_broadcast channel
   end
 
   test "PATCH supports an active false value object and is idempotent" do
@@ -200,6 +201,51 @@ class Scim::V2::UsersControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "blind subject DELETE tombstones known and unknown subjects without an existence signal" do
+    known_url = subject_deprovisioning_url(@identity.subject)
+    delete known_url, headers: scim_headers
+
+    assert_response :no_content
+    assert_empty response.body
+    assert users(:jz).reload.deactivated?
+    assert Identity::Deprovisioning.blocked?(issuer: Oidc.issuer, subject: @identity.subject)
+
+    unknown_subject = "not-yet-linked-scim-subject"
+    unknown_url = subject_deprovisioning_url(unknown_subject)
+    assert_no_changes -> { [ User.count, Identity.count ] } do
+      delete unknown_url, headers: scim_headers
+    end
+
+    assert_response :no_content
+    assert_empty response.body
+    assert Identity::Deprovisioning.blocked?(issuer: Oidc.issuer, subject: unknown_subject)
+  end
+
+  test "filesystem fence failures return a generic SCIM service-unavailable error" do
+    User::MutationFence.stubs(:ready?).returns(true)
+    User::MutationFence.stubs(:with_identity_subject)
+      .raises(User::MutationFence::Unavailable, "private filesystem failure")
+
+    delete subject_deprovisioning_url("filesystem-failure-subject"), headers: scim_headers
+
+    assert_response :service_unavailable
+    assert_scim_error "503"
+    assert_not_includes response.body, "filesystem"
+  end
+
+  test "blind subject DELETE does not report success when deprovisioning is rejected" do
+    invalid_user = users(:jz)
+    invalid_user.errors.add :base, "deprovisioning was rejected"
+    Identity::Deprovisioning.stubs(:deprovision!)
+      .raises(ActiveRecord::RecordInvalid.new(invalid_user))
+
+    delete subject_deprovisioning_url(@identity.subject), headers: scim_headers
+
+    assert_response :conflict
+    assert_scim_error "409"
+    assert_equal "mutability", scim_body.fetch("scimType")
+  end
+
   test "DELETE durably records deprovisioning for an already-banned user" do
     users(:jz).ban_by! actor: users(:david)
 
@@ -210,7 +256,7 @@ class Scim::V2::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_predicate @identity.reload, :provider_revoked_at?
   end
 
-  test "preserves the required-mode recovery administrator and their capabilities" do
+  test "revokes recovery provider access while preserving local break-glass access" do
     configure_oidc(
       "OIDC_MODE" => "required",
       "OIDC_BREAK_GLASS_EMAIL" => users(:jason).email_address
@@ -224,21 +270,57 @@ class Scim::V2::UsersControllerTest < ActionDispatch::IntegrationTest
       oidc_required_at: Time.current,
       oidc_break_glass_user: users(:jason)
     )
-    recovery_session = users(:jason).sessions.start!(
+    local_session = users(:jason).sessions.start!(
+      user_agent: "Recovery browser", ip_address: "192.0.2.1"
+    )
+    provider_session = users(:jason).sessions.start!(
       user_agent: "Browser", ip_address: "192.0.2.1", identity: recovery_identity,
       oidc_session_id: "recovery-provider-session", oidc_issued_at: Time.current.to_i
     )
-    push_subscriptions(:jason_chrome).update!(session: recovery_session)
+    local_subscription = push_subscriptions(:jason_chrome)
+    local_subscription.update!(session: local_session)
+    provider_subscription = local_subscription.dup
+    provider_subscription.endpoint = "https://fcm.googleapis.com/fcm/send/recovery-provider"
+    provider_subscription.session = provider_session
+    provider_subscription.save!
+    provider_channel = ActionCable.server.remote_connections.where(
+      current_user: users(:jason), current_session_id: provider_session.id
+    ).send(:internal_channel)
+    user_channel = ApplicationCable::Connection.user_internal_channel(users(:jason))
+    original_email = users(:jason).email_address
 
-    assert_no_changes -> { [ users(:jason).reload.status, Session.count, Push::Subscription.count ] } do
+    assert_difference -> { Session.count }, -1 do
+      assert_difference -> { Push::Subscription.count }, -1 do
+        delete subject_deprovisioning_url(recovery_identity.subject), headers: scim_headers
+      end
+    end
+    assert_response :no_content
+    assert_empty response.body
+    assert users(:jason).reload.active?
+    assert users(:jason).administrator?
+    assert_equal original_email, users(:jason).email_address
+    assert_predicate recovery_identity.reload, :provider_revoked_at?
+    assert Identity::Deprovisioning.blocked?(issuer: Oidc.issuer, subject: recovery_identity.subject)
+    assert_not Session.exists?(provider_session.id)
+    assert_not Push::Subscription.exists?(provider_subscription.id)
+    assert Session.exists?(local_session.id)
+    assert Push::Subscription.exists?(local_subscription.id)
+    assert local_session.reload.valid_for_authentication?
+    error = assert_raises(Identity::AuthenticationError) do
+      Identity.authenticate(oidc_auth(subject: recovery_identity.subject))
+    end
+    assert_equal "identity_revoked", error.message
+    assert_revocation_broadcast provider_channel
+    assert_empty ActionCable.server.pubsub.broadcasts(user_channel)
+
+    assert_no_changes -> { [ Session.count, Push::Subscription.count ] } do
       patch_scim_user recovery_identity, {
         schemas: [ Scim::PATCH_OPERATION_SCHEMA ],
         Operations: [ { op: "replace", path: "active", value: false } ]
       }
     end
-
-    assert_response :conflict
-    assert_equal "mutability", scim_body.fetch("scimType")
+    assert_response :success
+    assert_equal false, scim_body.fetch("active")
   end
 
   test "rate limits before identity lookup and fails closed when the store is unavailable" do
@@ -270,11 +352,22 @@ class Scim::V2::UsersControllerTest < ActionDispatch::IntegrationTest
       patch scim_v2_user_path(identity.scim_id), params: payload.to_json, headers: scim_headers
     end
 
+    def subject_deprovisioning_url(subject)
+      filter = URI.encode_www_form(filter: %(externalId eq "#{subject}"))
+      "#{scim_v2_user_path(Scim::V2::UsersController::SUBJECT_DEPROVISIONING_ID)}?#{filter}"
+    end
+
     def assert_scim_error(status)
       assert_equal Scim::MEDIA_TYPE, response.media_type
       assert_equal [ Scim::ERROR_SCHEMA ], scim_body.fetch("schemas")
       assert_equal status, scim_body.fetch("status")
       assert_not_includes response.body, Oidc.issuer
+    end
+
+    def assert_revocation_broadcast(channel)
+      assert_equal({
+        "type" => "disconnect", "reason" => Session::REVOKED_REASON, "reconnect" => false
+      }, ActiveSupport::JSON.decode(ActionCable.server.pubsub.broadcasts(channel).last))
     end
 
     def scim_body

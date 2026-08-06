@@ -266,7 +266,8 @@ retain their original client message IDs and remain visible with a retry action,
 so a newer draft does not silently replace an older ambiguous send. Otherwise the
 warning tells the user to copy unsent text. Selected attachments remain in memory
 and must be sent before expiry or chosen again after sign-in. Web Push subscriptions
-are bound to a current session, synchronized once per full page load, and revalidated immediately before
+are bound to a current session, synchronized unless that session and capability were
+already synchronized within the preceding 30 seconds, and revalidated immediately before
 network delivery. Payloads contain only a generic Campfire notice and no tenant,
 room, sender, message, attachment, unread-count, or destination metadata; current
 content is fetched only after authenticated navigation. Push destinations must
@@ -275,6 +276,17 @@ addresses and the validated address is pinned for bounded delivery. In activated
 legacy, local, and transferred sessions are rejected. Disabling OIDC also
 invalidates existing federated sessions. Campfire does not retain access
 tokens, refresh tokens, or ID tokens after sign-in.
+
+Campfire also persists a monotonic OIDC session generation. A readiness check,
+session lookup, or session creation under a changed exact configuration
+advances that generation. Each reconciliation destroys a bounded batch of
+older sessions through the normal revocation path, including Web Push cleanup
+and an Action Cable disconnect broadcast; readiness remains unavailable while
+older batches remain. Returning from configuration A to B and then to A
+therefore does not make cookies from the first A generation valid again. Once
+the persisted fingerprint and generation are synchronized and no stale session
+remains, session validation uses read-only database queries; only a mismatch or
+stale-session retirement enters the serialized mutation path.
 
 Back-channel logout removes sessions and their bound Web Push capabilities but
 does not deactivate the Campfire account. Use the limited SCIM endpoint below
@@ -312,6 +324,7 @@ The supported surface is:
 - `GET /scim/v2/Users?filter=id eq "<stable-id>"`
 - `PATCH /scim/v2/Users/:id` with a standard PatchOp that replaces only `active` with the JSON boolean `false`
 - `DELETE /scim/v2/Users/:id`, with the same deactivation effect
+- `DELETE /scim/v2/Users/00000000-0000-0000-0000-000000000000?filter=externalId eq "<sub>"` for blind subject deprovisioning
 
 The returned `userName` and `externalId` are the immutable OIDC subject, not an
 email address. Email, display name, or other mutable profile filters are never
@@ -327,19 +340,36 @@ later administrator unban removes the abuse ban but leaves that account
 deactivated, and OIDC authentication independently rejects the revoked
 identity.
 
+Blind subject deprovisioning returns `204 No Content` for a valid subject,
+whether or not an identity exists, only after atomically writing a permanent
+issuer-and-subject tombstone and applying any existing account cleanup. It
+therefore neither exposes subject existence nor allows a later account link or
+JIT provisioning callback to recreate access. The all-zero UUID is reserved
+for this operation and is not a Campfire user identifier. For the protected
+required-mode recovery administrator, Campfire preserves the active local
+password account and its local sessions while permanently revoking the provider
+identity and destroying that identity's OIDC sessions and bound Web Push
+capabilities. The blind operation still returns `204` after those revocations
+commit.
+
 Search-history recording and boost creation/removal recheck active-user and
 room authorization under that same mutation fence and database transaction.
 A SCIM deactivation that wins the race therefore cannot be followed by a stale
 authenticated request creating those records.
 
-The required-mode recovery administrator cannot be deactivated through SCIM.
-Rotate and activate the recovery binding through the documented OIDC process
-first. Unknown stable IDs, identities from another issuer, bad credentials,
-unsupported filters, and storage failures return SCIM-shaped generic errors
-without disclosing issuer, subject, account, or credential details. SCIM
+SCIM cannot deactivate or alter the required-mode recovery administrator's
+local password account. Rotate and activate the recovery binding through the
+documented OIDC process before changing that local account. Unknown stable IDs,
+identities from another issuer, bad credentials, unsupported filters, and
+storage failures return SCIM-shaped generic errors without disclosing issuer,
+subject, account, or credential details. SCIM
 requests have a small pre-parser body ceiling and are rate- and
 concurrency-limited before identity lookup; they fail closed if the rate-limit
-store is unavailable. Rails parameter filtering redacts SCIM `filter` values,
+store is unavailable. OIDC and SCIM readiness perform isolated cache write,
+increment, and delete probes. SCIM readiness also creates, opens, locks, and
+removes a probe in the shared user-mutation-fence directory. A later filesystem
+failure during deprovisioning is returned as the same generic SCIM `503` error.
+Rails parameter filtering redacts SCIM `filter` values,
 but an external proxy may log the raw query string before Campfire sees it.
 Configure every load balancer, ingress, CDN, and access-log pipeline in front of
 Campfire to suppress or redact query strings for `/scim/v2/Users`.

@@ -90,16 +90,37 @@ class MessageSubmissionFailureTest < ApplicationSystemTestCase
     failed_message_id = failed_message[:id]
     client_message_id = failed_message["data-client-message-id"]
     within failed_message do
-      assert_selector "[role='alert']", text: "Message was not sent."
-      assert_button "Retry sending"
+      assert_selector "[role='alert']", text: "Message outcome is unknown."
+      assert_button "Check and retry"
       assert_no_button "Restore message"
-      find_button("Retry sending").send_keys(:enter)
+      find_button("Check and retry").send_keys(:enter)
     end
 
     assert_selector "##{failed_message_id}[data-message-id]", wait: 10
     assert_equal 1, rooms(:designers).messages.where(
       creator: users(:jz), client_message_id:
     ).count
+  end
+
+  test "a malformed successful response remains pending until a matching stream commits" do
+    install_message_failure_interceptor
+    body = "Do not trust a generic success"
+    page.execute_script("window.nextMessageFailureStatusForTest = 200")
+    fill_in_rich_text_area "message_body", with: body
+
+    click_on "Send Message"
+
+    failed_message = find(".message--failed", text: body)
+    client_message_id = failed_message["data-client-message-id"]
+    assert_not Message.exists?(creator: users(:jz), client_message_id:)
+    assert_equal client_message_id, pending_submissions(rooms(:designers).id).sole.fetch("clientMessageId")
+    within failed_message do
+      assert_text "Message outcome is unknown."
+      find_button("Check and retry").send_keys(:enter)
+    end
+
+    assert_selector ".message[data-message-id][data-client-message-id='#{client_message_id}']", wait: 10
+    assert_equal 1, rooms(:designers).messages.where(creator: users(:jz), client_message_id:).count
   end
 
   test "restoring persisted failures preserves permalink pagination" do

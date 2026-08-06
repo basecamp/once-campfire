@@ -181,6 +181,119 @@ class SendingMessagesTest < ApplicationSystemTestCase
     assert_equal 1, rooms(:designers).messages.where(creator: users(:jz), client_message_id:).count
   end
 
+  test "a delayed upload XHR explicitly guards Turbo navigation without hiding the upload" do
+    delay_next_file_upload_xhr_response
+    page.execute_script("document.querySelector('#message-area turbo-cable-stream-source')?.remove()")
+    attach_file Rails.root.join("test/fixtures/files/earth.png"), make_visible: true
+
+    click_on "Send Message"
+    Timeout.timeout(10) do
+      sleep 0.05 until page.evaluate_script("Boolean(window.releaseFileUploadXHRResponseForTest)")
+    end
+    pending_message_id = page.evaluate_script(
+      "document.querySelector('.message__pending-upload').closest('.message').id"
+    )
+
+    dismiss_confirm(/attachment is still uploading/i) do
+      find("a[href='#{searches_path}']").click
+    end
+
+    assert_current_path room_path(rooms(:designers))
+    assert_selector "##{pending_message_id} .message__pending-upload"
+    page.execute_script("window.releaseFileUploadXHRResponseForTest()")
+
+    assert_selector "##{pending_message_id}[data-message-id]", wait: 10
+    assert_no_selector "##{pending_message_id}.message--failed"
+  end
+
+  test "confirmed Turbo navigation keeps an aborted upload available for outcome recovery" do
+    delay_next_file_upload_xhr_response
+    attach_file Rails.root.join("test/fixtures/files/earth.png"), make_visible: true
+    click_on "Send Message"
+    Timeout.timeout(5) do
+      sleep 0.05 until page.evaluate_script("Boolean(window.releaseFileUploadXHRResponseForTest)")
+    end
+    client_message_id = page.evaluate_script(
+      "document.querySelector('.message__pending-upload').closest('.message').dataset.clientMessageId"
+    )
+
+    accept_confirm(/attachment is still uploading/i) do
+      find("a[href='#{searches_path}']").click
+    end
+
+    assert_current_path searches_path
+    page.execute_script("delete window.releaseFileUploadXHRResponseForTest")
+    click_on "Exit search"
+    failed = find(".message--failed[data-client-message-id='#{client_message_id}']", wait: 10)
+    within failed do
+      assert_text "Upload outcome is unknown"
+      assert_button "Retry to confirm"
+    end
+
+    assert_not Message.exists?(creator: users(:jz), client_message_id:)
+  end
+
+  test "reload preserves upload reconciliation metadata without serializing file bytes" do
+    user = users(:jz)
+    room = rooms(:designers)
+    delay_next_file_upload_xhr_response
+    attach_file Rails.root.join("test/fixtures/files/earth.png"), make_visible: true
+    click_on "Send Message"
+    Timeout.timeout(5) do
+      sleep 0.05 until page.evaluate_script("Boolean(window.releaseFileUploadXHRResponseForTest)")
+    end
+    client_message_id = page.evaluate_script(
+      "document.querySelector('.message__pending-upload').closest('.message').dataset.clientMessageId"
+    )
+    metadata_key = "campfire-draft:#{user.id}:#{room.id}:uncertain-files"
+
+    page.execute_script <<~JAVASCRIPT
+      window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+      document.documentElement.dataset.sessionInvalidated = "true";
+    JAVASCRIPT
+    page.refresh
+
+    failed = find(".message--failed[data-client-message-id='#{client_message_id}']", wait: 10)
+    within failed do
+      assert_text "Upload outcome for earth.png is unknown"
+      assert_button "Check server again"
+      assert_no_button "Retry to confirm"
+    end
+    record = page.evaluate_script(
+      "JSON.parse(sessionStorage.getItem(#{metadata_key.to_json}))[0]"
+    )
+    assert_equal client_message_id, record.fetch("clientMessageId")
+    assert_equal "earth.png", record.fetch("filename")
+    assert record.fetch("size").positive?
+    assert_not record.key?("file")
+
+    page.execute_script("document.querySelector('#message-area turbo-cable-stream-source')?.remove()")
+    committed = room.messages.create!(
+      creator: user, body: "Committed upload reconciliation", client_message_id:
+    )
+    created_at = committed.created_at + 1.second
+    Message.insert_all!(45.times.map do |index|
+      {
+        room_id: room.id,
+        creator_id: users(:jason).id,
+        client_message_id: "upload-reconciliation-later-#{index}",
+        created_at: created_at + index.seconds,
+        updated_at: created_at + index.seconds
+      }
+    end)
+    assert_no_selector ".message[data-message-id='#{committed.id}']"
+    within failed do
+      find_button("Check server again").send_keys(:enter)
+    end
+
+    assert_selector ".message[data-message-id='#{committed.id}'][data-client-message-id='#{client_message_id}']",
+      text: "Committed upload reconciliation", wait: 10
+    Timeout.timeout(5) do
+      sleep 0.05 while page.evaluate_script("sessionStorage.getItem(#{metadata_key.to_json})")
+    end
+    assert_nil page.evaluate_script("sessionStorage.getItem(#{metadata_key.to_json})")
+  end
+
   test "Turbo cache preparation removes file-backed optimistic state" do
     install_file_upload_interceptor
     page.execute_script("window.fileUploadFailuresForTest = 1")
@@ -377,6 +490,36 @@ class SendingMessagesTest < ApplicationSystemTestCase
         };
 
         return null;
+      JAVASCRIPT
+    end
+
+    def delay_next_file_upload_xhr_response
+      execute_script_in_page_realm <<~JAVASCRIPT
+        (() => {
+          #{file_upload_csrf_meta_script}
+          const send = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.send = function(body) {
+            const request = this;
+            XMLHttpRequest.prototype.send = send;
+            window.releaseFileUploadXHRResponseForTest = () => {
+              delete window.releaseFileUploadXHRResponseForTest;
+              send.call(request, body);
+            };
+          };
+        })();
+      JAVASCRIPT
+    end
+
+    def file_upload_csrf_meta_script
+      <<~JAVASCRIPT
+        (() => {
+          if (!document.querySelector("meta[name=csrf-token]")) {
+            const csrfToken = document.createElement("meta");
+            csrfToken.name = "csrf-token";
+            csrfToken.content = "system-test";
+            document.head.append(csrfToken);
+          }
+        })();
       JAVASCRIPT
     end
 end

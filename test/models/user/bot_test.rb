@@ -57,10 +57,13 @@ class User::BotTest < ActiveSupport::TestCase
   test "a queued webhook delivery does not survive membership revocation" do
     bot = users(:bender)
     webhook = webhooks(:bender)
-    message = direct_message_for(bot)
+    message = rooms(:watercooler).messages.create!(
+      creator: users(:jason), body: "Message for #{mention_attachment_for(:bender)}",
+      client_message_id: SecureRandom.hex(8)
+    ).tap { clear_enqueued_jobs }
     request = WebMock.stub_request(:post, webhook.url).to_return(status: 200)
 
-    memberships(:bender_bender_and_kevin).destroy!
+    memberships(:bender_watercooler).destroy!
     bot.deliver_webhook(
       message, webhook_id: webhook.id, webhook_generation: webhook.delivery_generation,
       delivery_id: SecureRandom.uuid

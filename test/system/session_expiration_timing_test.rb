@@ -100,6 +100,153 @@ class SessionExpirationTimingTest < ApplicationSystemTestCase
     end
   end
 
+  test "a non-expiring local session on a non-room page observes revocation" do
+    sign_in users(:jz).email_address
+    current_session = users(:jz).sessions.order(:id).last
+    assert_nil current_session.expires_at
+
+    visit user_profile_url
+
+    body = find("body", visible: :all)
+    assert_includes body["data-controller"].split, "session-expiration"
+    assert_nil body["data-session-expiration-expires-at-value"]
+    assert_nil body["data-session-expiration-server-time-value"]
+    wait_for_non_room_session_monitor
+
+    current_session.destroy!
+
+    assert_selector "input[name='email_address']", wait: 10
+    assert_current_path new_session_path
+  end
+
+  test "coming online reconciles a revocation missed while the non-room socket was disconnected" do
+    sign_in users(:jz).email_address
+    current_session = users(:jz).sessions.order(:id).last
+    visit user_profile_url
+    wait_for_non_room_session_monitor
+
+    page.execute_script <<~JAVASCRIPT
+      const controller = window.Stimulus.getControllerForElementAndIdentifier(document.body, "session-expiration");
+      controller.channel.consumer.disconnect();
+    JAVASCRIPT
+    Timeout.timeout(5) do
+      sleep 0.05 while page.evaluate_script(<<~JAVASCRIPT)
+        (() => {
+          const controller = window.Stimulus.getControllerForElementAndIdentifier(document.body, "session-expiration");
+          return controller.channel.consumer.connection.isOpen();
+        })()
+      JAVASCRIPT
+    end
+
+    current_session.destroy!
+    page.execute_script("window.dispatchEvent(new Event('online'))")
+
+    assert_selector "input[name='email_address']", wait: 10
+    assert_current_path new_session_path
+  end
+
+  test "only explicit session termination protocol reasons are authoritative" do
+    visit new_session_url
+
+    reasons = evaluate_module_script_in_page_realm <<~JAVASCRIPT
+      const imports = JSON.parse(document.querySelector("script[type='importmap']").textContent).imports;
+      const { observeSessionTermination } = await import(imports["controllers/session_expiration_controller"]);
+      const socket = new EventTarget();
+      const channel = { consumer: { connection: { webSocket: socket } } };
+      const reasons = [];
+      const stop = observeSessionTermination(channel, (reason) => reasons.push(reason));
+      const disconnect = (reason) => socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ type: "disconnect", reason, reconnect: false })
+      }));
+
+      disconnect("invalid_request");
+      disconnect("remote");
+      disconnect("Session revoked");
+      stop();
+      disconnect("Session expired");
+      return reasons;
+    JAVASCRIPT
+
+    assert_equal [ "Session revoked" ], reasons
+    assert_current_path new_session_path
+  end
+
+  test "an authoritative revocation clears Turbo snapshots and sensitive DOM before sign in" do
+    sign_in users(:jz).email_address
+    join_room rooms(:designers)
+    Timeout.timeout(5) do
+      sleep 0.05 until page.evaluate_script(<<~JAVASCRIPT)
+        (() => {
+          const element = document.querySelector('[data-controller~="refresh-room"]');
+          const controller = window.Stimulus.getControllerForElementAndIdentifier(element, "refresh-room");
+          return Boolean(controller?.channel?.consumer.connection.isOpen());
+        })()
+      JAVASCRIPT
+    end
+    page.execute_script <<~JAVASCRIPT
+      sessionStorage.removeItem("turbo-cache-cleared-for-revocation-test");
+      const sensitive = document.createElement("div");
+      sensitive.id = "revocation-sensitive-content";
+      sensitive.textContent = "Sensitive room content";
+      document.body.append(sensitive);
+      const clearCache = Turbo.cache.clear.bind(Turbo.cache);
+      Turbo.cache.clear = () => {
+        sessionStorage.setItem("turbo-cache-cleared-for-revocation-test", "true");
+        clearCache();
+      };
+    JAVASCRIPT
+
+    Session.order(:id).last.destroy!
+
+    assert_selector "input[name='email_address']", wait: 10
+    assert_current_path new_session_path
+    assert_no_selector "#revocation-sensitive-content", visible: :all
+    assert_no_selector "meta[name='current-session-id']", visible: :all
+    assert_equal "true", page.evaluate_script(
+      'sessionStorage.getItem("turbo-cache-cleared-for-revocation-test")'
+    )
+  end
+
+  test "a valid-session consumer shutdown does not scrub the page" do
+    sign_in users(:jz).email_address
+    join_room rooms(:designers)
+    page.execute_script <<~JAVASCRIPT
+      const sensitive = document.createElement("div");
+      sensitive.id = "valid-session-sensitive-content";
+      sensitive.textContent = "Keep this valid page";
+      document.body.append(sensitive);
+    JAVASCRIPT
+    Timeout.timeout(5) do
+      sleep 0.05 until page.evaluate_script(<<~JAVASCRIPT)
+        (() => {
+          const element = document.querySelector('[data-controller~="refresh-room"]');
+          const controller = window.Stimulus.getControllerForElementAndIdentifier(element, "refresh-room");
+          return Boolean(controller?.channel?.consumer.connection.isOpen());
+        })()
+      JAVASCRIPT
+    end
+
+    page.execute_script <<~JAVASCRIPT
+      const element = document.querySelector('[data-controller~="refresh-room"]');
+      const controller = window.Stimulus.getControllerForElementAndIdentifier(element, "refresh-room");
+      controller.channel.consumer.disconnect();
+    JAVASCRIPT
+    Timeout.timeout(5) do
+      sleep 0.05 while page.evaluate_script(<<~JAVASCRIPT)
+        (() => {
+          const element = document.querySelector('[data-controller~="refresh-room"]');
+          const controller = window.Stimulus.getControllerForElementAndIdentifier(element, "refresh-room");
+          return controller.channel.consumer.connection.isOpen();
+        })()
+      JAVASCRIPT
+    end
+
+    assert_current_path room_path(rooms(:designers))
+    assert_selector "#valid-session-sensitive-content", text: "Keep this valid page"
+    assert_selector "meta[name='current-session-id']", visible: :all
+    assert_nil find("html", visible: :all)["data-session-invalidated"]
+  end
+
   private
     def install_browser_clock_skew(skew)
       local_time = (SERVER_TIME + skew).to_fs(:epoch)
@@ -155,6 +302,17 @@ class SessionExpirationTimingTest < ApplicationSystemTestCase
       Timeout.timeout(5) do
         sleep 0.05 until page.evaluate_script(<<~JAVASCRIPT)
           Boolean(window.Stimulus.getControllerForElementAndIdentifier(document.body, "session-expiration"))
+        JAVASCRIPT
+      end
+    end
+
+    def wait_for_non_room_session_monitor
+      Timeout.timeout(5) do
+        sleep 0.05 until page.evaluate_script(<<~JAVASCRIPT)
+          (() => {
+            const controller = window.Stimulus.getControllerForElementAndIdentifier(document.body, "session-expiration");
+            return Boolean(controller?.channel?.consumer.connection.isOpen());
+          })()
         JAVASCRIPT
       end
     end

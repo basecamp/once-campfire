@@ -14,16 +14,17 @@ module Message::Attachment
 
   module ClassMethods
     def create_with_attachment!(attributes)
-      create_message_with_attachment! attributes, webhook_reply: nil
+      create_message_with_attachment! attributes
     end
 
     def create_webhook_reply_with_attachment!(attributes)
-      create_message_with_attachment! attributes, webhook_reply: Message::WEBHOOK_REPLY_MARKER
+      create_message_with_attachment! attributes.to_h.merge(origin: Message::ORIGIN_WEBHOOK_REPLY)
     end
 
     private
-      def create_message_with_attachment!(attributes, webhook_reply:)
+      def create_message_with_attachment!(attributes)
         attributes = attributes.to_h.symbolize_keys
+        origin = attributes.delete(:origin) || Message::ORIGIN_USER
         client_message_id = attributes[:client_message_id]
         creator = attributes[:creator] || Current.user || new.creator
         ContentLimits.verify! client_message_id.to_s.bytesize,
@@ -43,7 +44,7 @@ module Message::Attachment
 
           begin
             transaction(requires_new: true) do
-              create! attributes.merge(attachment: staged_blob, webhook_reply:)
+              create! attributes.merge(attachment: staged_blob, origin:)
             end
           rescue ActiveRecord::RecordNotUnique
             StagedUpload.discard staged_blob

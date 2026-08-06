@@ -9,9 +9,11 @@ exact current `main` SHA.
 Configure these repository controls before using the release script:
 
 - Protect `main` and require the project's normal reviews and checks.
-- In branch protection, require both `Container validation (amd64)` and
-  `Container validation (arm64)`; do not treat the native application test job
-  as container or multi-architecture evidence.
+- In branch protection, require `Container validation (amd64)`,
+  `Container validation (arm64)`, and the aggregate
+  `Verify exact architecture receipts` check. The aggregate check must depend on
+  the complete matrix; do not treat the application test job as container or
+  multi-architecture evidence.
 - Restrict creation and deletion of `v*` tags to the release operators.
 - Create a GitHub environment named `release`, add required reviewers, prevent
   self-review, and restrict deployment branches to `main`.
@@ -35,15 +37,22 @@ artifact is downloadable does `bin/release` validate its digest, signatures,
 children, run ID, run attempt, and per-operation dispatch nonce and idempotently create missing immutable
 `vMAJOR.MINOR.PATCH` and `MAJOR.MINOR.PATCH` aliases.
 
+Before either registry-writing job starts, an unprivileged preflight reads the
+GitHub environment configuration and requires at least one reviewer with
+self-review prevention plus an exact custom `main` deployment branch policy. A
+missing or automatically created unprotected environment therefore fails before
+release credentials or mutation permissions are used.
+
 ### Container CI evidence
 
 `.github/workflows/container.yml` is the registry-read-only container check for
 pull requests and `main`. It has only `contents: read`, uses a digest-pinned
-BuildKit daemon, QEMU image, SBOM scanner, Dockerfile frontend, runtime base,
-and legacy recovery image, and never logs in or invokes a registry exporter.
-Both matrix entries run on GitHub-hosted x86 runners; the `linux/arm64` build,
-boot, HTTP health, request-ceiling, and recovery path therefore execute through
-QEMU rather than receiving credit from an unexecuted cross-build.
+BuildKit daemon, SBOM scanner, Dockerfile frontend, runtime base, and legacy
+recovery image, and never logs in or invokes a registry exporter. The amd64 job
+runs on a GitHub-hosted `x86_64` runner and the native `linux/arm64` job runs on
+a GitHub-hosted `aarch64` runner. Each job compares `uname -m` with its exact
+expected host architecture before building, booting, health checking, enforcing
+the request ceiling, or running recovery.
 
 For each architecture the check exports an OCI layout with max-mode BuildKit
 provenance and SPDX SBOM, loads a cache-identical Docker exporter result, matches
@@ -57,14 +66,27 @@ uploads, Redis state, and worker execution. Normalized inspection, SBOM,
 provenance, logs, and hash-bound recovery receipts are retained for 30 days as
 `container-evidence-ARCH-ATTEMPT`; the OCI archive itself is removed after its
 statements and digest are recorded.
+The `verify-receipts` job downloads both exact attempt-scoped receipts. Each
+architecture receipt directly binds `run.json`, `container-validation.json`,
+`recovery-receipt.json`, and `upgrade-recovery.json` by SHA-256. The aggregate
+job requires and independently validates all four source files, verifies the
+amd64/x86_64 and arm64/aarch64 pair against the same source revision, and carries
+all four hashes into each entry of one exact-schema architecture-set receipt.
+Branch protection requires its displayed check name, `Verify exact architecture
+receipts`, so one successful matrix leg cannot stand in for the complete native
+pair.
 
 The protected release workflow repeats config, boot, health, request-limit, and
 recovery checks against each exact pushed child digest. GitHub artifact
 attestations bind the per-architecture build index, runnable child, and final
 multi-architecture index to the exact `main` source digest and
-`publish-image.yml`; `gh attestation verify` enforces that source digest, source
-ref, signer workflow, and GitHub-hosted runner before release evidence is
-accepted. Before migration consumes the in-volume authorization, the recovery
+`publish-image.yml`. The producer verifies each exact bundle file with
+`gh attestation verify --bundle`; it binds the canonical repository, exact
+workflow certificate identity and signer digest, source digest and ref,
+GitHub-hosted runner, and exact OCI subject digest. `bin/release` independently
+repeats that cryptographic verification against the retained bundle bytes and
+does not treat the producer's verification-result JSON as authority. Before
+migration consumes the in-volume authorization, the recovery
 helper copies the exact `upgrade-recovery.json` bytes into architecture evidence
 and verifies that neither backup key appears in the retained receipt. The final
 staging index is assembled from the two evidenced build
@@ -94,7 +116,7 @@ the journal before calling GitHub. The protected workflow must declare the exact
 required string inputs `release_tag`, `release_sha`, and `operation_nonce`, set
 its run name to
 `Campfire release ${{ inputs.release_tag }} ${{ inputs.release_sha }} ${{ inputs.operation_nonce }}`,
-and copy the nonce into version 1 release evidence. Run discovery accepts exactly
+and copy the nonce into version 1 release evidence. Initial run discovery accepts exactly
 one run with that title, source SHA, branch, event, workflow name, and successful
 attempt. The downloaded evidence must have the exact top-level and nested key
 schemas enforced by `bin/release`; extra keys are rejected rather than ignored.
@@ -110,8 +132,26 @@ After validation and source revalidation, `bin/release` stores every byte under
 content-addressed per-operation keys with COMPLIANCE retention in both Object
 Lock accounts, then authenticates the exact byte counts and SHA-256 values in
 the journal. Reconciliation restores and revalidates those bytes from both
-anchors, so it does not download latest-attempt evidence or depend on GitHub's
-90-day artifact lifetime.
+anchors. Once the final retained contract exists, reconciliation derives the
+run ID, attempt, and operation nonce from that authenticated contract and does
+not query live GitHub run metadata or download another artifact. It verifies
+the restored Sigstore bundles cryptographically against their exact repository,
+workflow, source ref/SHA, and index/parent/runnable digest, so it does not depend
+on GitHub's 90-day artifact lifetime or on a retained verification transcript.
+Initial acquisition and a pending contract without recoverable retained bytes
+may still require the GitHub run and artifact APIs.
+Cryptographic verification still requires trusted Sigstore root material. The
+default `gh` verifier obtains that through its TUF trust-root mechanism; this is
+not workflow-run metadata. Production certificate issuance, transparency-log
+inclusion, trust-root availability, and registry delivery of the attested OCI
+subjects are external services and must be exercised by an approved release
+drill.
+Because `actions/attest-build-provenance` signs this public repository through
+Sigstore public-good infrastructure, both workflow-time and retained-bundle
+verification permit that trust path. Do not disable public-good verification;
+the repository, certificate identity, workflow, source ref and digest, SLSA
+predicate, exact OCI subject digest, and GitHub-hosted runner constraints remain
+mandatory.
 
 The final artifact's flat filenames are exactly:
 
@@ -220,8 +260,18 @@ local operation, including deletion of its complete local history.
 
 The release role needs STS identity and the S3 bucket/versioning, Object Lock,
 version-list, object-read, retention-read, and object-write operations used by
-`bin/release`. Do not grant retention bypass. The script deliberately attempts
-a version-specific delete after publication and requires rejection. It also
+`bin/release`. Do not grant retention bypass. Before accepting a retained-object
+delete failure, the script creates a unique control under the same
+`catalog/operations` or exact `releases/RELEASE_ID` key namespace, obtains its
+exact version ID, successfully deletes that version after it has no active
+retention, and proves it is gone. A policy that grants deletion only to a
+separate probe prefix cannot qualify. This control establishes that the active
+principal has destructive `DeleteObjectVersion` authority in the protected
+namespace. The script then attempts a version-specific
+delete of the COMPLIANCE-retained object and accepts only the expected S3
+`DeleteObject` `AccessDenied` or explicit COMPLIANCE-retention classification.
+Timeouts, connectivity failures, unsupported operations, and arbitrary nonzero
+exits are not retention evidence. It also
 reissues the content address with `If-None-Match: *` and requires rejection, so
 an implementation that accepts a second version cannot qualify. AWS CLI child
 processes receive only `HOME`, `PATH`, explicit AWS config/credential file and
@@ -255,10 +305,12 @@ aws --profile "$AWS_PROFILE" s3api get-object-lock-configuration --bucket "$BUCK
 
 Repeat in the second account with its own administrator, release role, bucket,
 and preferably a separate region. Grant the named release role only
-`sts:GetCallerIdentity`, `s3:ListBucketVersions`, `s3:GetBucketVersioning`,
+`sts:GetCallerIdentity`, `s3:ListBucket` (required by `HeadBucket`),
+`s3:ListBucketVersions`, `s3:GetBucketVersioning`,
 `s3:GetBucketObjectLockConfiguration`, `s3:GetObject`, `s3:GetObjectVersion`,
 `s3:GetObjectRetention`, `s3:PutObject`, `s3:PutObjectRetention`, and
-`s3:DeleteObjectVersion` on the configured bucket/prefix. The last permission is
+`s3:DeleteObjectVersion`. Grant bucket-level list actions on the bucket and
+object actions only on the configured prefix. The last permission is
 intentional: the live version-specific delete must reach S3 and be rejected by
 COMPLIANCE retention rather than fail because the caller lacks delete authority.
 Do not grant `s3:BypassGovernanceRetention`, bucket deletion, lifecycle mutation,
@@ -274,8 +326,14 @@ objects carry a server SHA-256 checksum and explicit per-object `COMPLIANCE`
 retention through at least 2,557 days after the authenticated release
 `created_at`. Reads select the exact immutable version ID, download and hash the
 bytes, verify the server checksum and metadata, and read the retention mode and
-date. Bucket default retention may be absent or longer; it cannot weaken this
-per-object requirement.
+date. Buckets with no default retention remain supported. For an existing bucket
+with a valid default-retention rule, the driver overrides that default on each
+destructive-authority control with a short explicit COMPLIANCE retention,
+verifies the exact returned retention, waits through expiry, and only then uses
+the now-unretained control to prove deletion. The long-lived journal objects
+still receive their exact explicit 2,557-day COMPLIANCE dates. An implementation
+that does not permit the short explicit override fails closed without changing
+the bucket policy or weakening any retained object.
 
 The Dockerfile frontend, Ruby base image, workflow service images, and every
 third-party GitHub Action are committed at verified immutable digests or full
@@ -430,9 +488,26 @@ verified target leaves the same unresolved state. Journal publication SSH
 children are monitored the same way while staging and hard-linking immutable
 history entries.
 
+Every moving-channel convergence receives an authenticated random generation.
+Mutation markers, explicit settled-token acknowledgements, and completed-step
+receipts carry that generation. A channel first observed at its target is
+rejected unless one of those exact current-generation records explains the
+transition; target coincidence cannot become the captured previous state or be
+adopted as completion. Starting rollback rotates the generation, clears
+completed-step authority, and durably invalidates completion authority. A
+`rolled_back` or `abandoned` operation cannot be switched back to completion.
+
+Generation-bound state uses release journal format 6. This driver rejects an
+authenticated journal format 5 before interpreting `mutation_in_flight`,
+`settled_mutations`, or `completed_steps`: those records did not carry a
+generation, so forward migration cannot safely infer authority. Preserve the
+journal and use audited format-5 recovery tooling under the release operator
+runbook before retrying; never rewrite persisted journal state to change its
+version.
+
 Once the journal exists, resume only through reconciliation. Check out the
-release tag's exact commit and use the original successful protected
-`workflow_dispatch` run ID:
+release tag's exact commit. Until final workflow evidence is retained, also use
+the original successful protected `workflow_dispatch` run ID:
 
 ```sh
 RELEASE_RECONCILE_SHA=<40-character-release-sha> \
@@ -441,6 +516,14 @@ RELEASE_RECONCILE_RUN_ATTEMPT=<original-workflow-run-attempt> \
 RELEASE_RECONCILE_ACTION=complete \
 bin/release MAJOR.MINOR.PATCH
 ```
+
+`RELEASE_RECONCILE_ACTION` is mandatory whenever
+`RELEASE_RECONCILE_SHA` is set and is rejected on an ordinary release. The
+driver parses it before Git, GitHub, registry, or static publication work, then
+writes the exact action and a random action generation into the authenticated,
+dual-anchored journal before selecting a forward or rollback path. If final
+workflow evidence is already retained, the run ID and attempt arguments are
+optional; supplied values must still match the retained identity.
 
 A new release must start at the fetched current `main`; setting
 `RELEASE_RECONCILE_SHA` never authorizes a new release from stale history.
@@ -480,10 +563,19 @@ release is public and is unavailable if any channel had no recorded previous
 value. A public release can only be completed and verified, never restored to a
 draft or retargeted. An observed public GitHub release is accepted only when the
 authenticated promotion contract already records `draft` to `public` and a
-surviving in-flight, settled, completed-step, or publication record explains
-that exact transition. Publication before promotion preparation, or a release
+surviving current-generation in-flight, settled, or completed-step record
+explains that exact transition. Publication before promotion preparation, or a release
 returning to draft after authenticated publication, is unexpected external
 state and stops reconciliation.
+
+If rollback is requested before a moving-channel contract exists, the driver
+does not create or push a tag, create or edit a release, dispatch a workflow,
+upload an asset, stage a static release, or mutate a registry. It journals an
+idempotent `abandonment` intent, commits terminal `abandoned` state to both
+anchors, and moves the durable lock to its terminal tombstone before releasing
+the live-owner lock. If channels were already captured, rollback bypasses all
+forward phases and reconstructs only the authenticated all-old channel
+operations from the journal.
 
 Reconciliation never reruns or redispatches a checkpointed protected workflow,
 and never dispatches one after public completion. If authenticated state proves
@@ -532,7 +624,8 @@ a release lock merely because the GitHub release is visible.
 
 For controlled interruption drills, `RELEASE_FAULT_AFTER_STEP` terminates after
 an external channel mutation but before its journal checkpoint. Valid step keys
-include `ghcr_evidence`, `ghcr_tag_alias`, `ghcr_version_alias`,
+include `reconcile_action_authenticated`, `pre_promotion_abandon_started`,
+`pre_promotion_abandoned`, `ghcr_evidence`, `ghcr_tag_alias`, `ghcr_version_alias`,
 `workflow_evidence_after_pending_contract`,
 `workflow_evidence_after_first_anchor`, `workflow_evidence_after_both_anchors`,
 `workflow_evidence_before_journal_promotion`,
@@ -575,7 +668,11 @@ fails closed; all pointer writers must honor this same remote lock.
 Existing versioned archives, checksums, and files inside immutable version
 directories must be regular non-symbolic-link files with the exact expected
 hash; matching bytes behind a link are rejected. Accepted files and their parent
-directories are explicitly synchronized before the phase is checkpointed.
+directories are explicitly synchronized before the phase is checkpointed. The
+driver normalizes published files to mode `0444` and version directories to
+`0555`, and requires their numeric owner and group to match the effective static
+deployment identity. Every later read verifies the exact two-file inventory,
+checksum statement, link counts, modes, ownership, and hashes.
 Every upload uses a random, exclusively created regular staging file. Files are
 published with a same-filesystem hard link that cannot replace an existing name;
 accepted final files must have link count one. Version directories use random
@@ -583,6 +680,16 @@ exclusive staging, an exact two-entry inventory, and Linux
 `renameat2(RENAME_NOREPLACE)`. Publication fails closed if that primitive is not
 available. A raced conflicting destination or unexpected file is preserved and
 aborts the release, never recursively removed or overwritten.
+The two public wrapper symlinks must retain their exact documented targets. When
+`campfire-current` names a version directory, the driver proves each wrapper is
+the same filesystem object as that directory's fixed regular file, hashes the
+bytes through both wrapper paths, and checks the exact `campfire.zip` checksum
+statement while holding the pointer lock after replacement. This proves the
+host filesystem bytes selected for serving. Web-server or CDN configuration,
+independently administered filesystem ownership, mount-level read-only or
+immutable enforcement, and bytes delivered beyond the host filesystem remain
+external infrastructure controls; the deployment account cannot establish
+those independent guarantees itself.
 If a host switch fails, use explicit journal reconciliation to complete all
 hosts or restore every host to its recorded previous pointer. Do not replace
 these symlinks with regular files.
@@ -600,5 +707,8 @@ The release remains a draft while the following complete:
 3. GHCR version channels, secondary-registry `latest`, and all static host
    pointers, followed by independent digest/checksum verification.
 
-The GitHub release is made public only after those checks. No release-event
-workflow performs a second promotion.
+The GitHub release is made public only after those checks and the publication
+request explicitly uses `--latest=false`; it cannot mutate the separately
+captured `github_latest` channel. A following independently fenced mutation
+marks the authenticated release tag as GitHub Latest. No release-event workflow
+performs a second promotion.

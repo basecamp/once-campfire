@@ -44,7 +44,7 @@ class Push::SubscriptionTest < ActiveSupport::TestCase
     identity = Identity.create!(user: users(:jz), issuer: Oidc.issuer, subject: "expired-push-subject")
     session = users(:jz).sessions.create!(
       identity:, authentication_method: "oidc", expires_at: 1.second.ago,
-      oidc_issued_at: Time.current.to_i
+      oidc_session_generation: Oidc::SessionGeneration.current!, oidc_issued_at: Time.current.to_i
     )
     push_subscriptions(:jz_chrome).update!(session:)
 

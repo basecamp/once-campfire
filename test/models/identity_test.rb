@@ -12,6 +12,20 @@ class IdentityTest < ActiveSupport::TestCase
     assert_equal identity, Identity.authenticate(auth)
   end
 
+  test "prepared authentication cannot complete after its subject fence is released" do
+    auth = oidc_auth(subject: "released-fence-subject", email: users(:jz).email_address)
+    authentication = Identity.with_authentication_fence(auth) { _1 }
+
+    error = assert_raises(Identity::AuthenticationError) do
+      authentication.complete!(
+        linking_user: users(:jz), linking_authorization: { "method" => "password" }
+      )
+    end
+
+    assert_equal "identity_policy_unavailable", error.message
+    assert_not Identity.exists?(issuer: Oidc.issuer, subject: authentication.subject)
+  end
+
   test "assigns an opaque stable SCIM identifier" do
     first = Identity.create!(user: users(:jz), issuer: Oidc.issuer, subject: "stable-scim-subject")
     second = Identity.create!(user: users(:kevin), issuer: Oidc.issuer, subject: "other-stable-scim-subject")
@@ -230,6 +244,25 @@ class IdentityTest < ActiveSupport::TestCase
     assert_equal "identity_revoked", error.message
     identity.provider_revoked_at = nil
     assert_not identity.save
+  end
+
+  test "a subject tombstone blocks later linking and JIT provisioning" do
+    configure_oidc("OIDC_JIT_PROVISIONING" => "true")
+    subject = "deprovisioned-before-link-subject"
+    Identity::Deprovisioning.deprovision!(issuer: Oidc.issuer, subject:)
+
+    assert_no_changes -> { [ User.count, Identity.count ] } do
+      error = assert_raises(Identity::AuthenticationError) do
+        Identity.authenticate(oidc_auth(subject:, email: "blocked-jit@example.com"))
+      end
+      assert_equal "identity_revoked", error.message
+    end
+
+    identity = Identity.new(
+      user: users(:jz), issuer: Oidc.issuer, subject:, provider_fingerprint: Oidc.provider_fingerprint
+    )
+    assert_not identity.save
+    assert_includes identity.errors[:base], "identity was deprovisioned by its provider"
   end
 
   test "requires an ID token and exact issuer" do

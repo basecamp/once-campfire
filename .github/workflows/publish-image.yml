@@ -227,7 +227,7 @@ jobs:
           curl --fail --retry 30 --retry-all-errors --retry-delay 1 http://127.0.0.1:3001/up
           docker exec "$source_container" bin/rails runner \
             'Account.create!(name: "Backup smoke", join_code: SecureRandom.hex(12)) unless Account.exists?; Resque.redis.set("backup-smoke", "durable")'
-          docker stop --timeout 35 "$source_container" >/dev/null
+          docker stop --timeout 70 "$source_container" >/dev/null
           [[ "$(docker inspect --format '{{.State.Running}}' "$source_container")" == false ]]
           [[ "$(docker inspect --format '{{.State.ExitCode}}' "$source_container")" == 0 ]]
 
@@ -316,9 +316,53 @@ jobs:
             campfire-release-candidate "$LEGACY_IMAGE" \
             "verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
+  release-environment:
+    name: Verify release environment protection
+    needs: verify
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Verify required reviewers and deployment branch policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          environment=$(gh api \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$GITHUB_REPOSITORY/environments/release")
+          jq -e '
+            .name == "release" and
+            .deployment_branch_policy == {
+              "custom_branch_policies": true,
+              "protected_branches": false
+            } and
+            ([
+              .protection_rules[]? |
+              select(
+                .type == "required_reviewers" and
+                .prevent_self_review == true and
+                (.reviewers | length) > 0
+              )
+            ] | length) == 1
+          ' <<< "$environment" >/dev/null
+
+          branch_policies=$(gh api \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$GITHUB_REPOSITORY/environments/release/deployment-branch-policies")
+          jq -e '
+            .total_count == 1 and
+            (.branch_policies | length) == 1 and
+            .branch_policies[0].name == "main" and
+            .branch_policies[0].type == "branch"
+          ' <<< "$branch_policies" >/dev/null
+
   build:
     name: Build, smoke, and sign image (${{ matrix.arch }})
-    needs: verify
+    needs: [ verify, release-environment ]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -481,10 +525,15 @@ jobs:
           for kind in parent runnable; do
             if [[ "$kind" == parent ]]; then digest=$PARENT_DIGEST; else digest=$RUNNABLE_DIGEST; fi
             gh attestation verify "oci://${CANONICAL_IMAGE}@${digest}" \
+              --bundle "$evidence_directory/${kind}-provenance.bundle.jsonl" \
               --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main" \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml" \
+              --signer-digest "$RELEASE_SHA" \
               --source-ref refs/heads/main \
               --source-digest "$RELEASE_SHA" \
+              --predicate-type https://slsa.dev/provenance/v1 \
               --deny-self-hosted-runners \
               --format json > "$evidence_directory/${kind}-provenance-verification.json"
             jq -e --arg digest "${digest#sha256:}" '
@@ -912,10 +961,15 @@ jobs:
           evidence_directory="$RUNNER_TEMP/release-evidence"
           cp "$INDEX_BUNDLE" "$evidence_directory/index-provenance.bundle.jsonl"
           gh attestation verify "oci://${CANONICAL_IMAGE}@${INDEX_DIGEST}" \
+            --bundle "$evidence_directory/index-provenance.bundle.jsonl" \
             --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main" \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml" \
+            --signer-digest "$RELEASE_SHA" \
             --source-ref refs/heads/main \
             --source-digest "$RELEASE_SHA" \
+            --predicate-type https://slsa.dev/provenance/v1 \
             --deny-self-hosted-runners \
             --format json > "$evidence_directory/index-provenance-verification.json"
           jq -e --arg digest "${INDEX_DIGEST#sha256:}" '

@@ -79,6 +79,44 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Only once", @room.messages.find_by!(client_message_id: "stable-retry-id").plain_text_body
   end
 
+  test "reconciliation renders the current user's committed message without caching" do
+    message = @room.messages.where(creator: users(:david)).first
+
+    get reconciliation_room_messages_url(@room), params: {
+      client_message_id: message.client_message_id
+    }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_equal "private, no-store", response.headers["Cache-Control"]
+    assert_select "turbo-stream[action='append'][target='#{dom_id(@room, :messages)}']" do
+      assert_select "##{dom_id(message)}[data-client-message-id='#{message.client_message_id}']"
+    end
+  end
+
+  test "reconciliation does not disclose another creator's matching client id" do
+    message = @room.messages.where.not(creator: users(:david)).first
+
+    get reconciliation_room_messages_url(@room), params: {
+      client_message_id: message.client_message_id
+    }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :no_content
+    assert_empty response.body
+    assert_equal "private, no-store", response.headers["Cache-Control"]
+  end
+
+  test "reconciliation independently requires current room membership" do
+    message = @room.messages.where(creator: users(:david)).first
+    memberships(:david_watercooler).destroy!
+
+    get reconciliation_room_messages_url(@room), params: {
+      client_message_id: message.client_message_id
+    }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :not_found
+    assert_empty response.body
+  end
+
   test "a client message ID owned by another creator returns conflict without mutation" do
     existing = @room.messages.where.not(creator: users(:david)).first
     original_body = existing.plain_text_body

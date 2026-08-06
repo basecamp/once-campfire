@@ -28,4 +28,15 @@ class Scim::ReadinessControllerTest < ActionDispatch::IntegrationTest
     assert_response :service_unavailable
     assert_equal({ "status" => "not_ready" }, response.parsed_body)
   end
+
+  test "fails closed when the shared mutation-fence filesystem is not ready" do
+    configure_oidc
+    configure_scim
+    User::MutationFence.stubs(:ready?).returns(false)
+
+    get scim_readiness_check_url
+
+    assert_response :service_unavailable
+    assert_equal({ "status" => "not_ready" }, response.parsed_body)
+  end
 end

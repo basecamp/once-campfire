@@ -18,6 +18,10 @@ class User::BannableTest < ActiveSupport::TestCase
     def disconnect(reconnect: false)
       true
     end
+
+    def internal_channel
+      "action_cable/test-session-#{queries.last.fetch(:current_session_id)}"
+    end
   end
 
   test "a delayed ban disconnect targets only sessions removed by that ban" do

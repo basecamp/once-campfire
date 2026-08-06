@@ -3,15 +3,15 @@ Rails.application.routes.draw do
 
   resource :first_run
 
-  post "auth/openid_connect", to: "oidc/sessions#new", as: :openid_connect
-  get "auth/openid_connect/callback", to: "oidc/sessions#create"
+  post "auth/openid_connect", to: "oidc/sessions#new", as: :openid_connect, format: false
+  get "auth/openid_connect/callback", to: "oidc/sessions#create", format: false
   post "auth/openid_connect/backchannel_logout", to: "oidc/back_channel_logouts#create",
-    as: :oidc_back_channel_logout
-  get "auth/failure", to: "oidc/sessions#failure"
-  resource :oidc_link, only: %i[ show update ], controller: "oidc/links"
-  resource :oidc_flow, only: %i[ show destroy ], controller: "oidc/flows"
+    as: :oidc_back_channel_logout, format: false
+  get "auth/failure", to: "oidc/sessions#failure", format: false
+  resource :oidc_link, only: %i[ show update ], controller: "oidc/links", format: false
+  resource :oidc_flow, only: %i[ show destroy ], controller: "oidc/flows", format: false
 
-  scope "/scim/v2", module: "scim/v2", as: "scim_v2" do
+  scope "/scim/v2", module: "scim/v2", as: "scim_v2", format: false do
     get "ServiceProviderConfig", to: "service_provider_configs#show", as: :service_provider_config
     get "Users", to: "users#index", as: :users
     get "Users/:id", to: "users#show", as: :user
@@ -77,6 +77,7 @@ Rails.application.routes.draw do
 
   resources :rooms do
     resources :messages do
+      get :reconciliation, on: :collection
       resource :attachment, only: :show, module: :messages
     end
 
@@ -113,7 +114,7 @@ Rails.application.routes.draw do
   get "service-worker" => "pwa#service_worker"
 
   get "up" => "rails/health#show", as: :rails_health_check
-  get "up/oidc" => "oidc/readiness#show", as: :oidc_readiness_check
-  get "up/scim" => "scim/readiness#show", as: :scim_readiness_check
+  get "up/oidc" => "oidc/readiness#show", as: :oidc_readiness_check, format: false
+  get "up/scim" => "scim/readiness#show", as: :scim_readiness_check, format: false
   get "up/work" => "reliable_work/readiness#show", as: :reliable_work_readiness_check
 end

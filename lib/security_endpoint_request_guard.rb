@@ -1,10 +1,24 @@
 require "concurrent"
+require "oidc"
 require "security_endpoint_rate_limiter"
 require "stringio"
 
 class SecurityEndpointRequestGuard
   LOGOUT_PATH = "/auth/openid_connect/backchannel_logout"
   SCIM_PATH_PREFIX = "/scim/v2"
+  CANONICAL_PATHS = %w[
+    /auth/openid_connect
+    /auth/openid_connect/callback
+    /auth/openid_connect/backchannel_logout
+    /auth/failure
+    /oidc_link
+    /oidc_flow
+    /scim/v2/ServiceProviderConfig
+    /scim/v2/Users
+    /up/oidc
+    /up/scim
+  ].freeze
+  SCIM_USER_PATH = %r{\A/scim/v2/Users/([^/]+)\z}i
   LOGOUT_BODY_BYTES = 20.kilobytes
   SCIM_BODY_BYTES = 32.kilobytes
   LOGOUT_REQUEST_LIMIT = 120
@@ -13,6 +27,39 @@ class SecurityEndpointRequestGuard
   LOGOUT_CONCURRENCY = 4
   SCIM_CONCURRENCY = 8
   Endpoint = Data.define(:name, :request_limit, :semaphore, :scim)
+
+  class << self
+    def canonical_security_path(path)
+      candidate = path.to_s.delete_suffix("/")
+      without_format = candidate.sub(/\.[^\/]*\z/, "")
+      CANONICAL_PATHS.find do |canonical|
+        canonical.casecmp?(candidate) || canonical.casecmp?(without_format)
+      end || begin
+        if match = candidate.match(SCIM_USER_PATH)
+          id = match[1].sub(/\.[^\/]*\z/, "")
+          "/scim/v2/Users/#{id}"
+        end
+      end
+    end
+
+    def noncanonical_security_path?(path)
+      canonical = canonical_security_path(path)
+      canonical && path.to_s != canonical
+    end
+
+    def not_found_response(head: false)
+      body = "Not found"
+      [
+        Rack::Utils.status_code(:not_found),
+        Oidc.security_headers(
+          "cache-control" => "no-store",
+          "content-length" => body.bytesize.to_s,
+          "content-type" => "text/plain"
+        ),
+        head ? [] : [ body ]
+      ]
+    end
+  end
 
   def initialize(app, store: Rails.cache,
       logout_semaphore: Concurrent::Semaphore.new(LOGOUT_CONCURRENCY),
@@ -32,6 +79,9 @@ class SecurityEndpointRequestGuard
   def call(env)
     restore_security_endpoint_method!(env)
     request = ActionDispatch::Request.new(env)
+    if self.class.noncanonical_security_path?(request.path)
+      return self.class.not_found_response(head: request.head?)
+    end
     endpoint = endpoint_for(request.path)
     return @app.call(env) unless endpoint && endpoint_enabled?(endpoint)
     if SecurityEndpointRateLimiter.exceeded?(
@@ -87,7 +137,9 @@ class SecurityEndpointRequestGuard
     def plain_response(status)
       [
         Rack::Utils.status_code(status),
-        { "cache-control" => "no-store", "content-length" => "0", "content-type" => "text/plain" },
+        Oidc.security_headers(
+          "cache-control" => "no-store", "content-length" => "0", "content-type" => "text/plain"
+        ),
         []
       ]
     end
@@ -104,10 +156,10 @@ class SecurityEndpointRequestGuard
       )
       [
         Rack::Utils.status_code(status),
-        {
+        Oidc.security_headers(
           "cache-control" => "no-store", "content-length" => body.bytesize.to_s,
           "content-type" => Scim::MEDIA_TYPE
-        },
+        ),
         [ body ]
       ]
     end
@@ -124,6 +176,10 @@ class SecurityEndpointBodyLimiter
   end
 
   def call(env)
+    if SecurityEndpointRequestGuard.noncanonical_security_path?(env["PATH_INFO"])
+      return SecurityEndpointRequestGuard.not_found_response(head: env["REQUEST_METHOD"] == "HEAD")
+    end
+
     endpoint = endpoint_for(env["PATH_INFO"])
     return @app.call(env) unless endpoint
     if declared_body_too_large?(env, endpoint.fetch(:maximum))
@@ -180,7 +236,9 @@ class SecurityEndpointBodyLimiter
       unless endpoint&.fetch(:scim, false)
         return [
           Rack::Utils.status_code(status),
-          { "cache-control" => "no-store", "content-length" => "0", "content-type" => "text/plain" },
+          Oidc.security_headers(
+            "cache-control" => "no-store", "content-length" => "0", "content-type" => "text/plain"
+          ),
           []
         ]
       end
@@ -191,10 +249,10 @@ class SecurityEndpointBodyLimiter
       )
       [
         Rack::Utils.status_code(status),
-        {
+        Oidc.security_headers(
           "cache-control" => "no-store", "content-length" => body.bytesize.to_s,
           "content-type" => Scim::MEDIA_TYPE
-        },
+        ),
         [ body ]
       ]
     end

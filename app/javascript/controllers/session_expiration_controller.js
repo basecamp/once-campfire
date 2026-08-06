@@ -1,7 +1,95 @@
 import { Controller } from "@hotwired/stimulus"
+import { cable } from "@hotwired/turbo-rails"
 
 const WARNING_LEAD_TIME = 5 * 60 * 1000
 const MAXIMUM_TIMER_DELAY = 2_147_000_000
+const SIGN_IN_PATH = "/session/new"
+const SESSION_STATUS_PATH = "/session"
+const SESSION_END_REASONS = new Set([ "Session expired", "Session revoked" ])
+let replacingSession = false
+let sessionVerification
+
+export function replaceExpiredSession() {
+  if (replacingSession) return
+
+  replacingSession = true
+  document.documentElement.dataset.sessionInvalidated = "true"
+  window.Turbo?.cache?.clear()
+  document.querySelectorAll(
+    'meta[name="current-user-id"], meta[name="current-user-name"], meta[name="current-session-id"], ' +
+    'meta[name="csrf-token"], meta[name="csrf-param"]'
+  ).forEach((meta) => meta.remove())
+  document.title = "Sign in"
+
+  const replacement = document.createElement("main")
+  const heading = document.createElement("h1")
+  const message = document.createElement("p")
+  const link = document.createElement("a")
+  replacement.id = "main-content"
+  heading.textContent = "Your session has ended"
+  message.textContent = "Redirecting to sign in."
+  link.href = SIGN_IN_PATH
+  link.textContent = "Sign in"
+  replacement.replaceChildren(heading, message, link)
+  document.body.replaceChildren(replacement)
+  window.location.replace(SIGN_IN_PATH)
+}
+
+export function observeSessionTermination(channel, callback = replaceExpiredSession) {
+  const socket = channel?.consumer?.connection?.webSocket
+  if (!socket?.addEventListener) return () => {}
+
+  const received = (event) => {
+    try {
+      const message = JSON.parse(event.data)
+      if (message.type != "disconnect") return
+
+      if (SESSION_END_REASONS.has(message.reason)) {
+        callback(message.reason)
+      } else if (message.reason == "unauthorized") {
+        reconcileCurrentSession(callback)
+      }
+    } catch (_) {
+      // Ignore non-protocol frames; Action Cable remains responsible for handling them.
+    }
+  }
+  socket.addEventListener("message", received)
+  return () => socket.removeEventListener("message", received)
+}
+
+export async function reconcileCurrentSession(callback = replaceExpiredSession) {
+  const sessionId = document.querySelector('meta[name="current-session-id"]')?.content
+  if (!sessionId) return
+
+  if (sessionVerification?.sessionId != sessionId) {
+    const promise = (async () => {
+      const url = new URL(SESSION_STATUS_PATH, window.location.origin)
+      url.searchParams.set("session_id", sessionId)
+
+      try {
+        const response = await fetch(url, {
+          cache: "no-store",
+          credentials: "same-origin"
+        })
+        const redirectedToSignIn = response.redirected && new URL(response.url).pathname == SIGN_IN_PATH
+        return response.status == 409 || response.status == 401 || redirectedToSignIn
+      } catch (_) {
+        return false
+      }
+    })()
+    const verification = { promise, sessionId }
+    sessionVerification = verification
+    promise.finally(() => {
+      if (sessionVerification == verification) sessionVerification = null
+    })
+  }
+
+  const verification = sessionVerification
+  if (await verification.promise &&
+      document.querySelector('meta[name="current-session-id"]')?.content == sessionId) {
+    callback("Session revoked")
+  }
+}
 
 export default class extends Controller {
   static values = { expiresAt: Number, serverTime: Number }
@@ -9,10 +97,16 @@ export default class extends Controller {
   #clockOffset = 0
   #deadline
   #usesMonotonicClock = false
+  #active = false
+  #connectionVersion = 0
+  #stopObservingSessionTermination = () => {}
 
   connect() {
+    this.#active = true
     this.visibilityChanged = this.#visibilityChanged.bind(this)
+    this.online = this.#reconcileSession.bind(this)
     document.addEventListener("visibilitychange", this.visibilityChanged)
+    window.addEventListener("online", this.online)
     if (this.hasExpiresAtValue && this.hasServerTimeValue) {
       this.#initializeDeadline()
       if (document.visibilityState == "hidden") {
@@ -22,12 +116,20 @@ export default class extends Controller {
       }
       this.#refresh()
     }
+
+    if (!document.querySelector('[data-controller~="refresh-room"]')) this.#monitorSession()
   }
 
   disconnect() {
+    this.#active = false
+    this.#connectionVersion += 1
     document.removeEventListener("visibilitychange", this.visibilityChanged)
+    window.removeEventListener("online", this.online)
     clearTimeout(this.warningTimer)
     clearTimeout(this.expirationTimer)
+    this.#stopObservingSessionTermination()
+    this.channel?.unsubscribe()
+    this.channel = null
   }
 
   #refresh() {
@@ -72,8 +174,37 @@ export default class extends Controller {
       this.#recordSuspensionAnchor()
     } else {
       this.#reconcileSuspendedTime()
-      this.#refresh()
+      if (this.hasExpiresAtValue && this.hasServerTimeValue) this.#refresh()
+      this.#reconcileSession()
     }
+  }
+
+  async #monitorSession() {
+    const connectionVersion = ++this.#connectionVersion
+    let channel
+
+    try {
+      channel = await cable.subscribeTo({ channel: "HeartbeatChannel" }, {
+        connected: () => this.#observeSessionTermination(connectionVersion)
+      })
+    } catch (_) {
+      return
+    }
+
+    if (!this.#active || connectionVersion != this.#connectionVersion) {
+      channel.unsubscribe()
+      return
+    }
+
+    this.channel = channel
+    this.#observeSessionTermination(connectionVersion)
+  }
+
+  #observeSessionTermination(connectionVersion) {
+    if (!this.#active || connectionVersion != this.#connectionVersion || !this.channel) return
+
+    this.#stopObservingSessionTermination()
+    this.#stopObservingSessionTermination = observeSessionTermination(this.channel)
   }
 
   #recordSuspensionAnchor() {
@@ -104,6 +235,19 @@ export default class extends Controller {
 
   #serverWallNow() {
     return Date.now() + this.#clockOffset
+  }
+
+  #reconcileSession() {
+    if (!document.querySelector('[data-controller~="refresh-room"]')) {
+      if (this.channel) {
+        this.channel.consumer.connection.monitor.visibilityDidChange()
+      } else {
+        this.#monitorSession()
+      }
+    }
+    reconcileCurrentSession(() => {
+      if (this.#active) replaceExpiredSession()
+    })
   }
 
   #warn(expired = false) {

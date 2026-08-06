@@ -106,29 +106,13 @@ class User < ApplicationRecord
         self.class.lock_active!(id).send :deactivate!
       end
     end
-    disconnect_remote_connections
+    disconnect_remote_connections reason: Session::REVOKED_REASON
   end
 
   def deactivate_from_identity_provider!(identity:, issuer:)
-    changed = false
-    MutationFence.with(id) do
-      self.class.transaction do
-        user = self.class.lock.find(id)
-        current_identity = user.identities.lock.find_by!(
-          id: identity.id, user_id: user.id, issuer:, subject: identity.subject, scim_id: identity.scim_id
-        )
-        current_identity.update!(provider_revoked_at: Time.current) unless current_identity.provider_revoked_at?
-        if user.active?
-          user.send :deactivate!
-          changed = true
-        else
-          changed = user.sessions.exists? || user.push_subscriptions.exists? ||
-            user.searches.exists? || user.memberships.without_direct_rooms.exists?
-          user.send :remove_deprovisioned_access!
-        end
-      end
-    end
-    disconnect_remote_connections if changed
+    Identity::Deprovisioning.deprovision!(
+      issuer:, subject: identity.subject, expected_identity: identity
+    )
     reload
   end
 
@@ -142,8 +126,9 @@ class User < ApplicationRecord
     reload
   end
 
-  def disconnect_remote_connections(reconnect: false)
-    close_remote_connections reconnect:
+  def disconnect_remote_connections(reconnect: false,
+      reason: ActionCable::INTERNAL[:disconnect_reasons][:remote])
+    close_remote_connections reconnect:, reason:
   end
 
   private
@@ -171,6 +156,28 @@ class User < ApplicationRecord
       sessions.delete_all
     end
 
+    def apply_identity_provider_deactivation!(identity:, issuer:, revoked_at:)
+      raise AuthorizationError, "user mutation fence is not held" unless MutationFence.held?(id)
+
+      user = self.class.lock.find(id)
+      current_identity = user.identities.lock.find_by!(
+        id: identity.id, user_id: user.id, issuer:, subject: identity.subject, scim_id: identity.scim_id
+      )
+      current_identity.update!(provider_revoked_at: revoked_at) unless current_identity.provider_revoked_at?
+      if user.send(:required_recovery_binding?)
+        current_identity.sessions.destroy_all
+        false
+      elsif user.active?
+        user.send :apply_deactivation!
+        true
+      else
+        changed = user.sessions.exists? || user.push_subscriptions.exists? ||
+          user.searches.exists? || user.memberships.without_direct_rooms.exists?
+        user.send :remove_deprovisioned_access!
+        changed
+      end
+    end
+
     def grant_membership_to_open_rooms
       Membership.insert_all(Rooms::Open.pluck(:id).collect { |room_id| { room_id: room_id, user_id: id } })
     end
@@ -179,14 +186,19 @@ class User < ApplicationRecord
       email_address&.gsub(/@/, "-deactivated-#{SecureRandom.uuid}@")
     end
 
-    def close_remote_connections(reconnect: false)
-      ActionCable.server.remote_connections.where(current_user: self).disconnect reconnect:
+    def close_remote_connections(reconnect:, reason:)
+      ApplicationCable::Connection.disconnect_user(user: self, reason:, reconnect:)
     rescue StandardError => error
       Rails.logger.error "Failed to disconnect Action Cable user_id=#{id} error=#{error.class.name}"
     end
 
+    def required_recovery_binding?
+      (Oidc.required? || Oidc.rollback_prepared?) &&
+        Account.where(oidc_break_glass_user_id: id).exists?
+    end
+
     def preserve_required_recovery_binding
-      return unless (Oidc.required? || Oidc.rollback_prepared?) && Account.where(oidc_break_glass_user_id: id).exists?
+      return unless required_recovery_binding?
       return unless will_save_change_to_email_address? || will_save_change_to_role? || will_save_change_to_status?
 
       errors.add :base, "the required-mode recovery administrator must be rotated before this account changes"

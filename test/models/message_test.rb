@@ -54,6 +54,39 @@ class MessageTest < ActiveSupport::TestCase
     end
   end
 
+  test "automated origins do not create webhook fanout" do
+    Message::ORIGINS.without(Message::ORIGIN_USER).each do |origin|
+      message = rooms(:designers).messages.create!(
+        creator: users(:david), body: "Automated", client_message_id: SecureRandom.uuid,
+        origin:
+      )
+
+      assert_equal origin, message.reload.origin
+      assert_not message.message_effects.exists?(effect: "webhook_fanout")
+    end
+  end
+
+  test "rejects an unknown message origin" do
+    message = rooms(:designers).messages.build(
+      creator: users(:david), body: "Unknown", client_message_id: SecureRandom.uuid,
+      origin: "untrusted"
+    )
+
+    assert_not message.valid?
+    assert_includes message.errors[:origin], "is not included in the list"
+  end
+
+  test "message origin is immutable" do
+    message = rooms(:designers).messages.create!(
+      creator: users(:david), body: "Auditable", client_message_id: SecureRandom.uuid,
+      origin: Message::ORIGIN_BOT_API
+    )
+
+    assert_not message.update(origin: Message::ORIGIN_USER)
+    assert_includes message.errors[:origin], "cannot be changed"
+    assert_equal Message::ORIGIN_BOT_API, message.reload.origin
+  end
+
   test "DOM identity includes the room while routes retain the database ID" do
     message = messages(:first)
 

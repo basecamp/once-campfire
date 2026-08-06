@@ -6,7 +6,7 @@ class PushSubscriptionSynchronizationTest < ApplicationSystemTestCase
     install_fake_push_subscription
   end
 
-  test "one sync per live page avoids Turbo storms while a full load repairs server state" do
+  test "rapid Turbo visits are debounced and a later visit repairs a deleted subscription" do
     subscription = push_subscriptions(:jz_chrome)
     endpoint = subscription.endpoint
     previous_session_id = subscription.session_id
@@ -16,20 +16,27 @@ class PushSubscriptionSynchronizationTest < ApplicationSystemTestCase
     Timeout.timeout(5) do
       sleep 0.05 while subscription.reload.session_id == previous_session_id
     end
+    initial_count = page.evaluate_script("window.pushSynchronizationCountForTest")
+    page.execute_script <<~JAVASCRIPT
+      window.pushSynchronizationNowForTest = Date.now();
+      Date.now = () => window.pushSynchronizationNowForTest;
+    JAVASCRIPT
+
+    click_on "Search"
+    click_on "Exit search"
+    assert_equal initial_count, page.evaluate_script("window.pushSynchronizationCountForTest")
 
     subscription.destroy!
+    page.execute_script("window.pushSynchronizationNowForTest += 30001")
     click_on "Search"
     assert_current_path searches_path
     click_on "Exit search"
     assert_current_path room_path(rooms(:designers))
-    sleep 0.5
-    assert_not Push::Subscription.exists?(endpoint:)
-
-    page.refresh
     Timeout.timeout(5) do
       sleep 0.05 until Push::Subscription.exists?(endpoint:)
     end
 
+    assert_equal initial_count + 1, page.evaluate_script("window.pushSynchronizationCountForTest")
     assert_equal Session.order(:id).last, Push::Subscription.find_by!(endpoint:).session
   end
 

@@ -21,11 +21,14 @@ designers:
 david_and_jason:
   type: Rooms::Direct
   creator: :david
+  direct_participant_key: <%= Rooms::Direct.participant_key_for([ ActiveRecord::FixtureSet.identify(:david), ActiveRecord::FixtureSet.identify(:jason) ]) %>
 
 david_and_kevin:
   type: Rooms::Direct
   creator: :david
+  direct_participant_key: <%= Rooms::Direct.participant_key_for([ ActiveRecord::FixtureSet.identify(:david), ActiveRecord::FixtureSet.identify(:kevin) ]) %>
 
 bender_and_kevin:
   type: Rooms::Direct
   creator: :kevin
+  direct_participant_key: <%= Rooms::Direct.participant_key_for([ ActiveRecord::FixtureSet.identify(:bender), ActiveRecord::FixtureSet.identify(:kevin) ]) %>

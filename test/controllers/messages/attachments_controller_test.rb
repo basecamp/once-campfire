@@ -14,12 +14,18 @@ class Messages::AttachmentsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "streams attachment bytes only through a private authenticated response" do
+    downloads = 0
+    subscriber = ActiveSupport::Notifications.subscribe("service_streaming_download.active_storage") { downloads += 1 }
+
     get @url
 
     assert_response :success
     assert_equal "private attachment bytes", response.body
+    assert_equal 1, downloads
     assert_equal "private, no-store", response.headers["Cache-Control"]
     assert_equal "Cookie", response.headers["Vary"]
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
   end
 
   test "a retained URL stops working after room access is revoked" do
@@ -87,6 +93,7 @@ class Messages::AttachmentsControllerTest < ActionDispatch::IntegrationTest
 
   test "missing storage on a full response returns a private 404" do
     ActiveStorage::Blob.any_instance.stubs(:download).raises(ActiveStorage::FileNotFoundError)
+    Messages::AttachmentsController.any_instance.expects(:send_stream).never
 
     get @url
 
@@ -96,6 +103,33 @@ class Messages::AttachmentsControllerTest < ActionDispatch::IntegrationTest
     assert_nil response.headers["Content-Range"]
     assert_nil response.headers["Accept-Ranges"]
     assert_empty response.body
+  end
+
+  test "an interrupted full stream unwinds the service download immediately" do
+    released = false
+    blob = Object.new
+    blob.define_singleton_method(:filename) { ActiveStorage::Filename.new("private.txt") }
+    blob.define_singleton_method(:forced_disposition_for_serving) { nil }
+    blob.define_singleton_method(:content_type_for_serving) { "text/plain" }
+    blob.define_singleton_method(:download) do |&block|
+      begin
+        block.call "first chunk"
+        block.call "second chunk"
+      ensure
+        released = true
+      end
+    end
+    stream = mock
+    stream.expects(:write).with("first chunk").raises(IOError, "client disconnected")
+    controller = Messages::AttachmentsController.new
+    controller.expects(:send_stream).with(
+      filename: "private.txt", disposition: :inline, type: "text/plain"
+    ).yields(stream)
+
+    assert_raises(IOError) do
+      controller.send(:send_blob_full_stream, blob, disposition: :inline)
+    end
+    assert released
   end
 
   test "streams a large range in bounded chunks" do

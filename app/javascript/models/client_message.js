@@ -33,7 +33,10 @@ export default class ClientMessage {
     }
   }
 
-  failed(clientMessageId, { kind = "message", permanent = false, retryable = true, status: statusCode, uncertain = false } = {}) {
+  failed(clientMessageId, {
+    kind = "message", permanent = false, persistenceUnavailable = false,
+    retryable = true, status: statusCode, uncertain = false
+  } = {}) {
     const element = this.#findWithId(clientMessageId)
     const status = element?.querySelector("[data-client-message-status]")
     const retryButton = element?.querySelector("[data-client-message-retry]")
@@ -48,8 +51,16 @@ export default class ClientMessage {
         this.#configureAction(retryButton, kind == "file" ? "Restore attachment" : "Restore message", "restore")
         retryButton.after(this.#discardButton(clientMessageId, kind))
       } else if (uncertain) {
-        status.textContent = "Upload outcome is unknown. Retry to confirm whether the file was sent."
-        this.#configureAction(retryButton, "Retry to confirm", "retry")
+        if (kind == "file") {
+          status.textContent = "Upload outcome is unknown. Retry to confirm whether the file was sent."
+          this.#configureAction(retryButton, "Retry to confirm", "retry")
+        } else if (persistenceUnavailable) {
+          status.textContent = "Message outcome is unknown. Retry on this page to reuse its original ID; reloading could make a safe retry impossible."
+          this.#configureAction(retryButton, "Retry on this page", "retry")
+        } else {
+          status.textContent = "Message outcome is unknown. Check the server and retry with its original ID."
+          this.#configureAction(retryButton, "Check and retry", "retry")
+        }
       } else {
         status.textContent = retryable ? "Message was not sent." : "File was not uploaded. It remains selected for retry."
         this.#configureAction(retryButton, "Retry sending", "retry", { hidden: !retryable })
@@ -64,7 +75,7 @@ export default class ClientMessage {
 
     if (element && status && retryButton) {
       element.classList.remove("message--failed")
-      status.textContent = kind == "file" ? "Checking upload…" : "Retrying message…"
+      status.textContent = kind == "file" ? "Checking upload…" : "Checking message…"
       this.#removeDiscardButton(element)
       this.#configureAction(retryButton, "Retry sending", "retry")
       retryButton.disabled = true

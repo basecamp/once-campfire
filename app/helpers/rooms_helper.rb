@@ -66,7 +66,8 @@ module RoomsHelper
         controller: "composer drop-target",
         action: composer_data_actions,
         composer_messages_outlet: "#message-area",
-        composer_toolbar_class: "composer--rich-text", composer_room_id_value: room.id
+        composer_toolbar_class: "composer--rich-text", composer_room_id_value: room.id,
+        composer_reconciliation_url_value: reconciliation_room_messages_path(room)
       }
     end
 

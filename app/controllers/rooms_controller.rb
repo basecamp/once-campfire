@@ -37,6 +37,10 @@ class RoomsController < ApplicationController
       end
     end
 
+    def ensure_room_type_can_change
+      head :forbidden if @room.direct?
+    end
+
     def find_messages
       messages = @room.messages.with_creator.with_attachment_details.with_boosts
 

@@ -8,7 +8,6 @@ class Rooms::Direct < Room
 
   validates :direct_participant_key, presence: true, on: :create
   validate :created_through_participant_factory, on: :create
-  validate :preserve_direct_participant_key, on: :update
 
   class << self
     def find_or_create_for(users, actor:)
@@ -76,12 +75,6 @@ class Rooms::Direct < Room
   private
     def created_through_participant_factory
       errors.add :base, "direct rooms must be created with their canonical participants" unless @creating_canonical_room
-    end
-
-    def preserve_direct_participant_key
-      if direct_participant_key_was.present? && will_save_change_to_direct_participant_key?
-        errors.add :direct_participant_key, "cannot be changed"
-      end
     end
 
     def create_canonically!(participants)

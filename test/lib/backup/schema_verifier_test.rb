@@ -5,7 +5,7 @@ require "campfire_backup/schema_verifier"
 class CampfireBackup::SchemaVerifierTest < ActiveSupport::TestCase
   self.use_transactional_tests = false
 
-  CURRENT_SCHEMA_VERSION = 20260803000000
+  CURRENT_SCHEMA_VERSION = 20260805000000
 
   test "accepts the schema loaded by db schema" do
     with_schema_database do |path|

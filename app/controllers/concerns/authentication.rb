@@ -162,12 +162,18 @@ module Authentication
 
     def set_authentication_cookie(session)
       cookies.signed.permanent[:session_token] = {
-        value: session.token, httponly: true, same_site: :lax, secure: Oidc.enabled?
+        value: session.token, httponly: true, same_site: :lax,
+        secure: secure_authentication_cookie?
       }
     end
 
     def remove_authentication_cookie
-      cookies.delete(:session_token)
+      cookies.delete(:session_token, secure: secure_authentication_cookie?)
+    end
+
+    def secure_authentication_cookie?
+      Oidc.production_https? ||
+        (request.ssl? && (Oidc.built_in_tls? || Oidc.trusted_external_https?))
     end
 
     def deny_bots

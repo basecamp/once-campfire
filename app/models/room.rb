@@ -1,4 +1,6 @@
 class Room < ApplicationRecord
+  DIRECT_TYPE = "Rooms::Direct"
+
   has_many :memberships, dependent: :delete_all do
     def grant_to(users)
       room = proxy_association.owner
@@ -79,6 +81,8 @@ class Room < ApplicationRecord
   has_many :messages, dependent: :destroy
 
   belongs_to :creator, class_name: "User", default: -> { Current.user }
+
+  validate :preserve_direct_identity, on: :update
 
   scope :opens,           -> { where(type: "Rooms::Open") }
   scope :closeds,         -> { where(type: "Rooms::Closed") }
@@ -176,8 +180,21 @@ class Room < ApplicationRecord
 
   private
     def ensure_membership_changes_allowed!
-      if direct? && direct_participant_key? && !destroying_with_memberships?
+      if immutable_direct_room? && !destroying_with_memberships?
         raise Rooms::Direct::ParticipantMutationError, "direct room participants are immutable"
+      end
+    end
+
+    def immutable_direct_room?
+      type == DIRECT_TYPE || attribute_in_database("type") == DIRECT_TYPE
+    end
+
+    def preserve_direct_identity
+      if will_save_change_to_type? && [ type, attribute_in_database("type") ].include?(DIRECT_TYPE)
+        errors.add :type, "cannot be changed for a direct room"
+      end
+      if direct_participant_key_in_database.present? && will_save_change_to_direct_participant_key?
+        errors.add :direct_participant_key, "cannot be changed"
       end
     end
 

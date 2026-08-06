@@ -43,45 +43,53 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
     end
   end
 
-  test "data in any durable table prevents fresh database classification" do
-    prepare_database = lambda do |database|
-      UpgradeRecoveryGuard::FRESHNESS_TABLES.each do |table|
-        database.execute("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
-      end
-      database.execute("CREATE TABLE memberships (id INTEGER PRIMARY KEY, connections INTEGER)")
-      database.execute("INSERT INTO memberships (connections) VALUES (3)")
+  test "an existing database with only empty internal tables is fresh" do
+    with_paths(create_database: false) do |storage, database, _archive, _authentication|
+      database.dirname.mkpath
+      sqlite = SQLite3::Database.new(database.to_s)
+      sqlite.execute("CREATE TABLE schema_migrations (version varchar NOT NULL PRIMARY KEY)")
+      sqlite.execute("CREATE TABLE ar_internal_metadata (key varchar NOT NULL PRIMARY KEY, value varchar)")
+      sqlite.close
+
+      assert_equal :fresh, guard(storage, database).verify_before_prepare!
     end
+  end
 
-    with_paths(prepare_database:) do |storage, database, _archive, _authentication|
-      error = assert_raises(RuntimeError) { guard(storage, database).verify_before_prepare! }
+  test "partial and unknown schemas fail closed without changing database bytes" do
+    [ "users", "unknown_recovery_table" ].each do |table|
+      with_paths(create_database: false) do |storage, database, _archive, _authentication|
+        database.dirname.mkpath
+        sqlite = SQLite3::Database.new(database.to_s)
+        sqlite.execute("CREATE TABLE schema_migrations (version varchar NOT NULL PRIMARY KEY)")
+        sqlite.execute("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
+        sqlite.close
+        before = database.binread
 
-      assert_match "requires authenticated recovery evidence", error.message
+        assert_raises(RuntimeError) { guard(storage, database).verify_before_prepare! }
+
+        assert_equal before, database.binread, "#{table} partial schema was mutated"
+      end
     end
   end
 
   test "regular tables sharing a virtual-table prefix remain durable" do
-    prepare_database = lambda do |database|
-      UpgradeRecoveryGuard::FRESHNESS_TABLES.each do |table|
-        database.execute("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
-      end
-      database.execute("CREATE VIRTUAL TABLE message_search_index USING fts5(body)")
-      database.execute("CREATE TABLE message_search_index_audit (id INTEGER PRIMARY KEY)")
-      database.execute("INSERT INTO message_search_index_audit DEFAULT VALUES")
-    end
+    with_paths(create_database: false) do |storage, database, _archive, _authentication|
+      database.dirname.mkpath
+      sqlite = SQLite3::Database.new(database.to_s)
+      sqlite.execute("CREATE TABLE schema_migrations (version varchar NOT NULL PRIMARY KEY)")
+      sqlite.execute("CREATE VIRTUAL TABLE message_search_index USING fts5(body)")
+      sqlite.execute("CREATE TABLE message_search_index_audit (id INTEGER PRIMARY KEY)")
+      connection = Struct.new(:raw_connection).new(sqlite)
 
-    with_paths(prepare_database:) do |storage, database, _archive, _authentication|
-      error = assert_raises(RuntimeError) { guard(storage, database).verify_before_prepare! }
-
-      assert_match "requires authenticated recovery evidence", error.message
+      assert_not guard(storage, database).send(:fresh_database?, connection:)
+    ensure
+      sqlite&.close
     end
   end
 
   test "shadow tables in an attached schema cannot hide main database rows" do
     with_paths do |storage, database, _archive, _authentication|
       sqlite = SQLite3::Database.new(database.to_s)
-      UpgradeRecoveryGuard::FRESHNESS_TABLES.each do |table|
-        sqlite.execute("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
-      end
       sqlite.execute("CREATE TABLE external_fts_content (id INTEGER PRIMARY KEY)")
       sqlite.execute("INSERT INTO external_fts_content DEFAULT VALUES")
       sqlite.execute("ATTACH DATABASE ':memory:' AS auxiliary")
@@ -628,7 +636,7 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
     assert_not selection_called
   end
 
-  test "production rejects a rollback selection block after authorization" do
+  test "production authorizes rollback before evaluating its selection block" do
     connection = ActiveRecord::Base.connection
     migration = Data.define(:version).new(20_260_803_000_000)
     context_class = Class.new do
@@ -645,7 +653,7 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
     end
     context_class.prepend CampfireBackup::UpgradeRecoveryGuard::MigrationContextGuard
     context = context_class.new([ migration ], connection.pool.schema_migration)
-    CampfireBackup::UpgradeRecoveryGuard.expects(:with_verified_migration).yields
+    CampfireBackup::UpgradeRecoveryGuard.expects(:with_verified_migration).never
     selection_called = false
 
     error = with_environment("RAILS_ENV" => "production") do
@@ -657,7 +665,7 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
       end
     end
 
-    assert_match "selection blocks are unsupported", error.message
+    assert_match "separately authenticated rollback archive", error.message
     assert_not selection_called
   end
 
@@ -724,9 +732,11 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
 
         assert_match "in use by another process", error.message
         rollback_error = with_environment("RAILS_ENV" => "production", "DATABASE_URL" => nil) do
-          assert_raises(RuntimeError) { connection.pool.migration_context.down(0) }
+          assert_raises(ActiveRecord::IrreversibleMigration) do
+            connection.pool.migration_context.down(0)
+          end
         end
-        assert_match "in use by another process", rollback_error.message
+        assert_match "separately authenticated rollback archive", rollback_error.message
       end
     end
   end
@@ -857,6 +867,101 @@ class UpgradeRecoveryGuardTest < ActiveSupport::TestCase
     assert_equal :not_production, UpgradeRecoveryGuard.authorize_destructive_rollback!(
       migration: "CreateIdentities", env: { "RAILS_ENV" => "test" }
     )
+  end
+
+  test "every production migration context rollback API authorizes before entering migrations" do
+    context_class = Class.new do
+      attr_reader :entered, :migrations, :schema_migration
+
+      def initialize
+        @migrations = []
+        @schema_migration = Object.new
+      end
+
+      def down(*)
+        @entered = :down
+      end
+
+      def run(*)
+        @entered = :run
+      end
+
+      def rollback(*)
+        @entered = :rollback
+      end
+
+      private
+        def move(*)
+          @entered = :move
+        end
+    end
+    context_class.prepend CampfireBackup::UpgradeRecoveryGuard::MigrationContextGuard
+    operations = {
+      down: ->(context) { context.down },
+      run: ->(context) { context.run(:down, 1) },
+      rollback: ->(context) { context.rollback },
+      move: ->(context) { context.send(:move, :down, 1) }
+    }
+
+    with_environment("RAILS_ENV" => "production") do
+      operations.each do |name, operation|
+        context = context_class.new
+
+        error = assert_raises(ActiveRecord::IrreversibleMigration) { operation.call(context) }
+
+        assert_match "separately authenticated rollback archive", error.message
+        assert_nil context.entered, "#{name} entered migration code before rollback authorization"
+      end
+    end
+  end
+
+  test "migration context still supports up and nonproduction rollback APIs" do
+    context_class = Class.new do
+      attr_reader :entered, :migrations, :schema_migration
+
+      def initialize
+        @migrations = []
+        @schema_migration = Object.new
+      end
+
+      def up(*)
+        @entered = :up
+      end
+
+      def down(*)
+        @entered = :down
+      end
+
+      def run(*)
+        @entered = :run
+      end
+
+      def rollback(*)
+        @entered = :rollback
+      end
+
+      private
+        def move(*)
+          @entered = :move
+        end
+    end
+    context_class.prepend CampfireBackup::UpgradeRecoveryGuard::MigrationContextGuard
+    CampfireBackup::UpgradeRecoveryGuard.stubs(:with_verified_migration).yields
+
+    with_environment("RAILS_ENV" => "test") do
+      operations = {
+        up: ->(context) { context.up },
+        down: ->(context) { context.down },
+        run: ->(context) { context.run(:down, 1) },
+        rollback: ->(context) { context.rollback },
+        move: ->(context) { context.send(:move, :down, 1) }
+      }
+      operations.each do |name, operation|
+        context = context_class.new
+        operation.call(context)
+        assert_equal name, context.entered
+      end
+    end
   end
 
   test "production preflight spans every pending migration through the gate" do

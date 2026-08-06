@@ -1,6 +1,17 @@
 require "test_helper"
 
 class User::MutationFenceTest < ActiveSupport::TestCase
+  test "readiness creates opens locks and removes a probe file" do
+    assert User::MutationFence.ready?
+    assert_empty Dir[Rails.root.join("storage/user-mutation-fences/.readiness-*.lock")]
+  end
+
+  test "readiness fails closed when a probe file cannot be opened" do
+    File.stubs(:open).raises(Errno::EACCES, "denied")
+
+    assert_not User::MutationFence.ready?
+  end
+
   test "serializes the same user across processes" do
     skip "fork is unavailable" unless Process.respond_to?(:fork)
 
