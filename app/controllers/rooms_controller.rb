@@ -20,11 +20,17 @@ class RoomsController < ApplicationController
 
   private
     def set_room
-      if room = Current.user.rooms.find_by(id: params[:room_id] || params[:id])
+      if room = room_scope.find_by(id: params[:room_id] || params[:id])
         @room = room
       else
         redirect_to root_url, alert: "Room not found or inaccessible"
       end
+    end
+
+    # Subclasses narrow this to the room types they're allowed to act on, so that one
+    # room namespace can't be used to reach another's rooms.
+    def room_scope
+      Current.user.rooms
     end
 
     def ensure_can_administer

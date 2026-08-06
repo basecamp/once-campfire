@@ -6,6 +6,12 @@ Tag pushes and GitHub release events do not build or promote images. The script
 creates or verifies a signed tag and dispatches `publish-image.yml` from the
 exact current `main` SHA.
 
+For a new release, GitHub generates notes for that exact SHA before phase zero
+and the script authenticates the resulting bytes with the other release
+artifacts. Pass `--notes` to write the notes manually instead. Reconciliation
+always restores the authenticated notes; it never regenerates or opens them in
+an editor.
+
 Configure these repository controls before using the release script:
 
 - Protect `main` and require the project's normal reviews and checks.

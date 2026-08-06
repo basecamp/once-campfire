@@ -41,6 +41,12 @@ class Rooms::OpensController < RoomsController
       @room = @room.becomes!(Rooms::Open)
     end
 
+    # Open and closed rooms convert into each other, so both are in reach here. Direct
+    # rooms never are: promoting one would republish its history to the whole account.
+    def room_scope
+      Current.user.rooms.without_directs
+    end
+
     def broadcast_create_room(room)
       broadcast_prepend_to :rooms, target: :shared_rooms, partial: "users/sidebars/rooms/shared", locals: { room: room }
     end

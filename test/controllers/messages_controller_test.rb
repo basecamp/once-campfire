@@ -68,6 +68,19 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "creating a message does not broadcast unread room to non-members" do
+    outsider = users(:jz)
+    assert_not @room.users.include?(outsider), "need someone outside the room for this test to mean anything"
+
+    assert_no_broadcasts UnreadRoomsChannel.broadcasting_for(outsider) do
+      perform_enqueued_jobs only: MessageEffectJob do
+        post room_messages_url(@room, format: :turbo_stream), params: {
+          message: { body: "Private room activity", client_message_id: "private-unread" }
+        }
+      end
+    end
+  end
+
   test "retrying a committed client message id does not duplicate the message" do
     request_params = { message: { body: "Only once", client_message_id: "stable-retry-id" } }
 

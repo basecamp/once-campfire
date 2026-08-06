@@ -29,4 +29,34 @@ class Rooms::DirectsControllerTest < ActionDispatch::IntegrationTest
       assert_redirected_to root_url
     end
   end
+
+  test "destroy can't reach a closed room the member didn't create" do
+    sign_in :kevin
+
+    assert_no_difference -> { Room.count } do
+      delete rooms_direct_url(rooms(:designers))
+    end
+
+    assert rooms(:designers).reload.persisted?
+  end
+
+  test "destroy can't reach an open room the member didn't create" do
+    sign_in :kevin
+
+    assert_no_difference -> { Room.count } do
+      delete rooms_direct_url(rooms(:hq))
+    end
+
+    assert rooms(:hq).reload.persisted?
+  end
+
+  test "destroy can't reach a room the member isn't in at all" do
+    sign_in :jz
+
+    assert_no_difference -> { Room.count } do
+      delete rooms_direct_url(rooms(:david_and_kevin))
+    end
+
+    assert rooms(:david_and_kevin).reload.persisted?
+  end
 end

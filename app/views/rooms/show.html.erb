@@ -19,7 +19,7 @@
     <%= render partial: "messages/message", collection: @messages, cached: true %>
   <% end %>
 
-  <%= turbo_stream_from @room, :messages %>
+  <%= turbo_stream_from @room, :messages, channel: "RoomMessagesChannel" %>
   <%= button_to_jump_to_newest_message %>
 <% end %>
 

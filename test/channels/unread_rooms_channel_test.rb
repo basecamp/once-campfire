@@ -10,6 +10,31 @@ class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
 
     assert subscription.confirmed?
     assert_has_stream_for users(:david)
+    assert_not_includes subscription.streams, UnreadRoomsChannel.broadcasting_for(users(:jz))
+    assert_not_includes subscription.streams, "unread_rooms"
+  end
+
+  test "an outsider is not told about activity in a room they cannot see" do
+    room = rooms(:bender_and_kevin)
+    outsider = users(:jz)
+    assert_not room.users.include?(outsider), "jz must be an outsider for this test to mean anything"
+
+    assert_no_broadcasts UnreadRoomsChannel.broadcasting_for(outsider) do
+      room.messages.create!(
+        body: "Private", creator: users(:kevin), client_message_id: SecureRandom.uuid
+      )
+    end
+  end
+
+  test "a member is told about activity in their own room" do
+    room = rooms(:bender_and_kevin)
+    recipient = users(:kevin)
+
+    assert_broadcasts UnreadRoomsChannel.broadcasting_for(recipient), 1 do
+      room.messages.create!(
+        body: "Private", creator: users(:bender), client_message_id: SecureRandom.uuid
+      )
+    end
   end
 
   test "a removed member receives no future room activity" do

@@ -143,6 +143,30 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_match "every fetch and push URL", output.last
   end
 
+  test "generated release notes are bound to the exact release commit" do
+    sha = "a" * 40
+    notes = "# What's Changed\n\n* Added automatic notes\n"
+    stubs(:capture!).with(
+      "gh", "api", "--method", "POST",
+      "repos/#{EXPECTED_REPOSITORY}/releases/generate-notes",
+      "--raw-field", "tag_name=v1.2.3", "--raw-field", "target_commitish=#{sha}"
+    ).returns(JSON.generate("body" => notes))
+
+    assert_equal notes, generated_release_notes!(
+      repository: EXPECTED_REPOSITORY, tag: "v1.2.3", target_commitish: sha
+    )
+  end
+
+  test "generated release notes reject an empty GitHub response" do
+    stubs(:capture!).returns(JSON.generate("body" => ""))
+
+    assert_raises(ReleaseStateError) do
+      generated_release_notes!(
+        repository: EXPECTED_REPOSITORY, tag: "v1.2.3", target_commitish: "a" * 40
+      )
+    end
+  end
+
   test "phase zero is a complete authenticated journal before later phases" do
     journal = {
       "lock_id" => "a" * 64,

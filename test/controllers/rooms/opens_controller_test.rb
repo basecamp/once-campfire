@@ -58,13 +58,25 @@ class Rooms::OpensControllerTest < ActionDispatch::IntegrationTest
     assert_equal rooms(:designers).memberships.count, User.count
   end
 
-  test "cannot update a direct room to be open" do
-    room = rooms(:david_and_jason)
+  test "a direct room cannot be promoted to open by its creator" do
+    sign_in :kevin
+    room = rooms(:bender_and_kevin)
     participant_ids = room.user_ids.sort
 
     put rooms_open_url(room), params: { room: { name: "Not open" } }
 
-    assert_response :forbidden
+    assert_redirected_to root_url
+    assert room.reload.direct?
+    assert_equal participant_ids, room.user_ids.sort
+  end
+
+  test "a direct room cannot be promoted to open by an administrator" do
+    room = rooms(:david_and_kevin)
+    participant_ids = room.user_ids.sort
+
+    put rooms_open_url(room), params: { room: { name: "Not open" } }
+
+    assert_redirected_to root_url
     assert room.reload.direct?
     assert_equal participant_ids, room.user_ids.sort
   end

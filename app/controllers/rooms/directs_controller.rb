@@ -29,8 +29,13 @@ class Rooms::DirectsController < RoomsController
       end
     end
 
-    # All users in a direct room can administer it
+    # All users in a direct room can administer it. Only direct rooms, though: this
+    # relaxation is why room_scope below has to keep every other type out of reach.
     def ensure_can_administer
       true
+    end
+
+    def room_scope
+      Current.user.rooms.directs
     end
 end

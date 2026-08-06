@@ -16,6 +16,7 @@ require "tmpdir"
 require "uri"
 require_relative "../lib/campfire_backup/build_identity"
 
+MANUAL_NOTES = ARGV.delete("--notes")
 VERSION = ARGV.first
 RELEASE_REMOTE = ENV.fetch("RELEASE_REMOTE", "origin")
 EXPECTED_REPOSITORY = "basecamp/once-campfire"
@@ -1948,6 +1949,27 @@ def github_repository(remote)
   end
 
   EXPECTED_REPOSITORY
+end
+
+def generated_release_notes!(repository:, tag:, target_commitish:)
+  version = tag.delete_prefix("v")
+  unless repository == EXPECTED_REPOSITORY && tag == "v#{version}" &&
+      version.match?(STABLE_VERSION) && target_commitish.match?(/\A[0-9a-f]{40}\z/)
+    raise ReleaseStateError, "Generated release notes identity is invalid"
+  end
+
+  response = capture!(
+    "gh", "api", "--method", "POST", "repos/#{repository}/releases/generate-notes",
+    "--raw-field", "tag_name=#{tag}", "--raw-field", "target_commitish=#{target_commitish}"
+  )
+  payload = JSON.parse(response)
+  body = payload["body"] if payload.is_a?(Hash)
+  unless body.is_a?(String) && !body.strip.empty?
+    raise ReleaseStateError, "GitHub returned empty generated release notes"
+  end
+  body
+rescue JSON::ParserError
+  raise ReleaseStateError, "GitHub returned invalid generated release notes"
 end
 
 def remote_tag_sha(remote, tag)
@@ -4275,7 +4297,7 @@ class ReleaseLock
 end
 
 if $PROGRAM_NAME == __FILE__
-abort "You must specify a version, e.g. `bin/release 1.5.0`." unless VERSION
+abort "You must specify a version, e.g. `bin/release 1.5.0` (pass --notes to write release notes manually)." unless VERSION
 abort "Release aborted: version must use stable MAJOR.MINOR.PATCH syntax." unless VERSION.match?(STABLE_VERSION)
 
 reconcile_sha = ENV["RELEASE_RECONCILE_SHA"].to_s
@@ -4433,11 +4455,17 @@ elsif reconciling && existing_release
 elsif reconciling
   # This value can only reach phase-zero acquisition, which requires and then replaces it with authenticated state.
   File.write notes_file, "# Authenticated release notes pending recovery\n"
-elsif !File.exist?(notes_file)
-  body = existing_release&.fetch("body", nil)
-  File.write notes_file, body.to_s.empty? ? notes_template : body
+elsif MANUAL_NOTES
+  unless File.exist?(notes_file)
+    body = existing_release&.fetch("body", nil)
+    File.write notes_file, body.to_s.empty? ? notes_template : body
+  end
+else
+  File.write notes_file, generated_release_notes!(
+    repository: REPOSITORY, tag: TAG, target_commitish: GIT_SHA
+  )
 end
-unless reconciling
+if MANUAL_NOTES && !reconciling
   editor_command = [ ENV["VISUAL"], ENV["EDITOR"], "vim" ].find { !_1.to_s.empty? }
   editor = Shellwords.split(editor_command)
   run!(*editor, notes_file)
