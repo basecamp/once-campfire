@@ -1,4 +1,10 @@
 GIT
+  remote: https://github.com/basecamp/surfguard.git
+  revision: 0972277a8116412ac7ab35e9b512a99e700ef4b6
+  specs:
+    surfguard (0.1.0)
+
+GIT
   remote: https://github.com/hotwired/turbo-rails.git
   revision: 30cd8fcc6f82c1ad4edd1ed6069ba878f21f02b3
   specs:
@@ -442,6 +448,7 @@ DEPENDENCIES
   sentry-ruby
   sqlite3
   stimulus-rails
+  surfguard!
   thruster
   turbo-rails!
   web-push
