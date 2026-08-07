@@ -1,0 +1,29 @@
+test/lib/restricted_http/private_network_guard_test.rb
+  s_b69cae1e0dc7ce::t_3540de19f44de7 77-97
+lib/restricted_http/private_network_guard.rb
+  s_b69cae1e0dc7ce::t_292517756ed319 1,6-9,14-15,19
+Gemfile
+  s_b69cae1e0dc7ce::t_1579bf30012131 44
+Gemfile.lock
+  s_b69cae1e0dc7ce::t_8287914d7e1c89 1-6,451
+test/models/opengraph/fetch_test.rb
+  s_b69cae1e0dc7ce::t_ffa5591914aadc 40,51,68
+test/models/opengraph/location_test.rb
+  s_b69cae1e0dc7ce::t_c2af7480b54494 17,25,33,39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "3711d93ffc3cc9e8a8fc870852ca15a46af02692",
+  "prompts": {},
+  "sessions": {
+    "s_b69cae1e0dc7ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1213f01-7eb8-4002-aacc-f88c20606c3b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
