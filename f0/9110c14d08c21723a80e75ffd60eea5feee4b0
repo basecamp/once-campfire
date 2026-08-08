@@ -1,0 +1,19 @@
+config/initializers/content_security_policy.rb
+  s_5e61b2f0e67d1f::t_8a06283169a8a0 3-8,12-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "f09110c14d08c21723a80e75ffd60eea5feee4b0",
+  "prompts": {},
+  "sessions": {
+    "s_5e61b2f0e67d1f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ea26b2d5-c81d-4ea7-a43f-0ed1f8ea4d75",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
