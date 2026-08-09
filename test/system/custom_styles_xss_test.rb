@@ -12,6 +12,11 @@ class CustomStylesXssTest < ApplicationSystemTestCase
   end
 
   test "custom styles payload loads as a stylesheet and never executes" do
+    # Navigate to the page under test explicitly (matching the writebook
+    # sibling) rather than leaning on the post-login landing page — otherwise
+    # this coverage could silently evaporate if that landing changes.
+    visit root_url
+
     # (a) custom styles arrive via an external stylesheet link, not inline markup
     assert_selector "link[rel='stylesheet'][href*='custom_styles']", visible: false
 
