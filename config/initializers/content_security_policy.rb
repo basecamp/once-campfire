@@ -43,27 +43,59 @@ module CSP
       value
     end
   end
-end
 
-Rails.application.configure do
-  config.content_security_policy do |policy|
+  # Per-install CSP extras.
+  #
+  # Campfire is a ONCE product: each customer self-hosts it on their own domain
+  # and an admin may embed or connect to external hosts — video/embed providers,
+  # image CDNs, analytics, form or webhook endpoints — that vary per install and
+  # are unknown at build time. `:self` already tracks this install's own origin;
+  # these ENV knobs let an admin allow additional hosts without editing this file
+  # (and without which enforcement would break their legitimate integrations).
+  #
+  # Each is a comma- or whitespace-separated list of CSP source expressions, e.g.
+  #
+  #   CSP_EXTRA_FRAME_SRC="https://www.youtube.com https://player.vimeo.com"
+  #
+  # Leave them unset (the default) to keep each directive at :self only.
+  EXTRA_ENV = {
+    script_src:  "CSP_EXTRA_SCRIPT_SRC",
+    style_src:   "CSP_EXTRA_STYLE_SRC",
+    img_src:     "CSP_EXTRA_IMG_SRC",
+    connect_src: "CSP_EXTRA_CONNECT_SRC",
+    frame_src:   "CSP_EXTRA_FRAME_SRC",
+    form_action: "CSP_EXTRA_FORM_ACTION"
+  }.freeze
+
+  # Parse one ENV knob into a list of extra host sources.
+  def self.extra(directive)
+    ENV[EXTRA_ENV.fetch(directive)].to_s.split(/[,\s]+/).reject(&:blank?)
+  end
+
+  # Build the baseline policy. Kept as a reusable method so it can be exercised
+  # in isolation by tests as well as at boot.
+  def self.apply(policy)
     policy.default_src     :self
-    policy.script_src      :self  # nonce auto-appended via nonce_directives below
+    policy.script_src      :self, *extra(:script_src)  # nonce auto-appended via nonce_directives below
     # unsafe_inline retained: many style="…" attributes across the message
     # composer and ActionText content can't be nonced yet.
-    policy.style_src       :self, :unsafe_inline
-    # frame_src / img_src / connect_src start at :self and get tuned against
-    # violation reports during the report-only window.
-    policy.img_src         :self, :data, :blob
-    policy.connect_src     :self
-    policy.frame_src       :self
+    policy.style_src       :self, :unsafe_inline, *extra(:style_src)
+    # frame_src / img_src / connect_src start at :self plus any per-install extras
+    # and get tuned against violation reports during the report-only window.
+    policy.img_src         :self, :data, :blob, *extra(:img_src)
+    policy.connect_src     :self, *extra(:connect_src)
+    policy.frame_src       :self, *extra(:frame_src)
     policy.frame_ancestors :self
     policy.base_uri        :self
-    policy.form_action     :self
+    policy.form_action     :self, *extra(:form_action)
     policy.object_src      :none
     # Specify URI for violation reports once a report sink is available
     # policy.report_uri "/csp-violation-report-endpoint"
   end
+end
+
+Rails.application.configure do
+  config.content_security_policy { |policy| CSP.apply(policy) }
 
   config.content_security_policy_nonce_generator = ->(request) { CSP::Nonce.generate(request) }
   config.content_security_policy_nonce_directives = %w[ script-src ]

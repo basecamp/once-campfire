@@ -47,7 +47,37 @@ class CspNonceTest < ActionDispatch::IntegrationTest
     assert_select "script[type='importmap'][nonce=?]", nonce
   end
 
+  test "a per-install ENV extra host is appended to its directive" do
+    with_env "CSP_EXTRA_FRAME_SRC" => "https://player.vimeo.com https://www.youtube.com",
+             "CSP_EXTRA_IMG_SRC"   => "https://cdn.example.test" do
+      header = ActionDispatch::ContentSecurityPolicy.new { |p| CSP.apply(p) }.build
+
+      assert_match %r{frame-src[^;]*\bhttps://player\.vimeo\.com\b}, header
+      assert_match %r{frame-src[^;]*\bhttps://www\.youtube\.com\b}, header
+      assert_match %r{img-src[^;]*\bhttps://cdn\.example\.test\b}, header
+      # :self is preserved alongside the extras.
+      assert_match %r{frame-src 'self'}, header
+    end
+  end
+
+  test "directives default to :self only when no ENV extras are set" do
+    with_env "CSP_EXTRA_FRAME_SRC" => nil, "CSP_EXTRA_IMG_SRC" => nil do
+      header = ActionDispatch::ContentSecurityPolicy.new { |p| CSP.apply(p) }.build
+
+      assert_match %r{frame-src 'self'(;|\z)}, header
+    end
+  end
+
   private
+    def with_env(vars)
+      original = {}
+      vars.each_key { |k| original[k] = ENV.key?(k) ? ENV[k] : :__unset__ }
+      vars.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+      yield
+    ensure
+      original.each { |k, v| v == :__unset__ ? ENV.delete(k) : ENV[k] = v }
+    end
+
     def report_only_nonce
       response.headers["Content-Security-Policy-Report-Only"].to_s[/'nonce-([^']+)'/, 1]
     end
