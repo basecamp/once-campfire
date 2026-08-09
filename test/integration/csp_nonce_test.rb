@@ -60,6 +60,27 @@ class CspNonceTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a semicolon-separated ENV extra tokenizes into valid sources without raising" do
+    # A plausible operator paste separates hosts with "; ". Because the nonce
+    # forces a per-request policy build, a semicolon left inside a single source
+    # token would make Rails raise InvalidDirectiveError on every request — a
+    # site-wide 500 even in report-only mode. Splitting on ';' must yield both
+    # hosts as valid tokens and never raise.
+    with_env "CSP_EXTRA_FRAME_SRC" => "https://a.example; https://b.example" do
+      header = nil
+      assert_nothing_raised do
+        header = ActionDispatch::ContentSecurityPolicy.new { |p| CSP.apply(p) }.build
+      end
+
+      assert_match %r{frame-src[^;]*\bhttps://a\.example\b}, header
+      assert_match %r{frame-src[^;]*\bhttps://b\.example\b}, header
+      # Both hosts share the one frame-src directive; the semicolon did not leak
+      # a second directive into the policy.
+      assert_equal 1, header.scan(/(?:^|;\s*)frame-src\b/).size,
+        "Expected exactly one frame-src directive"
+    end
+  end
+
   test "directives default to :self only when no ENV extras are set" do
     with_env "CSP_EXTRA_FRAME_SRC" => nil, "CSP_EXTRA_IMG_SRC" => nil do
       header = ActionDispatch::ContentSecurityPolicy.new { |p| CSP.apply(p) }.build

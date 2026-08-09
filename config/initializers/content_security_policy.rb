@@ -53,7 +53,8 @@ module CSP
   # these ENV knobs let an admin allow additional hosts without editing this file
   # (and without which enforcement would break their legitimate integrations).
   #
-  # Each is a comma- or whitespace-separated list of CSP source expressions, e.g.
+  # Each is a comma-, semicolon-, or whitespace-separated list of CSP source
+  # expressions, e.g.
   #
   #   CSP_EXTRA_FRAME_SRC="https://www.youtube.com https://player.vimeo.com"
   #
@@ -68,8 +69,16 @@ module CSP
   }.freeze
 
   # Parse one ENV knob into a list of extra host sources.
+  #
+  # Semicolons are tokenized like commas/whitespace: because the nonce forces a
+  # per-request policy build, a stray `;` in a value (a plausible operator paste,
+  # e.g. "https://youtube.com; https://vimeo.com") would otherwise land inside a
+  # single source token and make Rails raise InvalidDirectiveError on every
+  # request — a site-wide 500 even in report-only mode. Splitting on `;` yields
+  # valid tokens instead; Rails still validates each one, so no injection is
+  # introduced (a token with an embedded space still fails validation).
   def self.extra(directive)
-    ENV[EXTRA_ENV.fetch(directive)].to_s.split(/[,\s]+/).reject(&:blank?)
+    ENV[EXTRA_ENV.fetch(directive)].to_s.split(/[,;\s]+/).reject(&:blank?)
   end
 
   # Build the baseline policy. Kept as a reusable method so it can be exercised
