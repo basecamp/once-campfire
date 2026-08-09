@@ -30,7 +30,7 @@ Rails.application.routes.draw do
   end
 
   direct :fresh_custom_styles do |options|
-    route_for :account_custom_styles, v: Current.account&.updated_at&.to_fs(:number)
+    route_for :account_custom_styles, v: Current.account&.updated_at&.to_fs(:epoch)
   end
 
   get "join/:join_code", to: "users#new", as: :join
