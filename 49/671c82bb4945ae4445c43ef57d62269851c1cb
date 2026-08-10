@@ -1,0 +1,33 @@
+app/views/messages/_message.html.erb
+  s_8a70018781ef04::t_4eceea8c85d12a 3
+test/helpers/content_filters_test.rb
+  s_8a70018781ef04::t_c27460c054c005 127
+  s_8a70018781ef04::t_bc9cf18f1e3be9 63
+  s_8a70018781ef04::t_24e25a406fb97c 64-99
+  s_8a70018781ef04::t_bf51e7f38fed6a 100
+  s_8a70018781ef04::t_5278f990a274e8 101-112,119-126,128-131
+  s_8a70018781ef04::t_21bd7c049def0d 113-118
+app/helpers/content_filters/sanitize_attributes.rb
+  s_8a70018781ef04::t_38adac3f0d54a5 1-47
+app/helpers/content_filters.rb
+  s_8a70018781ef04::t_c4a9b2d0c3224e 2
+  s_8a70018781ef04::t_715b5fb8cd9ec3 3-8
+test/helpers/messages_helper_test.rb
+  s_8a70018781ef04::t_1a189598bef25b 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "49671c82bb4945ae4445c43ef57d62269851c1cb",
+  "prompts": {},
+  "sessions": {
+    "s_8a70018781ef04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0e89506-7254-4eb6-ba0e-73c021a770d0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}
