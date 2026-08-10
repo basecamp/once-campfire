@@ -1,0 +1,19 @@
+Gemfile.lock
+  s_8a70018781ef04::t_930a8e20eb2ae4 378-381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "bd39feef40f189283e3e69e7dfb3e88338f96e0b",
+  "prompts": {},
+  "sessions": {
+    "s_8a70018781ef04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0e89506-7254-4eb6-ba0e-73c021a770d0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
