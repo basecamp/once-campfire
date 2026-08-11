@@ -10,6 +10,13 @@ module RestrictedHTTP
   module PrivateNetworkGuard
     extend self
 
+    # A hostname that resolves to nothing (NXDOMAIN, timeout, empty answer)
+    # raises Surfguard::Unresolvable, which we let propagate as a lookup failure
+    # -- the same way the old Resolv.getaddress guard raised Resolv::ResolvError,
+    # and the callers here already treat it as a fetch failure. The Violation is
+    # reserved for a host that resolves to a blocked address (an empty list back
+    # from resolve_public_ips), so a transient DNS miss is never misreported as
+    # an SSRF attempt.
     def resolve(hostname)
       Surfguard.resolve_public_ips(hostname).first or
         raise Violation.new("Attempt to access private IP via #{hostname}")

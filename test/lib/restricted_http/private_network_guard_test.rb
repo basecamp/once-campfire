@@ -140,6 +140,13 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
     assert_equal "93.184.216.34", RestrictedHTTP::PrivateNetworkGuard.resolve("example.com")
   end
 
+  test "resolve raises Unresolvable, not Violation, when the host resolves to nothing" do
+    Resolv.stubs(:getaddresses).returns([])
+    assert_raises Surfguard::Unresolvable do
+      RestrictedHTTP::PrivateNetworkGuard.resolve("nxdomain.example.com")
+    end
+  end
+
   private
     def assert_private_ip(address)
       assert RestrictedHTTP::PrivateNetworkGuard.private_ip?(address),
