@@ -1,0 +1,19 @@
+config/importmap.rb
+  s_157f64843a64e8::t_0e270b3e6bcb1e 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d1376a97ee26a609a15d36d174a543182575e829",
+  "prompts": {},
+  "sessions": {
+    "s_157f64843a64e8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3ecedbf9-3e24-40c8-9123-a2a8e23187b8",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
