@@ -1,0 +1,23 @@
+lib/restricted_http/private_network_guard.rb
+  s_7067fd6a681a5b::t_b251e55314fb4d 13-19
+test/lib/restricted_http/private_network_guard_test.rb
+  s_7067fd6a681a5b::t_43bc3262613016 143-149
+Gemfile.lock
+  s_7067fd6a681a5b::t_89fbe7d1acb6ab 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "39c09ad922b496a38249fe08cf9fdecb0aa0eb04",
+  "prompts": {},
+  "sessions": {
+    "s_7067fd6a681a5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56227ebd-2e8d-4e5f-a291-26b88be4bbf8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
