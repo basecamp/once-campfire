@@ -1,0 +1,132 @@
+@keyframes quiet {
+  25%{
+    transform: scaleY(.6);
+  }
+  50%{
+    transform: scaleY(.4);
+  }
+  75%{
+    transform: scaleY(.8);
+  }
+}
+
+@keyframes normal {
+  25%{
+    transform: scaleY(1);
+  }
+  50%{
+    transform: scaleY(.4);
+  }
+  75%{
+    transform: scaleY(.6);
+  }
+}
+@keyframes loud {
+  25%{
+    transform: scaleY(1);
+  }
+  50%{
+    transform: scaleY(.4);
+  }
+  75%{
+    transform: scaleY(1.2);
+  }
+}
+
+.audio-message-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.audio-message-metadata {
+  color: var(--color-text);
+  font-size: 0.8rem;
+}
+
+.audio-message-btn {
+  height: 24px
+}
+
+.audio-message {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sound-bar-container{
+  display: flex;
+  justify-content: space-between;
+  height: 32px;
+  --boxSize: 4px;
+  --gutter: 2px;
+  width: calc((var(--boxSize) + var(--gutter)) * 12);
+  margin-left: 6px;
+}
+
+.sound-bar {
+  height: 100%;
+  width: var(--boxSize);
+  background: #0099cc;
+  border-radius: 2px;
+}
+
+.sound-bar-animate {
+  animation-duration: 1.2s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+.sound-bar-0{
+  transform: scaleY(.3);
+  animation-name: quiet;
+}
+
+.sound-bar-1{
+  transform: scaleY(.6);
+  animation-name: normal;
+}
+
+.sound-bar-2{
+  transform: scaleY(.3);
+  animation-name: quiet;
+}
+
+.sound-bar-3{
+  transform: scaleY(.8);
+  animation-name: loud;
+}
+
+.sound-bar-4{
+  transform: scaleY(.3);
+  animation-name: quiet;
+}
+
+.sound-bar-5{
+  transform: scaleY(.6);
+  animation-name: normal;
+}
+
+.sound-bar-6{
+  transform: scaleY(.3);
+  animation-name: quiet;
+}
+
+.sound-bar-7{
+  transform: scaleY(.8);
+  animation-name: loud;
+}
+
+.sound-bar-8{
+  transform: scaleY(.3);
+  animation-name: quiet;
+}
+
+.sound-bar-9{
+  transform: scaleY(.6);
+  animation-name: normal;
+}
+
+.sound-bar-10{
+  transform: scaleY(.3);
+  animation-name: quiet;
+}
