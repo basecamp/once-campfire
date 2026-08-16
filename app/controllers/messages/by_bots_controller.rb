@@ -57,6 +57,11 @@ class Messages::ByBotsController < MessagesController
     def message_params
       if params[:attachment]
         params.permit(:attachment)
+      elsif request.media_type == "application/json"
+        params.permit(:body, :selection_mode, actions: %i[ label value url style background_color text_color icon emoji icon_position icon_only disabled ]).to_h.tap do |attributes|
+          attributes["bot_actions"] = attributes.delete("actions") if attributes.key?("actions")
+          attributes["bot_action_selection_mode"] = attributes.delete("selection_mode") if attributes.key?("selection_mode")
+        end
       else
         { body: raw_request_body }
       end

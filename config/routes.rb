@@ -60,7 +60,11 @@ Rails.application.routes.draw do
   end
 
   resources :rooms do
-    resources :messages
+    resources :messages do
+      resources :bot_actions, only: :create, module: :messages do
+        get :selection, on: :collection
+      end
+    end
 
     nested do
       scope path: ":bot_key", as: :bot, defaults: { format: :json } do

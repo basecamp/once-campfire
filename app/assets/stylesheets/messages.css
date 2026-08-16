@@ -197,6 +197,57 @@
   box-shadow: 0 0 0 var(--hover-size) var(--color-bg);
 }
 
+.message__bot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-start: 0.66rem;
+
+  form {
+    display: contents;
+  }
+}
+
+.message__bot-action {
+  min-block-size: 2.25rem;
+  padding: 0.35rem 1rem;
+
+  &[aria-disabled="true"] {
+    cursor: not-allowed;
+    filter: grayscale(100%) contrast(0.5);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  &[aria-pressed="true"] {
+    --btn-border-color: var(--color-text);
+
+    box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-text);
+
+    &::before {
+      content: "✓";
+    }
+  }
+}
+
+.message__bot-action-emoji {
+  font-size: 1.15em;
+  line-height: 1;
+}
+
+.message__bot-action--icon-only {
+  --btn-border-radius: 50%;
+  --btn-padding: 0;
+
+  aspect-ratio: 1;
+  block-size: 2.25rem;
+  inline-size: 2.25rem;
+
+  &[aria-pressed="true"]::before {
+    content: none;
+  }
+}
+
 .message__meta {
   align-items: center;
   column-gap: calc(var(--message-column-gap) / 2);

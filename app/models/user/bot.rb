@@ -56,6 +56,10 @@ module User::Bot
     webhook.deliver(message)
   end
 
+  def deliver_action_webhook(message, acting_user, value, selected)
+    webhook.deliver_action(message, acting_user, value, selected)
+  end
+
 
   private
     def update_webhook_url!(url)

@@ -19,6 +19,168 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "create with actions" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Deploy to production?",
+      selection_mode: "single",
+      actions: [
+        { label: "Deploy", value: "deploy:a1b2c3", style: "primary" },
+        { label: "Cancel", value: "cancel:a1b2c3", style: "danger" }
+      ]
+    }
+
+    assert_response :created
+    assert_equal "Deploy to production?", Message.last.plain_text_body
+    assert_equal "deploy:a1b2c3", Message.last.bot_actions.first["value"]
+    assert_equal "single", Message.last.bot_action_selection_mode
+  end
+
+  test "create with an icon and custom color" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Camera alert",
+      actions: [
+        { label: "Open camera", value: "camera:open", icon: "camera", icon_position: "right", background_color: "#7c3aed", text_color: "#fef08a" }
+      ]
+    }
+
+    assert_response :created
+    assert_equal "camera", Message.last.bot_actions.first["icon"]
+    assert_equal "right", Message.last.bot_actions.first["icon_position"]
+    assert_equal "#7c3aed", Message.last.bot_actions.first["background_color"]
+    assert_equal "#fef08a", Message.last.bot_actions.first["text_color"]
+  end
+
+  test "create with an emoji" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Fire alert",
+      actions: [ { label: "Investigate", value: "investigate", emoji: "👨‍🚒", icon_position: "right" } ]
+    }
+
+    assert_response :created
+    assert_equal "👨‍🚒", Message.last.bot_actions.first["emoji"]
+  end
+
+  test "create with an icon only action" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Quick actions",
+      actions: [ { label: "Open camera", value: "camera:open", icon: "camera", icon_only: true } ]
+    }
+
+    assert_response :created
+    assert_equal true, Message.last.bot_actions.first["icon_only"]
+  end
+
+  test "create with a disabled action" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Voting closed",
+      actions: [ { label: "Pizza", value: "food:pizza", emoji: "🍕", disabled: true } ]
+    }
+
+    assert_response :created
+    assert_equal true, Message.last.bot_actions.first["disabled"]
+  end
+
+  test "create with a link action" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Alert firing",
+      actions: [ { label: "Open runbook", url: "https://example.com/runbooks/api" } ]
+    }
+
+    assert_response :created
+    assert_equal "https://example.com/runbooks/api", Message.last.bot_actions.first["url"]
+  end
+
+  test "create with a custom app action" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Open the related app",
+      actions: [ { label: "Open dashboard", url: "example-app://open/dashboard" } ]
+    }
+
+    assert_response :created
+    assert_equal "example-app://open/dashboard", Message.last.bot_actions.first["url"]
+  end
+
+  test "rejects an unsafe link action" do
+    [ "javascript:alert(1)", "data:text/html,bad", "file:///etc/passwd", "/relative/path" ].each do |url|
+      assert_no_difference -> { Message.count } do
+        assert_raises ActiveRecord::RecordInvalid do
+          post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+            params: { body: "Alert", actions: [ { label: "Run", url: url } ] }
+        end
+      end
+    end
+  end
+
+  test "update can replace and remove actions" do
+    message = post_bot_message "Deploying..."
+
+    patch room_bot_message_url(@room, users(:bender).bot_key, message), as: :json,
+      params: { body: "Choose", selection_mode: "multiple", actions: [ { label: "Cancel", value: "cancel" } ] }
+
+    assert_response :ok
+    assert_equal [ "cancel" ], message.reload.bot_actions.pluck("value")
+    assert_equal "multiple", message.bot_action_selection_mode
+
+    patch room_bot_message_url(@room, users(:bender).bot_key, message), as: :json,
+      params: { body: "Done", actions: [] }
+
+    assert_response :ok
+    assert_empty message.reload.bot_actions
+  end
+
+  test "rejects invalid actions" do
+    assert_no_difference -> { Message.count } do
+      assert_raises ActiveRecord::RecordInvalid do
+        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+          params: { body: "Pick", actions: 13.times.map { |index| { label: "Option", value: index.to_s } } }
+      end
+    end
+  end
+
+  test "accepts a zero to ten rating" do
+    post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      body: "Rate from 0 to 10",
+      selection_mode: "single",
+      actions: 11.times.map { |rating| { label: "Rate #{rating}", value: "rating:#{rating}" } }
+    }
+
+    assert_response :created
+    assert_equal 11, Message.last.bot_actions.size
+  end
+
+  test "rejects invalid action appearance" do
+    [
+      { icon: "../../../secret" },
+      { icon: "camera", icon_position: "middle" },
+      { icon: "camera", emoji: "📷" },
+      { emoji: "not an emoji" },
+      { emoji: "🔥📷" },
+      { icon_position: "right" },
+      { icon_only: true },
+      { icon: "camera", icon_only: "yes" },
+      { disabled: "yes" },
+      { background_color: "red; display: none" },
+      { text_color: "#ffffff" },
+      { text_color: "white; display: none" }
+    ].each do |appearance|
+      assert_no_difference -> { Message.count } do
+        assert_raises ActiveRecord::RecordInvalid do
+          post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+            params: { body: "Alert", actions: [ { label: "Open", value: "open", **appearance } ] }
+        end
+      end
+    end
+  end
+
+  test "rejects an invalid action selection mode" do
+    assert_no_difference -> { Message.count } do
+      assert_raises ActiveRecord::RecordInvalid do
+        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+          params: { body: "Pick", selection_mode: "everything", actions: [ { label: "One", value: "one" } ] }
+      end
+    end
+  end
+
   test "create file" do
     assert_difference -> { Message.count }, +1 do
       post room_bot_messages_url(@room, users(:bender).bot_key), params: { attachment: fixture_file_upload("moon.jpg", "image/jpeg") }

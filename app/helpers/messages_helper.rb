@@ -66,7 +66,44 @@ module MessagesHelper
     ""
   end
 
+  def bot_action_content(action)
+    label = tag.span(action["label"], class: ("for-screen-reader" if action["icon_only"]))
+    adornment = if action["icon"].present?
+      image_tag "#{action["icon"]}.svg", size: 18, class: bot_action_icon_class(action), aria: { hidden: true }
+    elsif action["emoji"].present?
+      tag.span action["emoji"], class: "message__bot-action-emoji", aria: { hidden: true }
+    end
+    return label unless adornment
+
+    action.fetch("icon_position", "left") == "right" ? safe_join([ label, adornment ]) : safe_join([ adornment, label ])
+  end
+
+  def bot_action_style(action)
+    action["background_color"].presence&.then do |background_color|
+      "--btn-background: #{background_color}; --btn-border-color: transparent; --btn-color: #{action["text_color"].presence || bot_action_foreground(background_color)}"
+    end
+  end
+
   private
+    def bot_action_icon_class(action)
+      return unless action["background_color"].present?
+
+      foreground = action["text_color"].presence || bot_action_foreground(action["background_color"])
+      icon_color = if foreground.in?(%w[ black white ])
+        foreground
+      else
+        bot_action_foreground(foreground) == "black" ? "white" : "black"
+      end
+      "colorize--#{icon_color}"
+    end
+
+    def bot_action_foreground(color)
+      hex = color.delete_prefix("#")
+      hex = hex.chars.map { |character| character * 2 }.join if hex.length == 3
+      red, green, blue = hex.scan(/../).map { |component| component.to_i(16) }
+      ((red * 299 + green * 587 + blue * 114) / 1000) > 149 ? "black" : "white"
+    end
+
     def messages_actions
       "turbo:before-stream-render@document->messages#beforeStreamRender keydown.up@document->messages#editMyLastMessage"
     end
