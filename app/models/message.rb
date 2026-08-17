@@ -80,6 +80,9 @@ class Message < ApplicationRecord
           break
         end
       end
+
+      values = bot_actions.filter_map { |action| action["value"] if action.is_a?(Hash) }
+      errors.add :bot_actions, "must contain unique values" unless values.uniq.size == values.size
     end
 
     def valid_bot_action?(action)
@@ -87,8 +90,8 @@ class Message < ApplicationRecord
         action["label"].is_a?(String) && action["label"].present? && action["label"].length <= MAX_BOT_ACTION_LABEL_LENGTH &&
         valid_bot_action_destination?(action) &&
         (action["style"].blank? || action["style"].in?(BOT_ACTION_STYLES)) &&
-        (action["background_color"].blank? || action["background_color"].match?(BOT_ACTION_COLOR_PATTERN)) &&
-        (action["text_color"].blank? || action["background_color"].present? && action["text_color"].match?(BOT_ACTION_COLOR_PATTERN)) &&
+        (action["background_color"].blank? || action["background_color"].is_a?(String) && action["background_color"].match?(BOT_ACTION_COLOR_PATTERN)) &&
+        (action["text_color"].blank? || action["background_color"].present? && action["text_color"].is_a?(String) && action["text_color"].match?(BOT_ACTION_COLOR_PATTERN)) &&
         [ nil, false, true ].include?(action["icon_only"]) &&
         [ nil, false, true ].include?(action["disabled"]) &&
         (!action["icon_only"] || action["icon"].present? || action["emoji"].present?) &&

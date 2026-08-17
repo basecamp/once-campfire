@@ -3,12 +3,14 @@ require "test_helper"
 class WebhookTest < ActiveSupport::TestCase
   test "deliver action" do
     message = messages(:fourth)
+    message_path = Rails.application.routes.url_helpers.room_at_message_path(message.room, message)
+    bot_messages_path = Rails.application.routes.url_helpers.room_bot_messages_path(message.room, users(:bender).bot_key)
     request = WebMock.stub_request(:post, webhooks(:bender).url).with do |request|
       JSON.parse(request.body) == {
         "type" => "action",
-        "room" => { "id" => message.room.id, "name" => message.room.name },
+        "room" => { "id" => message.room.id, "name" => message.room.name, "path" => bot_messages_path },
         "user" => { "id" => users(:kevin).id, "name" => users(:kevin).name },
-        "message" => { "id" => message.id },
+        "message" => { "id" => message.id, "path" => message_path },
         "action" => { "value" => "deploy:a1b2c3", "selected" => true }
       }
     end.to_return(status: 200)

@@ -2,7 +2,6 @@
   <%= message_presentation(message) %>
   <% if message.bot_actions.any? %>
     <div class="message__bot-actions" data-controller="bot-actions"
-         data-bot-actions-message-id-value="<%= message.id %>"
          data-bot-actions-selection-mode-value="<%= message.bot_action_selection_mode %>"
          data-bot-actions-selection-url-value="<%= selection_room_message_bot_actions_path(message.room, message) %>">
       <% message.bot_actions.each do |action| %>
@@ -17,6 +16,7 @@
                 params: { value: action["value"] },
                 aria: ({ pressed: false } unless message.bot_action_selection_mode == "none"),
                 data: { action: "bot-actions#choose", bot_actions_target: "button", bot_action_value: action["value"] },
+                form: { data: { action: "turbo:submit-end->bot-actions#restore" } },
                 class: classes, style: bot_action_style(action), title: (action["label"] if action["icon_only"]), disabled: action["disabled"] %>
         <% end %>
       <% end %>

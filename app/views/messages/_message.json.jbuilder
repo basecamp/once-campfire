@@ -8,6 +8,9 @@ json.cache! message do
     json.html message.body.to_s
   end
 
+  json.selection_mode message.bot_action_selection_mode
+  json.actions message.bot_actions
+
   json.creator message.creator, partial: "users/user", as: :user
 
   json.room do

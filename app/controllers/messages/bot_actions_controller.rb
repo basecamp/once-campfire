@@ -5,7 +5,7 @@ class Messages::BotActionsController < ApplicationController
 
   def selection
     message = @room.messages.find(params[:message_id])
-    render json: { values: message.bot_action_selections.find_by(user: Current.user)&.values || [] }
+    render json: { values: selected_values(message) }
   end
 
   def create
@@ -25,11 +25,27 @@ class Messages::BotActionsController < ApplicationController
     def update_selection(message, value)
       return false if message.bot_action_selection_mode == "none"
 
-      selection = message.bot_action_selections.find_or_initialize_by(user: Current.user)
-      current_values = selection.values & message.bot_actions.pluck("value")
-      selection.values = toggled_values(current_values, value, mode: message.bot_action_selection_mode)
-      selection.save!
-      selection.values.include?(value)
+      selection = message.bot_action_selections.create_or_find_by!(user: Current.user)
+      selection.with_lock do
+        current_values = normalized_values(selection.values, message)
+        selection.update! values: toggled_values(current_values, value, mode: message.bot_action_selection_mode)
+        selection.values.include?(value)
+      end
+    end
+
+    def selected_values(message)
+      values = message.bot_action_selections.find_by(user: Current.user)&.values || []
+      normalized_values(values, message)
+    end
+
+    def normalized_values(values, message)
+      values = values & message.bot_actions.pluck("value")
+
+      case message.bot_action_selection_mode
+      when "none" then []
+      when "single" then values.first(1)
+      else values
+      end
     end
 
     def toggled_values(values, value, mode:)

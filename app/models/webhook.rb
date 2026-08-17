@@ -56,9 +56,9 @@ class Webhook < ApplicationRecord
     def action_payload(message, acting_user, value, selected)
       {
         type: "action",
-        room: { id: message.room.id, name: message.room.name },
+        room: { id: message.room.id, name: message.room.name, path: room_bot_messages_path(message) },
         user: { id: acting_user.id, name: acting_user.name },
-        message: { id: message.id },
+        message: { id: message.id, path: message_path(message) },
         action: { value: value, selected: selected }
       }.to_json
     end

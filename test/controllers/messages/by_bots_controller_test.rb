@@ -33,6 +33,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Deploy to production?", Message.last.plain_text_body
     assert_equal "deploy:a1b2c3", Message.last.bot_actions.first["value"]
     assert_equal "single", Message.last.bot_action_selection_mode
+    assert_equal Message.last.id, response.parsed_body["id"]
+    assert_equal "single", response.parsed_body["selection_mode"]
+    assert_equal "deploy:a1b2c3", response.parsed_body.dig("actions", 0, "value")
   end
 
   test "create with an icon and custom color" do
@@ -160,7 +163,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
       { icon: "camera", icon_only: "yes" },
       { disabled: "yes" },
       { background_color: "red; display: none" },
+      { background_color: 123 },
       { text_color: "#ffffff" },
+      { background_color: "#000000", text_color: 123 },
       { text_color: "white; display: none" }
     ].each do |appearance|
       assert_no_difference -> { Message.count } do
@@ -168,6 +173,20 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
           post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
             params: { body: "Alert", actions: [ { label: "Open", value: "open", **appearance } ] }
         end
+      end
+    end
+  end
+
+  test "rejects duplicate action values" do
+    assert_no_difference -> { Message.count } do
+      assert_raises ActiveRecord::RecordInvalid do
+        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+          body: "Pick",
+          actions: [
+            { label: "First", value: "same" },
+            { label: "Second", value: "same" }
+          ]
+        }
       end
     end
   end

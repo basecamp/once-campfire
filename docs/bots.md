@@ -54,8 +54,8 @@ curl -F 'attachment=@/path/to/report.pdf' "$BOT_URL/messages"
 ```
 
 The request must contain non-blank text or an attachment. A successful create
-returns `201 Created` and the new message's regular Campfire URL in the
-`Location` header.
+returns `201 Created`, the new message as JSON, and its regular Campfire URL in
+the `Location` header.
 
 ## Reading messages
 
@@ -73,6 +73,8 @@ The response is a JSON array in chronological order. Each item has this shape:
     "plain_text": "Hello!",
     "html": "<div class=\"trix-content\">Hello!</div>"
   },
+  "selection_mode": "none",
+  "actions": [],
   "creator": {
     "id": 42,
     "name": "Ada",
@@ -210,7 +212,9 @@ Selections are stored per user and restored when they reload or return later.
 ### Action fields
 
 Every action requires a non-blank `label` of at most 40 characters. The label is
-also the accessible name and desktop tooltip for icon-only actions.
+also the accessible name and desktop tooltip for icon-only actions. Values must
+be unique within a message so each callback and selected state identifies one
+button unambiguously.
 
 An action must have exactly one destination:
 
@@ -251,15 +255,22 @@ Activating a value action sends JSON to the bot's configured webhook URL:
 ```json
 {
   "type": "action",
-  "room": { "id": 1, "name": "Lobby" },
+  "room": {
+    "id": 1,
+    "name": "Lobby",
+    "path": "/rooms/1/BOT_KEY/messages"
+  },
   "user": { "id": 42, "name": "Ada" },
-  "message": { "id": 123 },
+  "message": { "id": 123, "path": "/rooms/1/at/123" },
   "action": { "value": "lunch:pizza", "selected": true }
 }
 ```
 
 `selected` reports the user's resulting selection state. It is always `false`
 when the message uses `selection_mode: "none"`.
+
+`room.path` is the authenticated bot messages endpoint. Append the message ID
+to update the original message. `message.path` opens the message in Campfire.
 
 Campfire accepts the click with `202 Accepted` and delivers the webhook in a
 background job. Action callback requests are limited to 30 per minute. The

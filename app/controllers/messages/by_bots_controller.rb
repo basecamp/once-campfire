@@ -15,7 +15,7 @@ class Messages::ByBotsController < MessagesController
 
   def create
     super
-    head :created, location: message_url(@message)
+    render :show, status: :created, location: message_url(@message)
   end
 
   def destroy

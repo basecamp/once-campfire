@@ -49,6 +49,24 @@ class Messages::BotActionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal %w[ check:tests check:docs ], response.parsed_body["values"]
   end
 
+  test "restored selections are normalized after actions and mode change" do
+    @message.update! bot_action_selection_mode: "multiple", bot_actions: [
+      { label: "Tests", value: "check:tests" },
+      { label: "Docs", value: "check:docs" }
+    ]
+    @message.bot_action_selections.create! user: @user, values: %w[ check:tests check:docs removed ]
+
+    @message.update! bot_action_selection_mode: "single"
+
+    get selection_room_message_bot_actions_url(@room, @message)
+    assert_equal [ "check:tests" ], response.parsed_body["values"]
+
+    @message.update! bot_actions: [ { label: "Docs", value: "check:docs" } ]
+
+    get selection_room_message_bot_actions_url(@room, @message)
+    assert_equal [ "check:docs" ], response.parsed_body["values"]
+  end
+
   test "an action not currently on the message cannot be triggered" do
     assert_no_enqueued_jobs only: Bot::ActionWebhookJob do
       post room_message_bot_actions_url(@room, @message), params: { value: "delete:everything" }

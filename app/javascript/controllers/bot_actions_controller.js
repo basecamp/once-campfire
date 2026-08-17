@@ -2,14 +2,19 @@ import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
   static targets = [ "button" ]
-  static values = { messageId: Number, selectionMode: String, selectionUrl: String }
+  static values = { selectionMode: String, selectionUrl: String }
+
+  #confirmedValues = []
+  #restoreVersion = 0
 
   connect() {
-    if (this.#selectionEnabled) this.#restore()
+    if (this.#selectionEnabled) this.restore()
   }
 
   choose({ currentTarget }) {
     if (!this.#selectionEnabled) return
+
+    this.#restoreVersion++
 
     const value = currentTarget.dataset.botActionValue
     const values = this.selectionModeValue === "multiple" ? this.#selectedValues : []
@@ -27,9 +32,21 @@ export default class extends Controller {
     })
   }
 
-  async #restore() {
-    const response = await fetch(this.selectionUrlValue, { headers: { "Accept": "application/json" } })
-    if (response.ok) this.#select((await response.json()).values)
+  async restore() {
+    const version = ++this.#restoreVersion
+
+    try {
+      const response = await fetch(this.selectionUrlValue, { headers: { "Accept": "application/json" } })
+      if (!response.ok) throw new Error(`Selection request failed: ${response.status}`)
+
+      const values = (await response.json()).values
+      if (version === this.#restoreVersion) {
+        this.#confirmedValues = values
+        this.#select(values)
+      }
+    } catch {
+      if (version === this.#restoreVersion) this.#select(this.#confirmedValues)
+    }
   }
 
   get #selectionEnabled() {
