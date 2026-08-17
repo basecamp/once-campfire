@@ -31,7 +31,7 @@ class Message < ApplicationRecord
 
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
   after_create_commit -> { room.receive(self) }
-  after_update_commit :clear_bot_action_selections_if_configuration_changed
+  after_update :clear_bot_action_selections_if_configuration_changed
 
   scope :ordered, -> { order(:created_at) }
   scope :with_creator, -> { preload(creator: %i[ avatar_attachment webhook ]) }
@@ -149,7 +149,8 @@ class Message < ApplicationRecord
 
     def valid_bot_action_url?(url)
       url.is_a?(String) && url.length <= MAX_BOT_ACTION_URL_LENGTH && URI.parse(url).then do |uri|
-        uri.scheme.present? && !uri.scheme.in?(UNSAFE_BOT_ACTION_URL_SCHEMES)
+        uri.scheme.present? && !uri.scheme.in?(UNSAFE_BOT_ACTION_URL_SCHEMES) &&
+          (!uri.scheme.in?(%w[ http https ]) || uri.host.present? && uri.userinfo.blank?)
       end
     rescue URI::InvalidURIError
       false

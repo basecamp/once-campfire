@@ -1,7 +1,10 @@
 require "net/http"
+require "openssl"
 require "uri"
 
 class Webhook < ApplicationRecord
+  class DeliveryError < StandardError; end
+
   ENDPOINT_TIMEOUT = 7.seconds
 
   belongs_to :user
@@ -18,10 +21,12 @@ class Webhook < ApplicationRecord
     receive_text_reply_to message.room, text: "Failed to respond within #{ENDPOINT_TIMEOUT} seconds"
   end
 
-  def deliver_action(message, acting_user, value, selected)
-    post(action_payload(message, acting_user, value, selected))
-  rescue Net::OpenTimeout, Net::ReadTimeout
-    nil
+  def deliver_action(message, acting_user, value, selected, event_id:)
+    post(action_payload(message, acting_user, value, selected, event_id:)).tap do |response|
+      raise DeliveryError, "Webhook responded with HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+    end
+  rescue IOError, SocketError, SystemCallError, Timeout::Error, OpenSSL::SSL::SSLError => error
+    raise DeliveryError, error.message
   end
 
   private
@@ -53,9 +58,10 @@ class Webhook < ApplicationRecord
       }.to_json
     end
 
-    def action_payload(message, acting_user, value, selected)
+    def action_payload(message, acting_user, value, selected, event_id:)
       {
         type: "action",
+        id: event_id,
         room: { id: message.room.id, name: message.room.name, path: room_bot_messages_path(message) },
         user: { id: acting_user.id, name: acting_user.name },
         message: { id: message.id, path: message_path(message) },

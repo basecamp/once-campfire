@@ -246,7 +246,8 @@ pencil person refresh reply search settings share trash web
 ```
 
 Link actions accept absolute URLs with a scheme. Campfire rejects relative URLs
-and unsafe `data`, `file`, `javascript`, and `vbscript` schemes. Prefer an app's
+and unsafe `data`, `file`, `javascript`, and `vbscript` schemes. HTTP and HTTPS
+links must have a host and cannot contain embedded credentials. Prefer an app's
 HTTPS universal link when opening a native application from a mobile browser.
 
 ### Action webhooks
@@ -256,6 +257,7 @@ Activating a value action sends JSON to the bot's configured webhook URL:
 ```json
 {
   "type": "action",
+  "id": "2b1a5135-fd38-4667-950b-3ada8e366f20",
   "room": {
     "id": 1,
     "name": "Lobby",
@@ -274,9 +276,12 @@ when the message uses `selection_mode: "none"`.
 to update the original message. `message.path` opens the message in Campfire.
 
 Campfire accepts the click with `202 Accepted` and delivers the webhook in a
-background job. Action callback requests are limited to 30 per minute. The
-endpoint has seven seconds to respond, but its response body is ignored. Update
-the original message explicitly when its content or actions should change.
+background job. Failed connections, timeouts, and HTTP error responses are
+retried up to five times. Retries retain the same top-level `id`; bots should
+store that ID and ignore callbacks they have already processed. Action callback
+requests are limited to 30 per minute. The endpoint has seven seconds to respond,
+but its successful response body is ignored. Update the original message
+explicitly when its content or actions should change.
 
 Value actions require a configured webhook and are rejected when the bot does
 not have one. Removing a bot's webhook disables its existing value actions.
@@ -310,4 +315,5 @@ or update the message with the result.
 - `204 No Content`: a delete succeeded.
 - `404 Not Found`: the room, message, or bot-owned resource is inaccessible.
 - `422 Unprocessable Content`: required content is missing or an action is invalid.
+  JSON validation failures include an `errors` object keyed by field.
 - `429 Too Many Requests`: a user exceeded the action-click rate limit.

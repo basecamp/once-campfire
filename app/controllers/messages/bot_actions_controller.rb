@@ -3,18 +3,19 @@ class Messages::BotActionsController < ApplicationController
 
   rate_limit to: 30, within: 1.minute, by: -> { Current.user.id }, only: :create, with: -> { head :too_many_requests }
 
-  def selection
-    message = @room.messages.find(params[:message_id])
-    render json: { values: selected_values(message) }
-  end
-
   def create
     message = @room.messages.find(params[:message_id])
-    action = message.bot_action_with_value(params.require(:value))
+    callback = message.with_lock do
+      message.reload
+      action = message.bot_action_with_value(params.require(:value))
 
-    if action && !action["disabled"] && message.creator.bot? && message.creator.webhook
-      selected = update_selection(message, action["value"])
-      Bot::ActionWebhookJob.perform_later(message.creator, message, Current.user, action["value"], selected)
+      if action && !action["disabled"] && message.creator.bot? && message.creator.webhook
+        { bot: message.creator, value: action["value"], selected: update_selection(message, action["value"]) }
+      end
+    end
+
+    if callback
+      Bot::ActionWebhookJob.perform_later(callback[:bot], message, Current.user, callback[:value], callback[:selected], event_id: SecureRandom.uuid)
       head :accepted
     else
       head :unprocessable_entity
@@ -31,11 +32,6 @@ class Messages::BotActionsController < ApplicationController
         selection.update! values: toggled_values(current_values, value, mode: message.bot_action_selection_mode)
         selection.values.include?(value)
       end
-    end
-
-    def selected_values(message)
-      values = message.bot_action_selections.find_by(user: Current.user)&.values || []
-      normalized_values(values, message)
     end
 
     def normalized_values(values, message)

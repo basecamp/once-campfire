@@ -60,10 +60,9 @@ Rails.application.routes.draw do
   end
 
   resources :rooms do
+    resources :bot_action_selections, only: :index, module: :messages
     resources :messages do
-      resources :bot_actions, only: :create, module: :messages do
-        get :selection, on: :collection
-      end
+      resources :bot_actions, only: :create, module: :messages
     end
 
     nested do

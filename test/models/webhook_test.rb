@@ -8,6 +8,7 @@ class WebhookTest < ActiveSupport::TestCase
     request = WebMock.stub_request(:post, webhooks(:bender).url).with do |request|
       JSON.parse(request.body) == {
         "type" => "action",
+        "id" => "event-123",
         "room" => { "id" => message.room.id, "name" => message.room.name, "path" => bot_messages_path },
         "user" => { "id" => users(:kevin).id, "name" => users(:kevin).name },
         "message" => { "id" => message.id, "path" => message_path },
@@ -15,9 +16,25 @@ class WebhookTest < ActiveSupport::TestCase
       }
     end.to_return(status: 200)
 
-    webhooks(:bender).deliver_action(message, users(:kevin), "deploy:a1b2c3", true)
+    webhooks(:bender).deliver_action(message, users(:kevin), "deploy:a1b2c3", true, event_id: "event-123")
 
     assert_requested request
+  end
+
+  test "action delivery raises on an error response" do
+    WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 503)
+
+    assert_raises Webhook::DeliveryError do
+      webhooks(:bender).deliver_action(messages(:fourth), users(:kevin), "deploy", false, event_id: "event-123")
+    end
+  end
+
+  test "action delivery wraps network errors for retry" do
+    Webhook.any_instance.stubs(:post).raises(Errno::ECONNREFUSED)
+
+    assert_raises Webhook::DeliveryError do
+      webhooks(:bender).deliver_action(messages(:fourth), users(:kevin), "deploy", false, event_id: "event-123")
+    end
   end
 
   test "payload" do

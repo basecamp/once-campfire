@@ -48,4 +48,40 @@ class BotActionsTest < ApplicationSystemTestCase
       assert_selector "button:disabled", text: "Sushi"
     end
   end
+
+  test "selecting multiple checklist actions and restoring them" do
+    @message.update! bot_action_selection_mode: "multiple", bot_actions: [
+      { label: "Tests", value: "check:tests", icon: "check" },
+      { label: "Docs", value: "check:docs", emoji: "📚" }
+    ]
+    refresh
+
+    within_message @message do
+      click_on "Tests"
+      click_on "Docs"
+      assert_selector "button[aria-pressed='true']", text: "Tests"
+      assert_selector "button[aria-pressed='true']", text: "Docs"
+    end
+
+    refresh
+
+    within_message @message do
+      assert_selector "button[aria-pressed='true']", count: 2
+    end
+  end
+
+  test "rendering link, icon-only, and disabled actions accessibly" do
+    @message.update! bot_actions: [
+      { label: "Open runbook", url: "https://example.com/runbook", icon: "link" },
+      { label: "Open camera", url: "homeassistant://navigate/dashboard", emoji: "📷", icon_only: true },
+      { label: "Voting closed", url: "https://example.com/vote", disabled: true }
+    ]
+    refresh
+
+    within_message @message do
+      assert_selector "a[href='https://example.com/runbook'][target='_blank']", text: "Open runbook"
+      assert_selector "a.message__bot-action--icon-only[title='Open camera'][href='homeassistant://navigate/dashboard']"
+      assert_selector "span[aria-disabled='true']", text: "Voting closed"
+    end
+  end
 end

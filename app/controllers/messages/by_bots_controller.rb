@@ -23,6 +23,10 @@ class Messages::ByBotsController < MessagesController
     head :no_content
   end
 
+  rescue_from ActiveRecord::RecordInvalid do |error|
+    render json: { errors: error.record.errors.to_hash }, status: :unprocessable_content
+  end
+
   private
     def set_room
       @room = Current.user.rooms.find_by(id: params[:room_id])

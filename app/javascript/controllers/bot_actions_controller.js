@@ -1,8 +1,38 @@
 import { Controller } from "@hotwired/stimulus"
 
+const pendingRestores = new Map()
+
+function requestSelection(controller) {
+  return new Promise((resolve, reject) => {
+    const url = controller.selectionUrlValue
+    if (!pendingRestores.has(url)) {
+      pendingRestores.set(url, [])
+      queueMicrotask(() => flushRestores(url))
+    }
+    pendingRestores.get(url).push({ controller, resolve, reject })
+  })
+}
+
+async function flushRestores(url) {
+  const requests = pendingRestores.get(url)
+  pendingRestores.delete(url)
+  const selectionUrl = new URL(url, window.location.origin)
+  requests.forEach(({ controller }) => selectionUrl.searchParams.append("message_ids[]", controller.messageIdValue))
+
+  try {
+    const response = await fetch(selectionUrl, { headers: { "Accept": "application/json" } })
+    if (!response.ok) throw new Error(`Selection request failed: ${response.status}`)
+
+    const selections = await response.json()
+    requests.forEach(({ controller, resolve }) => resolve(selections[controller.messageIdValue] || []))
+  } catch (error) {
+    requests.forEach(({ reject }) => reject(error))
+  }
+}
+
 export default class extends Controller {
   static targets = [ "button", "status" ]
-  static values = { selectionMode: String, selectionUrl: String }
+  static values = { messageId: Number, selectionMode: String, selectionUrl: String }
 
   #confirmedValues = []
   #restoreVersion = 0
@@ -38,10 +68,7 @@ export default class extends Controller {
     const submissionFailed = event?.type === "turbo:submit-end" && !event.detail.success
 
     try {
-      const response = await fetch(this.selectionUrlValue, { headers: { "Accept": "application/json" } })
-      if (!response.ok) throw new Error(`Selection request failed: ${response.status}`)
-
-      const values = (await response.json()).values
+      const values = await requestSelection(this)
       if (version === this.#restoreVersion) {
         this.#confirmedValues = values
         this.#select(values)

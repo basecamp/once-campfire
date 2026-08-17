@@ -3,7 +3,8 @@
   <% if message.bot_actions.any? %>
     <div class="message__bot-actions" data-controller="bot-actions"
          data-bot-actions-selection-mode-value="<%= message.bot_action_selection_mode %>"
-         data-bot-actions-selection-url-value="<%= selection_room_message_bot_actions_path(message.room, message) %>">
+         data-bot-actions-selection-url-value="<%= room_bot_action_selections_path(message.room) %>"
+         data-bot-actions-message-id-value="<%= message.id %>">
       <% message.bot_actions.each do |action| %>
         <% classes = class_names("btn message__bot-action", "message__bot-action--icon-only": action["icon_only"], "btn--reversed": action["style"] == "primary", "btn--negative": action["style"] == "danger") %>
         <% content = bot_action_content(action) %>

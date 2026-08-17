@@ -104,12 +104,11 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "rejects an unsafe link action" do
-    [ "javascript:alert(1)", "data:text/html,bad", "file:///etc/passwd", "/relative/path" ].each do |url|
+    [ "javascript:alert(1)", "data:text/html,bad", "file:///etc/passwd", "/relative/path", "http:example.com", "https://user:secret@example.com" ].each do |url|
       assert_no_difference -> { Message.count } do
-        assert_raises ActiveRecord::RecordInvalid do
-          post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
-            params: { body: "Alert", actions: [ { label: "Run", url: url } ] }
-        end
+        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+          params: { body: "Alert", actions: [ { label: "Run", url: url } ] }
+        assert_invalid_actions_response
       end
     end
   end
@@ -133,10 +132,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "rejects invalid actions" do
     assert_no_difference -> { Message.count } do
-      assert_raises ActiveRecord::RecordInvalid do
-        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
-          params: { body: "Pick", actions: 13.times.map { |index| { label: "Option", value: index.to_s } } }
-      end
+      post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+        params: { body: "Pick", actions: 13.times.map { |index| { label: "Option", value: index.to_s } } }
+      assert_invalid_actions_response
     end
   end
 
@@ -169,25 +167,23 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
       { text_color: "white; display: none" }
     ].each do |appearance|
       assert_no_difference -> { Message.count } do
-        assert_raises ActiveRecord::RecordInvalid do
-          post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
-            params: { body: "Alert", actions: [ { label: "Open", value: "open", **appearance } ] }
-        end
+        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+          params: { body: "Alert", actions: [ { label: "Open", value: "open", **appearance } ] }
+        assert_invalid_actions_response
       end
     end
   end
 
   test "rejects duplicate action values" do
     assert_no_difference -> { Message.count } do
-      assert_raises ActiveRecord::RecordInvalid do
-        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
+      post room_bot_messages_url(@room, users(:bender).bot_key), as: :json, params: {
           body: "Pick",
           actions: [
             { label: "First", value: "same" },
             { label: "Second", value: "same" }
           ]
         }
-      end
+      assert_invalid_actions_response
     end
   end
 
@@ -195,10 +191,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     users(:bender).webhook.destroy!
 
     assert_no_difference -> { Message.count } do
-      assert_raises ActiveRecord::RecordInvalid do
-        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
-          params: { body: "Deploy?", actions: [ { label: "Deploy", value: "deploy" } ] }
-      end
+      post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+        params: { body: "Deploy?", actions: [ { label: "Deploy", value: "deploy" } ] }
+      assert_invalid_actions_response
     end
   end
 
@@ -215,10 +210,10 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "rejects an invalid action selection mode" do
     assert_no_difference -> { Message.count } do
-      assert_raises ActiveRecord::RecordInvalid do
-        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
-          params: { body: "Pick", selection_mode: "everything", actions: [ { label: "One", value: "one" } ] }
-      end
+      post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+        params: { body: "Pick", selection_mode: "everything", actions: [ { label: "One", value: "one" } ] }
+      assert_response :unprocessable_content
+      assert response.parsed_body.dig("errors", "bot_action_selection_mode").present?
     end
   end
 
@@ -431,6 +426,11 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   private
+    def assert_invalid_actions_response
+      assert_response :unprocessable_content
+      assert response.parsed_body.dig("errors", "bot_actions").present?
+    end
+
     def post_bot_message(body)
       post room_bot_messages_url(@room, users(:bender).bot_key), params: +body
       Message.last
