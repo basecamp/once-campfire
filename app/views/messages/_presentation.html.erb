@@ -7,7 +7,8 @@
       <% message.bot_actions.each do |action| %>
         <% classes = class_names("btn message__bot-action", "message__bot-action--icon-only": action["icon_only"], "btn--reversed": action["style"] == "primary", "btn--negative": action["style"] == "danger") %>
         <% content = bot_action_content(action) %>
-        <% if action["url"].present? && action["disabled"] %>
+        <% disabled = action["disabled"] || action["value"].present? && message.creator.webhook.blank? %>
+        <% if action["url"].present? && disabled %>
           <%= tag.span content, class: classes, style: bot_action_style(action), title: (action["label"] if action["icon_only"]), aria: { disabled: true } %>
         <% elsif action["url"].present? %>
           <%= link_to content, action["url"], class: classes, style: bot_action_style(action), title: (action["label"] if action["icon_only"]), target: "_blank", rel: "noopener noreferrer" %>
@@ -17,9 +18,10 @@
                 aria: ({ pressed: false } unless message.bot_action_selection_mode == "none"),
                 data: { action: "bot-actions#choose", bot_actions_target: "button", bot_action_value: action["value"] },
                 form: { data: { action: "turbo:submit-end->bot-actions#restore" } },
-                class: classes, style: bot_action_style(action), title: (action["label"] if action["icon_only"]), disabled: action["disabled"] %>
+                class: classes, style: bot_action_style(action), title: (action["label"] if action["icon_only"]), disabled: disabled %>
         <% end %>
       <% end %>
+      <%= tag.span "", class: "message__bot-actions-status", role: "status", aria: { live: "polite" }, data: { bot_actions_target: "status" } %>
     </div>
   <% end %>
 </div>

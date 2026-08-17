@@ -1,7 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
-  static targets = [ "button" ]
+  static targets = [ "button", "status" ]
   static values = { selectionMode: String, selectionUrl: String }
 
   #confirmedValues = []
@@ -15,6 +15,7 @@ export default class extends Controller {
     if (!this.#selectionEnabled) return
 
     this.#restoreVersion++
+    this.#showStatus("")
 
     const value = currentTarget.dataset.botActionValue
     const values = this.selectionModeValue === "multiple" ? this.#selectedValues : []
@@ -32,8 +33,9 @@ export default class extends Controller {
     })
   }
 
-  async restore() {
+  async restore(event) {
     const version = ++this.#restoreVersion
+    const submissionFailed = event?.type === "turbo:submit-end" && !event.detail.success
 
     try {
       const response = await fetch(this.selectionUrlValue, { headers: { "Accept": "application/json" } })
@@ -43,10 +45,18 @@ export default class extends Controller {
       if (version === this.#restoreVersion) {
         this.#confirmedValues = values
         this.#select(values)
+        if (submissionFailed) this.#showStatus("Couldn’t perform that action.")
       }
     } catch {
-      if (version === this.#restoreVersion) this.#select(this.#confirmedValues)
+      if (version === this.#restoreVersion) {
+        this.#select(this.#confirmedValues)
+        if (event?.type === "turbo:submit-end") this.#showStatus("Couldn’t perform that action.")
+      }
     }
+  }
+
+  #showStatus(message) {
+    if (this.hasStatusTarget) this.statusTarget.textContent = message
   }
 
   get #selectionEnabled() {

@@ -191,6 +191,28 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "rejects value actions when the bot has no webhook" do
+    users(:bender).webhook.destroy!
+
+    assert_no_difference -> { Message.count } do
+      assert_raises ActiveRecord::RecordInvalid do
+        post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+          params: { body: "Deploy?", actions: [ { label: "Deploy", value: "deploy" } ] }
+      end
+    end
+  end
+
+  test "allows link actions when the bot has no webhook" do
+    users(:bender).webhook.destroy!
+
+    assert_difference -> { Message.count }, +1 do
+      post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+        params: { body: "Runbook", actions: [ { label: "Open", url: "https://example.com/runbook" } ] }
+    end
+
+    assert_response :created
+  end
+
   test "rejects an invalid action selection mode" do
     assert_no_difference -> { Message.count } do
       assert_raises ActiveRecord::RecordInvalid do

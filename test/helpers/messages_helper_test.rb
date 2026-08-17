@@ -58,6 +58,7 @@ class MessagesHelperTest < ActionView::TestCase
   test "custom button colors choose a readable foreground by default" do
     assert_includes bot_action_style("background_color" => "#111827"), "--btn-color: white"
     assert_includes bot_action_style("background_color" => "#fbbf24"), "--btn-color: black"
+    assert_includes bot_action_style("background_color" => "#ff0000"), "--btn-color: black"
   end
 
   test "custom button colors accept a foreground override" do

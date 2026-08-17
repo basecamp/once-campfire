@@ -26,14 +26,15 @@ class Message < ApplicationRecord
 
   has_rich_text :body
 
-  validate :bot_actions_are_valid
+  validate :bot_actions_are_valid, :bot_value_actions_have_a_webhook
   validates :bot_action_selection_mode, inclusion: { in: BOT_ACTION_SELECTION_MODES }
 
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
   after_create_commit -> { room.receive(self) }
+  after_update_commit :clear_bot_action_selections_if_configuration_changed
 
   scope :ordered, -> { order(:created_at) }
-  scope :with_creator, -> { preload(creator: :avatar_attachment) }
+  scope :with_creator, -> { preload(creator: %i[ avatar_attachment webhook ]) }
   scope :with_attachment_details, -> {
     with_rich_text_body_and_embeds
     with_attached_attachment
@@ -83,6 +84,29 @@ class Message < ApplicationRecord
 
       values = bot_actions.filter_map { |action| action["value"] if action.is_a?(Hash) }
       errors.add :bot_actions, "must contain unique values" unless values.uniq.size == values.size
+    end
+
+    def bot_value_actions_have_a_webhook
+      if creator&.bot? && bot_actions.any? { |action| action.is_a?(Hash) && action["value"].present? } && creator.webhook.blank?
+        errors.add :bot_actions, "with values require the bot to have a webhook"
+      end
+    end
+
+    def clear_bot_action_selections_if_configuration_changed
+      if saved_change_to_bot_action_selection_mode? || bot_action_values_changed?
+        bot_action_selections.delete_all
+      end
+    end
+
+    def bot_action_values_changed?
+      return false unless saved_change_to_bot_actions?
+
+      before, after = saved_change_to_bot_actions
+      bot_action_values(before) != bot_action_values(after)
+    end
+
+    def bot_action_values(actions)
+      actions.filter_map { |action| action["value"] if action.is_a?(Hash) }
     end
 
     def valid_bot_action?(action)

@@ -1,7 +1,7 @@
 class Messages::BotActionsController < ApplicationController
   include RoomScoped
 
-  rate_limit to: 30, within: 1.minute, only: :create, with: -> { head :too_many_requests }
+  rate_limit to: 30, within: 1.minute, by: -> { Current.user.id }, only: :create, with: -> { head :too_many_requests }
 
   def selection
     message = @room.messages.find(params[:message_id])

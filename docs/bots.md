@@ -208,6 +208,7 @@ A message can contain up to 12 actions.
 - `multiple` allows independent selections. Clicking a selected action clears it.
 
 Selections are stored per user and restored when they reload or return later.
+Changing the action values or `selection_mode` clears existing selections.
 
 ### Action fields
 
@@ -277,7 +278,9 @@ background job. Action callback requests are limited to 30 per minute. The
 endpoint has seven seconds to respond, but its response body is ignored. Update
 the original message explicitly when its content or actions should change.
 
-Value actions require a configured webhook. Link actions do not.
+Value actions require a configured webhook and are rejected when the bot does
+not have one. Removing a bot's webhook disables its existing value actions.
+Link actions do not require a webhook.
 
 ### Updating and closing actions
 

@@ -235,6 +235,15 @@
   line-height: 1;
 }
 
+.message__bot-actions-status {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+
+  &:empty {
+    display: none;
+  }
+}
+
 .message__bot-action--icon-only {
   --btn-border-radius: 50%;
   --btn-padding: 0;

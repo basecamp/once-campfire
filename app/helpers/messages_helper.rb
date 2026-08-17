@@ -100,8 +100,12 @@ module MessagesHelper
     def bot_action_foreground(color)
       hex = color.delete_prefix("#")
       hex = hex.chars.map { |character| character * 2 }.join if hex.length == 3
-      red, green, blue = hex.scan(/../).map { |component| component.to_i(16) }
-      ((red * 299 + green * 587 + blue * 114) / 1000) > 149 ? "black" : "white"
+      red, green, blue = hex.scan(/../).map { |component| component.to_i(16) / 255.0 }.map do |component|
+        component <= 0.04045 ? component / 12.92 : ((component + 0.055) / 1.055)**2.4
+      end
+      luminance = red * 0.2126 + green * 0.7152 + blue * 0.0722
+
+      (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? "black" : "white"
     end
 
     def messages_actions
