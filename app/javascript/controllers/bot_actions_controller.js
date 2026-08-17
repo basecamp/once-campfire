@@ -2,6 +2,10 @@ import { Controller } from "@hotwired/stimulus"
 
 const pendingRestores = new Map()
 
+// Keep in sync with Messages::BotActionSelectionsController::MAX_MESSAGES, which
+// rejects larger batches rather than silently truncating them.
+const MAX_MESSAGES_PER_REQUEST = 100
+
 function requestSelection(controller) {
   return new Promise((resolve, reject) => {
     const url = controller.selectionUrlValue
@@ -13,9 +17,16 @@ function requestSelection(controller) {
   })
 }
 
-async function flushRestores(url) {
+function flushRestores(url) {
   const requests = pendingRestores.get(url)
   pendingRestores.delete(url)
+
+  for (let index = 0; index < requests.length; index += MAX_MESSAGES_PER_REQUEST) {
+    fetchSelections(url, requests.slice(index, index + MAX_MESSAGES_PER_REQUEST))
+  }
+}
+
+async function fetchSelections(url, requests) {
   const selectionUrl = new URL(url, window.location.origin)
   requests.forEach(({ controller }) => selectionUrl.searchParams.append("message_ids[]", controller.messageIdValue))
 
@@ -66,6 +77,13 @@ export default class extends Controller {
   async restore(event) {
     const version = ++this.#restoreVersion
     const submissionFailed = event?.type === "turbo:submit-end" && !event.detail.success
+
+    // Without a selection mode the buttons carry no aria-pressed state, so there's
+    // nothing to fetch or restore — only failures need reporting.
+    if (!this.#selectionEnabled) {
+      if (submissionFailed) this.#showStatus("Couldn’t perform that action.")
+      return
+    }
 
     try {
       const values = await requestSelection(this)

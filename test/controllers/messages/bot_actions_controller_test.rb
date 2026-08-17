@@ -111,7 +111,7 @@ class Messages::BotActionsControllerTest < ActionDispatch::IntegrationTest
       post room_message_bot_actions_url(@room, @message), params: { value: "delete:everything" }
     end
 
-    assert_response :unprocessable_entity
+    assert_response :unprocessable_content
   end
 
   test "a disabled action cannot be triggered" do
@@ -121,7 +121,7 @@ class Messages::BotActionsControllerTest < ActionDispatch::IntegrationTest
       post room_message_bot_actions_url(@room, @message), params: { value: "deploy:a1b2c3" }
     end
 
-    assert_response :unprocessable_entity
+    assert_response :unprocessable_content
   end
 
   test "an action cannot be triggered after its bot webhook is removed" do
@@ -131,7 +131,7 @@ class Messages::BotActionsControllerTest < ActionDispatch::IntegrationTest
       post room_message_bot_actions_url(@room, @message), params: { value: "deploy:a1b2c3" }
     end
 
-    assert_response :unprocessable_entity
+    assert_response :unprocessable_content
   end
 
   test "a user outside the room cannot trigger an action" do
@@ -151,6 +151,30 @@ class Messages::BotActionsControllerTest < ActionDispatch::IntegrationTest
       post room_message_bot_actions_url(@room, @message), params: { value: "deploy:a1b2c3" }
     end
 
-    assert_response :unprocessable_entity
+    assert_response :unprocessable_content
+  end
+
+  test "selections are private to each user" do
+    @message.update! bot_action_selection_mode: "single"
+    @message.bot_action_selections.create! user: users(:jason), values: [ "deploy:a1b2c3" ]
+
+    get room_bot_action_selections_url(@room), params: { message_ids: [ @message.id ] }
+
+    assert_empty response.parsed_body[@message.id.to_s]
+  end
+
+  test "an oversized selection batch is rejected rather than truncated" do
+    ids = (1..Messages::BotActionSelectionsController::MAX_MESSAGES + 1).to_a
+
+    assert_raises ActionController::BadRequest do
+      get room_bot_action_selections_url(@room), params: { message_ids: ids }
+    end
+  end
+
+  test "a malformed selection batch is ignored rather than raising" do
+    get room_bot_action_selections_url(@room), params: { message_ids: { nested: @message.id } }
+
+    assert_response :success
+    assert_empty response.parsed_body
   end
 end

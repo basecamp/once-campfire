@@ -112,7 +112,8 @@ A successful delete returns `204 No Content`.
 
 ## Boosts
 
-A boost can be an emoji or short text. Post it as the raw request body:
+A boost can be an emoji or short text of at most 16 characters. Post it as the
+raw request body:
 
 ```sh
 curl -d '👀' "$BOT_URL/messages/123/boosts"
@@ -250,6 +251,15 @@ and unsafe `data`, `file`, `javascript`, and `vbscript` schemes. HTTP and HTTPS
 links must have a host and cannot contain embedded credentials. Prefer an app's
 HTTPS universal link when opening a native application from a mobile browser.
 
+Every other scheme is accepted so bots can deep-link into native apps, which
+makes the scheme caller-trusted: whoever controls the bot decides what a room
+member's browser is asked to open. Give a bot key only to a service you trust to
+that degree, and prefer `https` whenever it will do.
+
+Actions are bot UI. A message created by anyone other than a bot is rejected if
+it carries actions, even when it reaches these endpoints with a signed-in
+session rather than a bot key.
+
 ### Action webhooks
 
 Activating a value action sends JSON to the bot's configured webhook URL:
@@ -313,7 +323,11 @@ or update the message with the result.
 - `201 Created`: a message, attachment, or boost was created.
 - `202 Accepted`: an action callback was queued.
 - `204 No Content`: a delete succeeded.
+- `400 Bad Request`: the request was malformed, such as asking for the selected
+  state of more messages than one request allows.
 - `404 Not Found`: the room, message, or bot-owned resource is inaccessible.
-- `422 Unprocessable Content`: required content is missing or an action is invalid.
-  JSON validation failures include an `errors` object keyed by field.
+- `422 Unprocessable Content`: required content is missing, or an action is
+  invalid or malformed. JSON validation failures include an `errors` object keyed
+  by field. A malformed `actions` value is rejected rather than ignored, so a
+  `2xx` always means the actions were stored exactly as sent.
 - `429 Too Many Requests`: a user exceeded the action-click rate limit.

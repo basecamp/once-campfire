@@ -102,6 +102,15 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  test "create rejects content longer than the boost limit" do
+    assert_no_difference -> { Boost.count } do
+      post room_bot_message_boosts_url(@room, @bot.bot_key, @message), params: +("a" * (Boost::MAX_CONTENT_LENGTH + 1))
+    end
+
+    assert_response :unprocessable_content
+    assert response.parsed_body.dig("errors", "content").present?
+  end
+
   test "destroy requires a valid bot key" do
     assert_no_difference -> { Boost.count } do
       delete room_bot_message_boost_url(@room, "invalid-bot-key", @message, boosts(:fourth_by_bender))

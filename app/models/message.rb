@@ -26,7 +26,7 @@ class Message < ApplicationRecord
 
   has_rich_text :body
 
-  validate :bot_actions_are_valid, :bot_value_actions_have_a_webhook
+  validate :bot_actions_are_valid, :bot_actions_are_only_for_bots, :bot_value_actions_have_a_webhook
   validates :bot_action_selection_mode, inclusion: { in: BOT_ACTION_SELECTION_MODES }
 
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
@@ -70,7 +70,12 @@ class Message < ApplicationRecord
 
   private
     def bot_actions_are_valid
-      unless bot_actions.is_a?(Array) && bot_actions.size <= MAX_BOT_ACTIONS
+      unless bot_actions.is_a?(Array)
+        errors.add :bot_actions, "must be an array of actions"
+        return
+      end
+
+      if bot_actions.size > MAX_BOT_ACTIONS
         errors.add :bot_actions, "must contain at most #{MAX_BOT_ACTIONS} actions"
         return
       end
@@ -86,7 +91,18 @@ class Message < ApplicationRecord
       errors.add :bot_actions, "must contain unique values" unless values.uniq.size == values.size
     end
 
+    # A session cookie beats a bot key during authentication, so a signed-in member
+    # can reach the bot endpoints too. Actions are bot UI, and letting anyone attach
+    # them would hand every member a way to post buttons that impersonate a bot.
+    def bot_actions_are_only_for_bots
+      if bot_actions.is_a?(Array) && bot_actions.any? && !creator&.bot?
+        errors.add :bot_actions, "are only available to bots"
+      end
+    end
+
     def bot_value_actions_have_a_webhook
+      return unless bot_actions.is_a?(Array)
+
       if creator&.bot? && bot_actions.any? { |action| action.is_a?(Hash) && action["value"].present? } && creator.webhook.blank?
         errors.add :bot_actions, "with values require the bot to have a webhook"
       end

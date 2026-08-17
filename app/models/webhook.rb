@@ -1,11 +1,19 @@
 require "net/http"
 require "openssl"
 require "uri"
+require "zlib"
 
 class Webhook < ApplicationRecord
   class DeliveryError < StandardError; end
 
   ENDPOINT_TIMEOUT = 7.seconds
+
+  # Everything Net::HTTP can raise for a request that never produced a usable
+  # response. All of it is worth retrying, so it's wrapped in DeliveryError.
+  TRANSPORT_ERRORS = [
+    IOError, SocketError, SystemCallError, Timeout::Error, OpenSSL::SSL::SSLError,
+    Net::HTTPBadResponse, Net::ProtocolError, Zlib::Error
+  ].freeze
 
   belongs_to :user
 
@@ -25,8 +33,8 @@ class Webhook < ApplicationRecord
     post(action_payload(message, acting_user, value, selected, event_id:)).tap do |response|
       raise DeliveryError, "Webhook responded with HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
     end
-  rescue IOError, SocketError, SystemCallError, Timeout::Error, OpenSSL::SSL::SSLError => error
-    raise DeliveryError, error.message
+  rescue *TRANSPORT_ERRORS => error
+    raise DeliveryError, "#{error.class}: #{error.message}"
   end
 
   private

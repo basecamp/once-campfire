@@ -30,10 +30,13 @@ class WebhookTest < ActiveSupport::TestCase
   end
 
   test "action delivery wraps network errors for retry" do
-    Webhook.any_instance.stubs(:post).raises(Errno::ECONNREFUSED)
+    [ Errno::ECONNREFUSED, EOFError, SocketError, Net::ReadTimeout, OpenSSL::SSL::SSLError,
+      Net::HTTPBadResponse, Net::ProtocolError, Zlib::BufError ].each do |error|
+      Webhook.any_instance.stubs(:post).raises(error)
 
-    assert_raises Webhook::DeliveryError do
-      webhooks(:bender).deliver_action(messages(:fourth), users(:kevin), "deploy", false, event_id: "event-123")
+      assert_raises Webhook::DeliveryError, "#{error} must be retryable" do
+        webhooks(:bender).deliver_action(messages(:fourth), users(:kevin), "deploy", false, event_id: "event-123")
+      end
     end
   end
 

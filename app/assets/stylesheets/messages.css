@@ -209,8 +209,9 @@
 }
 
 .message__bot-action {
+  --btn-padding: 0.35rem 1rem;
+
   min-block-size: 2.25rem;
-  padding: 0.35rem 1rem;
 
   &[aria-disabled="true"] {
     cursor: not-allowed;

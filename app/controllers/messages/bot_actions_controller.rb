@@ -18,7 +18,7 @@ class Messages::BotActionsController < ApplicationController
       Bot::ActionWebhookJob.perform_later(callback[:bot], message, Current.user, callback[:value], callback[:selected], event_id: SecureRandom.uuid)
       head :accepted
     else
-      head :unprocessable_entity
+      head :unprocessable_content
     end
   end
 

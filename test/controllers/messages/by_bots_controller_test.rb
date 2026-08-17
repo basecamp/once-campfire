@@ -425,6 +425,48 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
+  test "a signed-in user can't attach actions through the bot endpoint" do
+    sign_in :david
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room, users(:bender).bot_key), as: :json,
+        params: { body: "Trust me", actions: [ { label: "Open", url: "https://example.com" } ] }
+    end
+
+    assert_invalid_actions_response
+  end
+
+  test "a signed-in user can still post plain messages through the bot endpoint" do
+    sign_in :david
+
+    assert_difference -> { Message.count }, +1 do
+      post room_bot_messages_url(@room, users(:bender).bot_key), params: +"Hello!"
+    end
+
+    assert_response :created
+    assert_equal users(:david), Message.last.creator
+  end
+
+  test "rejects a malformed actions payload rather than ignoring it" do
+    message = post_bot_message "Deploying..."
+
+    [ "nope", { label: "Deploy", value: "deploy" }, [ "Deploy" ], [ { label: { nested: true }, value: "deploy" } ] ].each do |actions|
+      assert_no_changes -> { message.reload.bot_actions } do
+        patch room_bot_message_url(@room, users(:bender).bot_key, message), as: :json, params: { actions: actions }
+        assert_invalid_actions_response
+      end
+    end
+  end
+
+  test "rejects a malformed selection mode rather than ignoring it" do
+    message = post_bot_message "Deploying..."
+
+    assert_no_changes -> { message.reload.bot_action_selection_mode } do
+      patch room_bot_message_url(@room, users(:bender).bot_key, message), as: :json, params: { selection_mode: { single: true } }
+      assert_response :unprocessable_content
+    end
+  end
+
   private
     def assert_invalid_actions_response
       assert_response :unprocessable_content

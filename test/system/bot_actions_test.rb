@@ -39,6 +39,21 @@ class BotActionsTest < ApplicationSystemTestCase
     end
   end
 
+  test "actions without a selection mode never gain a pressed state" do
+    @message.update! bot_action_selection_mode: "none"
+    refresh
+
+    within_message @message do
+      assert_no_selector "button[aria-pressed]"
+
+      users(:bender).webhook.destroy!
+      click_on "Pizza"
+
+      assert_text "Couldn’t perform that action."
+      assert_no_selector "button[aria-pressed]"
+    end
+  end
+
   test "disabling value actions when the webhook has been removed" do
     users(:bender).webhook.destroy!
     refresh
