@@ -57,4 +57,8 @@ Rails.application.configure do
 
   # Load test helpers
   config.autoload_paths += %w[ test/test_helpers ]
+
+  # Action Mailer test setup
+  config.action_mailer.delivery_method = :test
+  config.action_mailer.perform_deliveries = true
 end
