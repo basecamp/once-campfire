@@ -1,0 +1,19 @@
+Gemfile.lock
+  s_228eed1bc13ddf::t_25a099f45a34d2 207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "229ac25cbc3e8bc11aaa83cc77cdd85d28a3bb1f",
+  "prompts": {},
+  "sessions": {
+    "s_228eed1bc13ddf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4538143-f97b-4663-913f-b15c9ba71d68",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
