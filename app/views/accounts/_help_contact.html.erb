@@ -1,6 +1,6 @@
 <% if owner = User.administrator.first %>
   <div class="txt-align-center margin-block-double full-width">
-    <%= link_to "mailto:\"#{owner.name}\" <#{owner.email_address}>", class: "btn center", title: "Email #{owner.name}" do %>
+    <%= link_to "mailto:#{owner.email_address}", class: "btn center", title: "Email #{owner.name}" do %>
       <%= image_tag "lifebuoy.svg", aria: { hidden: "true" } %>
       <span><%= owner.email_address %></span>
     <% end %>
