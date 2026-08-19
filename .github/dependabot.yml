@@ -20,6 +20,8 @@ updates:
       semver-minor-days: 3
       semver-patch-days: 2
       default-days: 7
+      exclude:
+        - "brakeman"
 
   - package-ecosystem: docker
     directory: "/"
