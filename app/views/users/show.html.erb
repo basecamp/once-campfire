@@ -50,7 +50,7 @@
           <% if Current.user.can_administer? %>
             <hr class="margin-block-start borderless">
 
-            <%= render "users/profiles/transfer", user: @user unless Oidc.required? %>
+            <%= render "users/profiles/transfer", user: @user unless Oidc.enabled? %>
           <% end %>
         <% end %>
 

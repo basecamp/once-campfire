@@ -2,6 +2,7 @@ require "json"
 require "pathname"
 require "securerandom"
 require "time"
+require_relative "descriptor_tree"
 
 module CampfireBackup
   module RecoveryMarkers
@@ -19,16 +20,18 @@ module CampfireBackup
         SecureRandom.hex(16)
       end
 
-      def assert_restore_complete!(storage_directory)
+      def assert_restore_complete!(storage_directory, descriptor_tree: nil)
         path = marker_path(storage_directory, RESTORE_FILENAME)
-        return true unless path_exists?(path)
+        missing = descriptor_tree ? descriptor_tree.entry_missing?(RESTORE_FILENAME) : !path_exists?(path)
+        return true if missing
 
         raise "A previous restore did not complete. Do not boot or retry this volume. " \
           "Discard and recreate this disposable restore destination, then rerun the full restore: #{path.dirname}"
       end
 
-      def begin_restore!(storage_directory, backup_id:, operation_id:, now: Time.now.utc)
-        assert_restore_complete! storage_directory
+      def begin_restore!(storage_directory, backup_id:, operation_id:, now: Time.now.utc,
+          descriptor_tree: nil)
+        assert_restore_complete!(storage_directory, descriptor_tree:)
         write_marker(
           marker_path(storage_directory, RESTORE_FILENAME),
           {
@@ -38,13 +41,13 @@ module CampfireBackup
             backup_id:,
             started_at: now.utc.iso8601
           },
-          preserve_on_failure: true
+          preserve_on_failure: true, descriptor_tree:
         )
       end
 
-      def complete_restore!(marker)
+      def complete_restore!(marker, descriptor_tree: nil)
         remove_marker! marker.path, expected_identity: marker.identity,
-          description: "Restore-in-progress marker"
+          description: "Restore-in-progress marker", descriptor_tree:
       end
 
       def invalidate_clean_shutdown!(storage_directory)
@@ -100,7 +103,11 @@ module CampfireBackup
           independent_directory(storage_directory, "Campfire storage").join(filename)
         end
 
-        def write_marker(path, payload, preserve_on_failure:)
+        def write_marker(path, payload, preserve_on_failure:, descriptor_tree: nil)
+          return write_descriptor_marker(
+            path, payload, preserve_on_failure:, descriptor_tree:
+          ) if descriptor_tree
+
           raise "Recovery marker already exists: #{path}" if path_exists?(path)
 
           flags = File::WRONLY | File::CREAT | File::EXCL
@@ -125,28 +132,68 @@ module CampfireBackup
         end
 
         def remove_failed_marker(path, identity)
-          path.unlink if current_identity(path) == identity
-          flush_directory path.dirname
+          tree = DescriptorTree.new(path.dirname, description: "Recovery marker parent")
+          tree.remove(path.basename.to_s, expected_identity: identity, directory: false)
+          tree.flush_root
         rescue StandardError
           nil
+        ensure
+          tree&.close
         end
 
-        def remove_marker!(path, expected_identity: nil, description:)
-          flags = File::RDONLY
-          flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-          File.open(path, flags) do |file|
-            opened_identity = assert_independent_file!(
-              file, path, description, expected_identity: expected_identity
-            )
-            unless current_identity(path) == opened_identity
-              raise "#{description} changed while it was being removed"
+        def write_descriptor_marker(path, payload, preserve_on_failure:, descriptor_tree:)
+          relative = path.basename.to_s
+          committed = false
+          identity = nil
+          marker = nil
+          raise "Recovery marker already exists: #{path}" unless descriptor_tree.entry_missing?(relative)
+
+          descriptor_tree.create_file(relative, mode: 0o600) do |file, opened|
+            identity = file_identity(opened)
+            file.chmod 0o600
+            file.write JSON.generate(payload) << "\n"
+            file.flush
+            file.fsync
+          end
+          descriptor_tree.flush_root
+          committed = true
+          marker = Marker.new(path:, identity:)
+          marker
+        ensure
+          unless committed || preserve_on_failure || !defined?(identity) || !identity
+            begin
+              descriptor_tree.remove(relative, expected_identity: identity, directory: false)
+              descriptor_tree.flush_root
+            rescue StandardError
+              nil
             end
           end
-          path.unlink
-          flush_directory path.dirname
+        end
+
+        def remove_marker!(path, expected_identity: nil, description:, descriptor_tree: nil)
+          if descriptor_tree
+            relative = path.basename.to_s
+            identity = nil
+            descriptor_tree.open_regular_file(relative, expected_identity:) do |_file, opened|
+              identity = file_identity(opened)
+            end
+            descriptor_tree.remove(relative, expected_identity: identity, directory: false)
+            descriptor_tree.flush_root
+            return true
+          end
+
+          tree = DescriptorTree.new(path.dirname, description: "#{description} parent")
+          identity = nil
+          tree.open_regular_file(path.basename.to_s, expected_identity:) do |_file, opened|
+            identity = file_identity(opened)
+          end
+          tree.remove(path.basename.to_s, expected_identity: identity, directory: false)
+          tree.flush_root
           true
         rescue Errno::ENOENT
           raise "#{description} disappeared while it was being removed"
+        ensure
+          tree&.close
         end
 
         def read_independent_file(path, description)

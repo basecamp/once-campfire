@@ -2,7 +2,9 @@
 
 require "digest"
 require "base64"
+require "fiddle/import"
 require "fileutils"
+require "io/console"
 require "json"
 require "open3"
 require "openssl"
@@ -26,6 +28,7 @@ EXPORT_DEPLOY_HOSTS = %w[ once-store-app-101 once-store-app-102 ].freeze
 EXPORT_DEPLOY_LOCATION = "/local/app/product_releases"
 PUBLISH_WORKFLOW_NAME = "Build and publish container image to GHCR"
 PUBLISH_WORKFLOW_FILE = "publish-image.yml"
+GITHUB_CLI_ENVIRONMENT = { "GH_HOST" => "github.com" }.freeze
 WORKFLOW_EVIDENCE_FORMAT_VERSION = 1
 RELEASE_JOURNAL_FORMAT_VERSION = 6
 RELEASE_RECONCILE_ACTIONS = %w[ complete rollback ].freeze
@@ -40,6 +43,7 @@ RELEASE_EVIDENCE_FILES = [
       "recovery-#{architecture}.json",
       "upgrade-recovery-#{architecture}.json",
       "container-validation-#{architecture}.json",
+      "image-inspect-#{architecture}.json",
       "sbom-#{architecture}.spdx.json",
       "buildkit-provenance-#{architecture}.json",
       "parent-provenance-#{architecture}.bundle.jsonl",
@@ -58,20 +62,46 @@ class ReleaseMutationUnsettled < ReleaseStateError; end
 
 require_relative "../lib/release_object_lock_anchors"
 
-def capture!(*command, allow_failure: false)
-  stdout, stderr, status = Open3.capture3(*command)
+def command_environment(command, environment = {})
+  command.first == "gh" ? environment.merge(GITHUB_CLI_ENVIRONMENT) : environment
+end
+
+def capture_command(*command, env: {}, stdin_data: nil, unsetenv_others: false)
+  Open3.capture3(
+    command_environment(command, env), *command, stdin_data:, unsetenv_others:
+  )
+end
+
+def capture!(*command, allow_failure: false, env: {}, runner: nil, stdin_data: nil)
+  environment = command_environment(command, env)
+  stdout, stderr, status = if runner
+    runner.capture(*command, env: environment, stdin_data:)
+  else
+    capture_command(*command, env: environment, stdin_data:)
+  end
   abort "Command failed: #{command.shelljoin}\n#{stderr}#{stdout}" unless status.success? || allow_failure
   return nil unless status.success?
 
   stdout.strip
 end
 
-def run!(*command, env: {})
-  abort "Command failed: #{command.shelljoin}" unless system(env, *command)
+def run!(*command, env: {}, runner: nil, interactive: false)
+  environment = command_environment(command, env)
+  success = if runner
+    status = if interactive
+      runner.call(*command, env: environment, interactive: true)
+    else
+      runner.call(*command, env: environment)
+    end
+    status.success?
+  else
+    system(environment, *command)
+  end
+  abort "Command failed: #{command.shelljoin}" unless success
 end
 
 def mutate!(*command, env: {}, runner:)
-  status = runner.call(*command, env:)
+  status = runner.call(*command, env: command_environment(command, env))
   raise ReleaseMutationError, "Command failed: #{command.shelljoin}" unless status.success?
 end
 
@@ -553,6 +583,110 @@ class ReleaseInvocationLock
   MUTATION_KILL_TIMEOUT = 5
   MUTATION_IO_TIMEOUT = 5
 
+  class TerminalForeground
+    AUTOMATIC_RESUME_SIGNALS = [ Signal.list.fetch("TTIN"), Signal.list.fetch("TTOU") ].freeze
+
+    module LibC
+      extend Fiddle::Importer
+      dlload Fiddle.dlopen(nil)
+      extern "int tcgetpgrp(int)"
+      extern "int tcsetpgrp(int, int)"
+    end
+
+    def self.current
+      terminal = File.open("/dev/tty", File::RDWR)
+      foreground_process_group = native_call!(
+        "tcgetpgrp", LibC.tcgetpgrp(terminal.fileno)
+      )
+      unless foreground_process_group == Process.getpgrp
+        raise ReleaseStateError, "Release invocation does not own the terminal foreground"
+      end
+
+      new terminal, foreground_process_group
+    rescue Errno::ENODEV, Errno::ENOENT, Errno::ENOTTY, Errno::ENXIO
+      terminal&.close
+      nil
+    rescue Exception
+      terminal&.close
+      raise
+    end
+
+    def self.native_call!(name, result)
+      return result unless result == -1
+
+      raise SystemCallError.new(name, Fiddle.last_error)
+    end
+
+    def initialize(terminal, owner_process_group)
+      @terminal = terminal
+      @owner_process_group = owner_process_group
+      @owner_console_mode = terminal.console_mode
+      @transferred = false
+    end
+
+    def transfer_to!(process_group)
+      @transferred = true
+      set_foreground_process_group! process_group
+      begin
+        Process.kill "CONT", -process_group
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+
+    def resume_after_stop!(process_group, stop_signal, before_resume:)
+      if AUTOMATIC_RESUME_SIGNALS.include?(stop_signal)
+        before_resume.call
+        transfer_to! process_group
+      else
+        child_console_mode = @terminal.console_mode
+        reclaim!
+        @terminal.console_mode = @owner_console_mode
+        suspend_owner_process_group!
+        before_resume.call
+        @terminal.console_mode = child_console_mode
+        transfer_to! process_group
+      end
+    end
+
+    def restore!
+      reclaim!
+      @terminal.console_mode = @owner_console_mode
+    ensure
+      @terminal.close unless @terminal.closed?
+    end
+
+    private
+      def reclaim!
+        return unless @transferred
+
+        set_foreground_process_group! @owner_process_group
+        @transferred = false
+      end
+
+      def suspend_owner_process_group!
+        previous_handler = Signal.trap("TSTP", "DEFAULT")
+        Process.kill "TSTP", -@owner_process_group
+      ensure
+        Signal.trap("TSTP", previous_handler) if previous_handler
+      end
+
+      def set_foreground_process_group!(process_group)
+        previous_handler = Signal.trap("TTOU", "IGNORE")
+        self.class.native_call!(
+          "tcsetpgrp", LibC.tcsetpgrp(@terminal.fileno, process_group)
+        )
+        observed = self.class.native_call!(
+          "tcgetpgrp", LibC.tcgetpgrp(@terminal.fileno)
+        )
+        unless observed == process_group
+          raise ReleaseStateError, "Terminal foreground ownership did not change atomically"
+        end
+      ensure
+        Signal.trap("TTOU", previous_handler) if previous_handler
+      end
+  end
+
   class MutationChild
     attr_reader :pid, :status
 
@@ -571,7 +705,11 @@ class ReleaseInvocationLock
     end
 
     def poll
-      @status ||= @poll.call
+      return status if status
+
+      observed = @poll.call
+      @status = observed if observed && !observed.stopped?
+      observed
     end
 
     def settle_after_exit!
@@ -637,6 +775,7 @@ class ReleaseInvocationLock
   attr_reader :invocation_id
 
   def self.acquire(invocation_id: SecureRandom.hex(16), command: nil, popen3: Open3.method(:popen3),
+      acquisition_timeout: ACQUISITION_TIMEOUT,
       mutation_popen3: Open3.method(:popen3), mutation_exit_timeout: MUTATION_EXIT_TIMEOUT,
       mutation_termination_timeout: MUTATION_TERMINATION_TIMEOUT,
       mutation_kill_timeout: MUTATION_KILL_TIMEOUT, mutation_io_timeout: MUTATION_IO_TIMEOUT)
@@ -644,11 +783,11 @@ class ReleaseInvocationLock
       raise ReleaseStateError, "Release invocation identity is invalid"
     end
     command ||= [
-      "ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+      "ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
       ReleaseLock.remote, holder_command(invocation_id)
     ]
     new(
-      invocation_id, command, popen3, mutation_popen3:, mutation_exit_timeout:,
+      invocation_id, command, popen3, acquisition_timeout:, mutation_popen3:, mutation_exit_timeout:,
       mutation_termination_timeout:, mutation_kill_timeout:, mutation_io_timeout:
     ).tap(&:acquire!)
   end
@@ -724,30 +863,40 @@ class ReleaseInvocationLock
       test "$(cat #{Shellwords.escape(OWNER_PATH)})" = "$owner_value";
       flock -u 8;
       printf 'READY %s\\n' #{Shellwords.escape(invocation_id)};
-      cat >/dev/null;
+      while IFS= read -r request; do
+        test "$request" = #{Shellwords.escape("PROBE #{invocation_id}")};
+        #{lock_pin_guard(LOCK_PATH, 9)};
+        test -f #{Shellwords.escape(OWNER_PATH)}; test ! -L #{Shellwords.escape(OWNER_PATH)};
+        test "$(stat -c %h #{Shellwords.escape(OWNER_PATH)})" -eq 1;
+        test "$(cat #{Shellwords.escape(OWNER_PATH)})" = "$owner_value";
+        printf 'HELD %s\\n' #{Shellwords.escape(invocation_id)};
+      done;
     SH
   end
 
-  def initialize(invocation_id, command, popen3, mutation_popen3: Open3.method(:popen3),
+  def initialize(invocation_id, command, popen3, acquisition_timeout: ACQUISITION_TIMEOUT,
+      mutation_popen3: Open3.method(:popen3),
       mutation_exit_timeout: MUTATION_EXIT_TIMEOUT,
       mutation_termination_timeout: MUTATION_TERMINATION_TIMEOUT,
       mutation_kill_timeout: MUTATION_KILL_TIMEOUT, mutation_io_timeout: MUTATION_IO_TIMEOUT)
     @invocation_id = invocation_id
     @command = command
     @popen3 = popen3
+    @acquisition_timeout = acquisition_timeout
     @mutation_popen3 = mutation_popen3
     @mutation_exit_timeout = mutation_exit_timeout
     @mutation_termination_timeout = mutation_termination_timeout
     @mutation_kill_timeout = mutation_kill_timeout
     @mutation_io_timeout = mutation_io_timeout
+    @holder_probe_mutex = Mutex.new
     @mutation_mutex = Mutex.new
     @active_mutations = {}
     @releasing = false
   end
 
   def acquire!
-    @stdin, @stdout, @stderr, @wait_thread = @popen3.call(*@command)
-    readable = IO.select([ @stdout ], nil, nil, ACQUISITION_TIMEOUT)
+    @stdin, @stdout, @stderr, @wait_thread = @popen3.call(*@command, pgroup: true)
+    readable = IO.select([ @stdout ], nil, nil, @acquisition_timeout)
     response = @stdout.gets&.strip if readable
     return self if response == "READY #{invocation_id}" && @wait_thread.alive?
 
@@ -760,26 +909,39 @@ class ReleaseInvocationLock
   end
 
   def assert_held!
-    unless held?
-      raise ReleaseLiveLockLost, "Remote release live-owner lock was lost"
+    @holder_probe_mutex.synchronize do
+      raise ReleaseLiveLockLost, "Remote release live-owner lock was lost" unless held?
+
+      @stdin.write "PROBE #{invocation_id}\n"
+      @stdin.flush
+      readable = IO.select([ @stdout ], nil, nil, @acquisition_timeout)
+      response = @stdout.gets&.strip if readable
+      unless response == "HELD #{invocation_id}" && held?
+        raise ReleaseLiveLockLost, "Remote release live-owner lock was lost"
+      end
     end
     true
+  rescue IOError, SystemCallError
+    raise ReleaseLiveLockLost, "Remote release live-owner lock was lost"
   end
 
   def held?
     @wait_thread&.alive?
   end
 
-  def run_mutation!(*command, env: {})
+  def run_mutation!(*command, env: {}, interactive: false)
     assert_held!
     child = nil
+    terminal_foreground = TerminalForeground.current if interactive
     begin
       Thread.handle_interrupt(Exception => :never) do
         child = launch_mutation do
           pid = Process.spawn(env, *command, pgroup: true)
           mutation_child(pid) do
             begin
-              Process.waitpid2(pid, Process::WNOHANG)&.last
+              flags = Process::WNOHANG
+              flags |= Process::WUNTRACED if interactive
+              Process.waitpid2(pid, flags)&.last
             rescue Errno::EINTR
               nil
             rescue Errno::ECHILD
@@ -787,10 +949,22 @@ class ReleaseInvocationLock
             end
           end
         end
+        terminal_foreground&.transfer_to! child.pid
       end
 
       loop do
-        if child.poll
+        if status = child.poll
+          if status.stopped?
+            unless terminal_foreground
+              raise ReleaseStateError,
+                "Interactive mutation stopped without terminal foreground control"
+            end
+            terminal_foreground.resume_after_stop!(
+              child.pid, status.stopsig, before_resume: -> { assert_held! }
+            )
+            next
+          end
+
           status = child.settle_after_exit!
           assert_held!
           return status
@@ -802,11 +976,15 @@ class ReleaseInvocationLock
         sleep MONITOR_INTERVAL
       end
     ensure
-      settle_mutation_child child
+      begin
+        settle_mutation_child child
+      ensure
+        terminal_foreground&.restore!
+      end
     end
   end
 
-  def capture_mutation!(*command, stdin_data: nil)
+  def capture_mutation!(*command, stdin_data: nil, env: {}, unsetenv_others: false)
     assert_held!
     child = nil
     io_threads = []
@@ -814,7 +992,9 @@ class ReleaseInvocationLock
     begin
       Thread.handle_interrupt(Exception => :never) do
         child = launch_mutation do
-          stdin, stdout, stderr, waiter = @mutation_popen3.call(*command, pgroup: true)
+          stdin, stdout, stderr, waiter = @mutation_popen3.call(
+            env, *command, pgroup: true, unsetenv_others:
+          )
           mutation_child(waiter.pid) do
             waiter.join(0) ? waiter.value : nil
           end
@@ -880,16 +1060,19 @@ class ReleaseInvocationLock
 
     begin_release!
     close_stdin
-    status = Timeout.timeout(ACQUISITION_TIMEOUT) { @wait_thread.value }
+    unless @wait_thread.join(@acquisition_timeout)
+      terminate_holder!
+      close_holder_streams
+      @wait_thread = nil
+      raise ReleaseStateError, "Timed out releasing remote release live-owner lock"
+    end
+    status = @wait_thread.value
     details = @stderr.read
+    close_holder_streams
+    @wait_thread = nil
     raise ReleaseStateError, "Remote release live-owner cleanup failed: #{details}" unless status.success?
 
-    @stdout.close unless @stdout.closed?
-    @stderr.close unless @stderr.closed?
-    @wait_thread = nil
     true
-  rescue Timeout::Error
-    raise ReleaseStateError, "Timed out releasing remote release live-owner lock"
   end
 
   private
@@ -977,13 +1160,38 @@ class ReleaseInvocationLock
     end
 
     def finish_failed_holder
-      Timeout.timeout(ACQUISITION_TIMEOUT) { @wait_thread.value }
+      terminate_holder! unless @wait_thread.join(@mutation_termination_timeout)
       @stderr.read
-    rescue Timeout::Error
-      "holder did not terminate"
     ensure
-      @stdout&.close unless @stdout&.closed?
-      @stderr&.close unless @stderr&.closed?
+      close_holder_streams
+      @wait_thread = nil unless @wait_thread&.alive?
+    end
+
+    def terminate_holder!
+      pid = @wait_thread.pid
+      begin
+        Process.kill "TERM", -pid
+        Process.kill "CONT", -pid
+      rescue Errno::ESRCH
+        nil
+      end
+      unless @wait_thread.join(@mutation_termination_timeout)
+        begin
+          Process.kill "KILL", -pid
+        rescue Errno::ESRCH
+          nil
+        end
+        unless @wait_thread.join(@mutation_kill_timeout)
+          raise ReleaseStateError, "Remote release live-owner holder could not be reaped"
+        end
+      end
+      @wait_thread.value
+    end
+
+    def close_holder_streams
+      close_stream @stdin
+      close_stream @stdout
+      close_stream @stderr
     end
 end
 
@@ -998,14 +1206,18 @@ class ReleaseMutationFence
       @started = started
     end
 
-    def call(*command, env: {})
+    def call(*command, env: {}, interactive: false)
       @started.call
-      @lock.run_mutation!(*command, env:)
+      if interactive
+        @lock.run_mutation!(*command, env:, interactive: true)
+      else
+        @lock.run_mutation!(*command, env:)
+      end
     end
 
-    def capture(*command, stdin_data: nil)
+    def capture(*command, stdin_data: nil, env: {}, unsetenv_others: false)
       @started.call
-      @lock.capture_mutation!(*command, stdin_data:)
+      @lock.capture_mutation!(*command, stdin_data:, env:, unsetenv_others:)
     end
   end
 
@@ -1191,22 +1403,21 @@ def record_immutable_alias_evidence!(lock:, journal:, registry:, references:, di
   end
 
   probe = registry_immutability_probe_evidence!(journal, registry)
-  unless probe.fetch("seed_digest") == digest
-    raise ReleaseStateError, "Immutable registry alias digest differs from its live probe for #{registry}"
+  unless probe.fetch("alias_digest") == digest && probe.fetch("alias_references") == references.sort
+    raise ReleaseStateError, "Registry alias targets differ from repository policy evidence for #{registry}"
   end
   contract = {
-    "format_version" => 1,
+    "format_version" => 2,
     "registry" => registry,
     "source_digest" => digest,
     "source_evidence_sha256" => source_evidence_sha256,
     "aliases" => references.sort.to_h { [ _1, digest ] },
+    "registry_policy_scope" => probe.fetch("policy_scope"),
+    "exact_alias_conflict_probes" => false,
     "registry_policy_evidence_sha256" => Digest::SHA256.hexdigest(
       ReleaseObjectLockAnchors.canonical_json(probe)
     )
   }
-  unless probe.fetch("policy_references") == references.sort
-    raise ReleaseStateError, "Immutable registry policy proof does not cover every exact alias for #{registry}"
-  end
   journal["immutable_alias_evidence"] ||= {}
   if existing = journal["immutable_alias_evidence"][registry]
     unless existing.except("recorded_at") == contract && existing.fetch("recorded_at").is_a?(String)
@@ -1227,10 +1438,13 @@ end
 def verify_immutable_alias_evidence!(journal:, registry:, reference:, digest:)
   entry = journal.dig("immutable_alias_evidence", registry)
   probe = registry_immutability_probe_evidence!(journal, registry)
-  unless entry.is_a?(Hash) && entry.fetch("format_version") == 1 &&
+  unless entry.is_a?(Hash) && entry.fetch("format_version") == 2 &&
       entry.fetch("registry") == registry && entry.fetch("source_digest") == digest &&
-      probe.fetch("seed_digest") == digest &&
+      probe.fetch("alias_digest") == digest &&
+      probe.fetch("alias_references").include?(reference) &&
       entry.fetch("source_evidence_sha256").match?(/\A[0-9a-f]{64}\z/) &&
+      entry.fetch("registry_policy_scope") == "repository_disposable_alias" &&
+      entry.fetch("exact_alias_conflict_probes") == false &&
       entry.fetch("registry_policy_evidence_sha256") == Digest::SHA256.hexdigest(
         ReleaseObjectLockAnchors.canonical_json(probe)
       ) &&
@@ -1245,36 +1459,44 @@ end
 def registry_immutability_probe_evidence!(journal, registry)
   entry = journal.dig("registry_immutability_probes", registry)
   expected_keys = %w[
-    conflict_digest control_overwrite_observed_digest control_reference control_seed_observed_digest
-    format_version media_type policy_observed_digests policy_references prepared_at registry
-    rejections repository seed_digest status verified_at
+    alias_digest alias_references conflict_digest control_observed_digest control_reference
+    exact_alias_conflict_probes format_version media_type policy_scope prepared_at proof registry
+    repository seed_digest source_evidence_sha256 status verified_at
   ]
-  unless entry.is_a?(Hash) && entry.keys.sort == expected_keys && entry.fetch("format_version") == 2 &&
+  unless entry.is_a?(Hash) && entry.keys.sort == expected_keys && entry.fetch("format_version") == 3 &&
       entry.fetch("status") == "verified" && entry.fetch("registry") == registry &&
       entry.fetch("repository").start_with?("#{registry}/") &&
       entry.fetch("control_reference").start_with?("#{entry.fetch('repository')}:release-mutability-control-") &&
+      !entry.fetch("alias_references").include?(entry.fetch("control_reference")) &&
+      entry.fetch("alias_digest").match?(/\Asha256:[0-9a-f]{64}\z/) &&
       entry.fetch("seed_digest").match?(/\Asha256:[0-9a-f]{64}\z/) &&
       entry.fetch("conflict_digest").match?(/\Asha256:[0-9a-f]{64}\z/) &&
       entry.fetch("conflict_digest") != entry.fetch("seed_digest") &&
       entry.fetch("media_type").match?(/\Aapplication\/vnd\.(?:oci\.image\.index\.v1\+json|docker\.distribution\.manifest\.list\.v2\+json)\z/) &&
-      entry.fetch("control_seed_observed_digest") == entry.fetch("seed_digest") &&
-      entry.fetch("control_overwrite_observed_digest") == entry.fetch("conflict_digest") &&
-      entry.fetch("policy_references").is_a?(Array) && entry.fetch("policy_references").any? &&
-      entry.fetch("policy_references") == entry.fetch("policy_references").sort.uniq &&
-      entry.fetch("policy_references").all? { _1.start_with?("#{entry.fetch('repository')}:") } &&
-      entry.fetch("policy_observed_digests") == entry.fetch("policy_references").to_h {
-        [ _1, entry.fetch("seed_digest") ]
-      } && entry.fetch("rejections").keys.sort == entry.fetch("policy_references") &&
+      entry.fetch("control_observed_digest") == entry.fetch("seed_digest") &&
+      entry.fetch("alias_references").is_a?(Array) && entry.fetch("alias_references").any? &&
+      entry.fetch("alias_references") == entry.fetch("alias_references").sort.uniq &&
+      entry.fetch("alias_references").all? { _1.start_with?("#{entry.fetch('repository')}:") } &&
+      entry.fetch("policy_scope") == "repository_disposable_alias" &&
+      entry.fetch("exact_alias_conflict_probes") == false &&
+      entry.fetch("source_evidence_sha256").match?(/\A[0-9a-f]{64}\z/) &&
       entry.fetch("prepared_at").is_a?(String) && entry.fetch("verified_at").is_a?(String)
     raise ReleaseStateError, "Live immutable-tag probe evidence is missing or invalid for #{registry}"
   end
-  entry.fetch("rejections").each_value do |rejection|
-    unless rejection.is_a?(Hash) && rejection.keys.sort == %w[ classification exit_status output_sha256 ] &&
-        rejection.fetch("classification") == "server_immutable_tag_rejection" &&
-        rejection.fetch("exit_status").is_a?(Integer) && rejection.fetch("exit_status").positive? &&
-        rejection.fetch("output_sha256").match?(/\A[0-9a-f]{64}\z/)
-      raise ReleaseStateError, "Live immutable-tag rejection evidence is invalid for #{registry}"
-    end
+  proof = entry.fetch("proof")
+  valid_proof = case proof&.fetch("kind", nil)
+  when "protected_workflow_disposable_alias_gate"
+    proof.keys.sort == %w[ evidence_sha256 kind ] &&
+      proof.fetch("evidence_sha256") == entry.fetch("source_evidence_sha256")
+  when "server_immutable_tag_rejection"
+    proof.keys.sort == %w[ exit_status kind output_sha256 ] &&
+      proof.fetch("exit_status").is_a?(Integer) && proof.fetch("exit_status").positive? &&
+      proof.fetch("output_sha256").match?(/\A[0-9a-f]{64}\z/)
+  else
+    false
+  end
+  unless valid_proof
+    raise ReleaseStateError, "Live immutable-tag rejection evidence is invalid for #{registry}"
   end
   entry
 rescue KeyError, NoMethodError
@@ -1293,15 +1515,18 @@ def registry_immutable_tag_rejection?(stdout, stderr, status)
     output.match?(/immutable|cannot (?:overwrite|replace|update).*(?:tag|manifest)|(?:tag|manifest).*already exists/i)
 end
 
-def prove_registry_tag_immutability!(lock:, journal:, registry:, repository:, seed_digest:,
-    conflict_digest:, seed_source:, conflict_source:, policy_references:, read:, media_type:,
-    fault_prefix:)
+def prove_registry_tag_immutability!(lock:, journal:, registry:, repository:, alias_digest:,
+    seed_digest:, conflict_digest:, seed_source:, conflict_source:, alias_references:, read:,
+    media_type:, fault_prefix:, source_evidence_sha256:, control_reference: nil,
+    protected_workflow_gate: false)
   unless registry.match?(/\A[a-z0-9.-]+\z/) && repository.start_with?("#{registry}/") &&
+      alias_digest.match?(/\Asha256:[0-9a-f]{64}\z/) &&
       seed_digest.match?(/\Asha256:[0-9a-f]{64}\z/) &&
       conflict_digest.match?(/\Asha256:[0-9a-f]{64}\z/) && seed_digest != conflict_digest &&
-      journal.fetch("lock_id").match?(/\A[0-9a-f]{64}\z/) && policy_references.is_a?(Array) &&
-      policy_references.any? && policy_references.sort.uniq == policy_references.sort &&
-      policy_references.all? { _1.start_with?("#{repository}:") }
+      source_evidence_sha256.match?(/\A[0-9a-f]{64}\z/) &&
+      journal.fetch("lock_id").match?(/\A[0-9a-f]{64}\z/) && alias_references.is_a?(Array) &&
+      alias_references.any? && alias_references.sort.uniq == alias_references.sort &&
+      alias_references.all? { _1.start_with?("#{repository}:") }
     raise ReleaseStateError, "Immutable-tag probe contract is invalid for #{registry}"
   end
   unless read.call(seed_source) == seed_digest && read.call(conflict_source) == conflict_digest
@@ -1314,30 +1539,37 @@ def prove_registry_tag_immutability!(lock:, journal:, registry:, repository:, se
     raise ReleaseStateError, "Immutable-tag probe sources do not use the same supported index media type for #{registry}"
   end
 
-  control_reference = "#{repository}:release-mutability-control-#{journal.fetch('lock_id')}"
+  control_reference ||= "#{repository}:release-mutability-control-#{journal.fetch('lock_id')}"
+  unless control_reference.start_with?("#{repository}:release-mutability-control-") &&
+      !alias_references.include?(control_reference)
+    raise ReleaseStateError, "Immutable-tag probe control is not an operation-bound disposable alias for #{registry}"
+  end
   contract = {
-    "format_version" => 2, "status" => "prepared", "registry" => registry,
+    "format_version" => 3, "registry" => registry,
     "repository" => repository, "control_reference" => control_reference,
-    "policy_references" => policy_references.sort, "media_type" => seed_media_type,
-    "seed_digest" => seed_digest, "conflict_digest" => conflict_digest
+    "alias_references" => alias_references.sort, "alias_digest" => alias_digest,
+    "media_type" => seed_media_type, "seed_digest" => seed_digest,
+    "conflict_digest" => conflict_digest, "policy_scope" => "repository_disposable_alias",
+    "exact_alias_conflict_probes" => false,
+    "source_evidence_sha256" => source_evidence_sha256
   }
   journal["registry_immutability_probes"] ||= {}
   if existing = journal["registry_immutability_probes"][registry]
     immutable = existing.slice(*contract.keys)
-    unless immutable == contract || immutable == contract.merge("status" => "verified")
+    unless immutable == contract
       raise ReleaseStateError, "Authenticated immutable-tag probe contract changed for #{registry}"
     end
     if existing["status"] == "verified"
       evidence = registry_immutability_probe_evidence!(journal, registry)
-      unless read.call(control_reference) == conflict_digest &&
-          policy_references.all? { read.call(_1) == seed_digest }
+      unless read.call(control_reference) == seed_digest && read.call(control_reference) == seed_digest &&
+          alias_references.all? { [ nil, alias_digest ].include?(read.call(_1)) }
         raise ReleaseStateError, "Verified immutable-tag policy evidence changed for #{registry}"
       end
       return evidence
     end
   else
     journal["registry_immutability_probes"][registry] = contract.merge(
-      "prepared_at" => Time.now.utc.iso8601
+      "status" => "prepared", "prepared_at" => Time.now.utc.iso8601
     )
     journal["updated_at"] = Time.now.utc.iso8601
     lock.write_journal journal
@@ -1348,7 +1580,7 @@ def prove_registry_tag_immutability!(lock:, journal:, registry:, repository:, se
   unless [ nil, seed_digest, conflict_digest ].include?(control_digest)
     raise ReleaseStateError, "Registry mutability control changed outside this release for #{registry}"
   end
-  unless control_digest
+  unless control_digest || protected_workflow_gate
     fence.run!(
       kind: "registry_mutability_control_seed",
       target: { "reference" => control_reference, "digest" => seed_digest }
@@ -1364,76 +1596,47 @@ def prove_registry_tag_immutability!(lock:, journal:, registry:, repository:, se
     end
     control_digest = seed_digest
   end
-  if control_digest == seed_digest
-    fence.run!(
-      kind: "registry_mutability_control_overwrite",
-      target: { "reference" => control_reference, "digest" => conflict_digest }
-    ) do |runner|
-      mutate!(
-        "docker", "buildx", "imagetools", "create", "--tag", control_reference,
-        conflict_source, runner:
-      )
-      fault_after_external_mutation! "#{fault_prefix}_control_overwrite"
-      unless read.call(control_reference) == conflict_digest
-        raise ReleaseStateError, "Authenticated registry mutability control write did not settle for #{registry}"
-      end
+  if protected_workflow_gate
+    unless control_digest == seed_digest && read.call(control_reference) == seed_digest
+      raise ReleaseStateError, "Protected workflow registry policy control is missing or changed for #{registry}"
     end
-  end
-  unless read.call(control_reference) == conflict_digest
-    raise ReleaseStateError, "Registry mutability control does not prove authenticated write authority for #{registry}"
-  end
-
-  rejections = {}
-  policy_references.sort.each do |reference|
-    current = read.call(reference)
-    if current && current != seed_digest
-      raise ReleaseStateError, "Immutable alias #{reference} was claimed by a conflicting digest before proof"
-    end
-    unless current
-      fence.run!(
-        kind: "immutable_alias_seed", target: { "reference" => reference, "digest" => seed_digest }
-      ) do |runner|
-        mutate!(
-          "docker", "buildx", "imagetools", "create", "--tag", reference,
-          seed_source, runner:
-        )
-        fault_after_external_mutation! "#{fault_prefix}_seed"
-        unless read.call(reference) == seed_digest
-          raise ReleaseStateError, "Immutable alias seed did not settle for #{reference}"
-        end
-      end
-    end
-
+    proof = {
+      "kind" => "protected_workflow_disposable_alias_gate",
+      "evidence_sha256" => source_evidence_sha256
+    }
+  elsif control_digest == seed_digest
     fence.run!(
       kind: "registry_immutability_probe_conflict",
-      target: { "reference" => reference, "digest" => conflict_digest }
+      target: { "reference" => control_reference, "digest" => conflict_digest }
     ) do |runner|
       stdout, stderr, status = runner.capture(
-        "docker", "buildx", "imagetools", "create", "--tag", reference,
+        "docker", "buildx", "imagetools", "create", "--tag", control_reference,
         conflict_source
       )
-      fault_after_external_mutation! "#{fault_prefix}_conflict"
+      fault_after_external_mutation! "#{fault_prefix}_control_conflict"
       unless registry_immutable_tag_rejection?(stdout, stderr, status)
         raise ReleaseStateError,
-          "Registry #{registry} did not return a specific server-side immutable-tag rejection for #{reference}"
+          "Registry #{registry} did not return a specific server-side immutable-tag rejection for its disposable control"
       end
-      unless read.call(reference) == seed_digest && read.call(reference) == seed_digest
-        raise ReleaseStateError, "Registry #{registry} did not preserve immutable alias #{reference}"
+      unless read.call(control_reference) == seed_digest && read.call(control_reference) == seed_digest
+        raise ReleaseStateError, "Registry #{registry} did not preserve its disposable policy control"
       end
-      rejections[reference] = {
-        "classification" => "server_immutable_tag_rejection",
-        "exit_status" => status.exitstatus,
+      proof = {
+        "kind" => "server_immutable_tag_rejection", "exit_status" => status.exitstatus,
         "output_sha256" => Digest::SHA256.hexdigest("#{stdout}\0#{stderr}")
       }
     end
+  else
+    raise ReleaseStateError, "Registry #{registry} accepted an overwrite of its disposable policy control"
+  end
+  unless read.call(control_reference) == seed_digest &&
+      alias_references.all? { [ nil, alias_digest ].include?(read.call(_1)) }
+    raise ReleaseStateError, "Registry repository policy or alias state changed for #{registry}"
   end
 
   entry = journal.fetch("registry_immutability_probes").fetch(registry)
   entry.merge!(
-    "status" => "verified", "control_seed_observed_digest" => seed_digest,
-    "control_overwrite_observed_digest" => conflict_digest,
-    "policy_observed_digests" => policy_references.sort.to_h { [ _1, seed_digest ] },
-    "rejections" => rejections,
+    "status" => "verified", "control_observed_digest" => seed_digest, "proof" => proof,
     "verified_at" => Time.now.utc.iso8601
   )
   journal["updated_at"] = Time.now.utc.iso8601
@@ -1746,8 +1949,10 @@ def parse_release_reconcile_action!(env: ENV, reconciling:)
   end
 end
 
-def authenticate_reconcile_action!(lock:, journal:, action:, fault_after: ->(_boundary) { })
+def authenticate_reconcile_action!(lock:, journal:, action:, rollback_guard: -> { },
+    fault_after: ->(_boundary) { })
   return unless action
+  rollback_guard.call if action == "rollback"
 
   scope = journal["channels"] ? "promotion" : "pre_promotion"
   existing = journal["reconcile_action"]
@@ -1778,7 +1983,7 @@ def authenticate_reconcile_action!(lock:, journal:, action:, fault_after: ->(_bo
   request
 end
 
-def abandon_pre_promotion_reconciliation!(lock:, journal:, action:,
+def abandon_pre_promotion_reconciliation!(lock:, journal:, action:, rollback_guard: -> { },
     fault_after: ->(_boundary) { })
   return false unless action == "rollback"
   return false if journal["channels"]
@@ -1817,6 +2022,7 @@ def abandon_pre_promotion_reconciliation!(lock:, journal:, action:,
     raise ReleaseStateError, "Authenticated pre-promotion abandonment contract changed"
   end
   fault_after.call "pre_promotion_abandon_started"
+  rollback_guard.call
 
   started_at = journal.dig("phases", "abandonment", "started_at")
   now = Time.now.utc.iso8601
@@ -2000,7 +2206,7 @@ def workflow_dispatch_title(tag:, sha:, operation_nonce:)
 end
 
 def wait_for_workflow!(repository:, event:, sha:, branch:, release_tag:, operation_nonce:,
-    excluded_ids: [], allow_rerun: true)
+    excluded_ids: [], allow_rerun: true, mutation_runner: nil)
   deadline = Time.now + 600
   run = nil
   expected_title = workflow_dispatch_title(tag: release_tag, sha:, operation_nonce:)
@@ -2030,7 +2236,13 @@ def wait_for_workflow!(repository:, event:, sha:, branch:, release_tag:, operati
         abort "Release aborted: original image workflow #{run.fetch('databaseId')} did not succeed; reconciliation will not rebuild it."
       end
       rerun_after_attempt = Integer(run.fetch("attempt"))
-      run!("gh", "run", "rerun", run.fetch("databaseId").to_s, "--repo", repository)
+      unless mutation_runner
+        raise ReleaseStateError, "Workflow reruns require the monitored live-owner mutation runner"
+      end
+      run!(
+        "gh", "run", "rerun", run.fetch("databaseId").to_s, "--repo", repository,
+        runner: mutation_runner
+      )
     end
   end
 
@@ -2152,26 +2364,17 @@ def atomic_no_replace_rename_command(source, destination)
   ].shelljoin
 end
 
-def stream_file_to_remote!(local_path, host, command)
-  stdin, stdout, stderr, wait_thread = Open3.popen3(
-    "ssh", "#{EXPORT_REMOTE_USER}@#{host}", command
-  )
-  stdout_reader = Thread.new { stdout.read }
-  stderr_reader = Thread.new { stderr.read }
-  File.open(local_path, "rb") { IO.copy_stream(_1, stdin) }
-  stdin.close
-  status = wait_thread.value
-  output = stdout_reader.value
-  error = stderr_reader.value
+def stream_file_to_remote!(local_path, host, command, runner:)
+  output, error, status = File.open(local_path, "rb") do |stream|
+    runner.capture(
+      "ssh", "#{EXPORT_REMOTE_USER}@#{host}", command, stdin_data: stream
+    )
+  end
   abort "Release aborted: remote staging upload failed for #{host}.\n#{error}#{output}" unless status.success?
   output.strip
-ensure
-  stdin&.close unless stdin&.closed?
-  stdout&.close unless stdout&.closed?
-  stderr&.close unless stderr&.closed?
 end
 
-def upload_remote_temporary!(local_path, host, prefix)
+def upload_remote_temporary!(local_path, host, prefix, runner:)
   expected_digest = Digest::SHA256.file(local_path).hexdigest
   expected_bytes = File.size(local_path)
   temporary = "#{prefix}.#{SecureRandom.hex(16)}.tmp"
@@ -2184,14 +2387,14 @@ def upload_remote_temporary!(local_path, host, prefix)
     "test \"$(sha256sum #{Shellwords.escape(temporary)} | cut -d' ' -f1)\" = #{Shellwords.escape(expected_digest)}; " \
     "sync -d #{Shellwords.escape(temporary)}; sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
     "sha256sum #{Shellwords.escape(temporary)}"
-  output = stream_file_to_remote! local_path, host, command
+  output = stream_file_to_remote!(local_path, host, command, runner:)
   unless output.split.first == expected_digest
     abort "Release aborted: remote staging upload #{host}:#{temporary} failed verification."
   end
   [ temporary, expected_digest ]
 end
 
-def upload_immutable(local_path, remote_name, revision)
+def upload_immutable(local_path, remote_name, revision, runner:)
   expected_digest = Digest::SHA256.file(local_path).hexdigest
   EXPORT_DEPLOY_HOSTS.each do |host|
     destination = File.join(EXPORT_DEPLOY_LOCATION, remote_name)
@@ -2219,7 +2422,8 @@ def upload_immutable(local_path, remote_name, revision)
         "test \"$(stat -c %a #{Shellwords.escape(destination)})\" = 444; " \
         "sync -d #{Shellwords.escape(destination)}; sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
         "sha256sum #{Shellwords.escape(destination)}; " \
-        "else echo 'Existing export is not a regular file' >&2; exit 1; fi"
+        "else echo 'Existing export is not a regular file' >&2; exit 1; fi",
+      runner:
     )
     unless inspection == "ABSENT"
       existing_digest = inspection.split.first
@@ -2228,8 +2432,9 @@ def upload_immutable(local_path, remote_name, revision)
       next
     end
 
-    temporary, = upload_remote_temporary! local_path, host, temporary_prefix
-    output = capture! "ssh", "#{EXPORT_REMOTE_USER}@#{host}",
+    temporary, = upload_remote_temporary!(local_path, host, temporary_prefix, runner:)
+    output = capture!(
+      "ssh", "#{EXPORT_REMOTE_USER}@#{host}",
       "set -eu; test ! -e #{Shellwords.escape(destination)}; test ! -L #{Shellwords.escape(destination)}; " \
       "test -f #{Shellwords.escape(temporary)}; test ! -L #{Shellwords.escape(temporary)}; " \
       "test \"$(stat -c %h #{Shellwords.escape(temporary)})\" -eq 1; " \
@@ -2249,20 +2454,25 @@ def upload_immutable(local_path, remote_name, revision)
       "test \"$(stat -c %g #{Shellwords.escape(destination)})\" = \"$(id -g)\"; " \
       "test \"$(stat -c %a #{Shellwords.escape(destination)})\" = 444; " \
       "sync -d #{Shellwords.escape(destination)}; sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
-      "sha256sum #{Shellwords.escape(destination)}"
+      "sha256sum #{Shellwords.escape(destination)}", runner:
+    )
     unless output.split.first == expected_digest
       abort "Release aborted: immutable export #{host}:#{destination} failed post-write verification."
     end
   end
 end
 
-def stage_static_release!(archive_path, checksum_path, version, revision)
+def stage_static_release!(archive_path, checksum_path, version, revision, runner:)
   target_name = "campfire-#{version}"
   EXPORT_DEPLOY_HOSTS.each do |host|
     archive_prefix = File.join(EXPORT_DEPLOY_LOCATION, ".campfire.zip.#{revision}")
     checksum_prefix = File.join(EXPORT_DEPLOY_LOCATION, ".campfire.zip.sha256.#{revision}")
-    archive_temporary, archive_digest = upload_remote_temporary! archive_path, host, archive_prefix
-    checksum_temporary, checksum_digest = upload_remote_temporary! checksum_path, host, checksum_prefix
+    archive_temporary, archive_digest = upload_remote_temporary!(
+      archive_path, host, archive_prefix, runner:
+    )
+    checksum_temporary, checksum_digest = upload_remote_temporary!(
+      checksum_path, host, checksum_prefix, runner:
+    )
     staging_name = ".#{target_name}.#{revision}.#{SecureRandom.hex(16)}.tmp"
     staging_path = File.join(EXPORT_DEPLOY_LOCATION, staging_name)
     target_path = File.join(EXPORT_DEPLOY_LOCATION, target_name)
@@ -2374,7 +2584,7 @@ def stage_static_release!(archive_path, checksum_path, version, revision)
         sha256sum --check campfire.zip.sha256;
       fi;
     SH
-    run! "ssh", "#{EXPORT_REMOTE_USER}@#{host}", command
+    run! "ssh", "#{EXPORT_REMOTE_USER}@#{host}", command, runner:
   end
   target_name
 end
@@ -2569,8 +2779,9 @@ def ensure_latest_version!(version)
   end
 end
 
-def revalidate_release_source!(remote:, sha:, version:, tag:, signer_fingerprint:, reconciling:)
-  run! "git", "fetch", remote, "main", "--tags"
+def revalidate_release_source!(remote:, sha:, version:, tag:, signer_fingerprint:, reconciling:,
+    mutation_runner: nil)
+  run! "git", "fetch", remote, "main", "--tags", runner: mutation_runner
   validate_release_main_position!(
     sha:, reconciling:, **release_main_state(remote:, sha:, reconciling:)
   )
@@ -2587,7 +2798,7 @@ def revalidate_release_source!(remote:, sha:, version:, tag:, signer_fingerprint
 end
 
 def github_release(repository, tag)
-  stdout, stderr, status = Open3.capture3(
+  stdout, stderr, status = capture_command(
     "gh", "release", "view", tag, "--repo", repository,
     "--json", "assets,body,isDraft,isPrerelease,name,tagName"
   )
@@ -2598,7 +2809,7 @@ def github_release(repository, tag)
 end
 
 def github_latest_tag(repository)
-  stdout, stderr, status = Open3.capture3("gh", "api", "repos/#{repository}/releases/latest")
+  stdout, stderr, status = capture_command("gh", "api", "repos/#{repository}/releases/latest")
   return JSON.parse(stdout).fetch("tag_name") if status.success?
   return if [ stdout, stderr ].join.match?(/404|not found/i)
 
@@ -2682,7 +2893,7 @@ rescue JSON::ParserError, KeyError, NoMethodError
 end
 
 def verify_retained_provenance_bundle!(bundle_path:, repository:, image:, digest:, source_sha:,
-    runner: Open3.method(:capture3))
+    runner: method(:capture_command))
   unless repository == EXPECTED_REPOSITORY && image == "ghcr.io/#{repository.downcase}" &&
       digest.match?(/\Asha256:[0-9a-f]{64}\z/) && source_sha.match?(/\A[0-9a-f]{40}\z/)
     raise ReleaseStateError, "Retained provenance verification identity is invalid"
@@ -2708,7 +2919,9 @@ def verify_retained_provenance_bundle!(bundle_path:, repository:, image:, digest
     "--deny-self-hosted-runners",
     "--format", "json"
   ]
-  stdout, stderr, status = runner.call(*command)
+  stdout, stderr, status = runner.call(
+    *command, env: command_environment(command)
+  )
   unless status.success?
     raise ReleaseStateError,
       "Cryptographic verification failed for retained provenance bundle #{File.basename(bundle_path)}: #{stderr}#{stdout}"
@@ -2734,7 +2947,7 @@ rescue JSON::ParserError, Errno::ENOENT, NoMethodError => error
 end
 
 def verify_retained_release_provenance!(evidence:, destination:, repository:, image:, sha:,
-    runner: Open3.method(:capture3))
+    runner: method(:capture_command))
   bundles = [
     [ "index-provenance.bundle.jsonl", evidence.fetch("index_digest") ],
     *RELEASE_EVIDENCE_ARCHITECTURES.flat_map do |architecture|
@@ -2755,6 +2968,87 @@ def verify_retained_release_provenance!(evidence:, destination:, repository:, im
   true
 rescue KeyError, NoMethodError
   raise ReleaseStateError, "Retained provenance subject inventory is incomplete"
+end
+
+def validate_retained_architecture_files!(recovery, architecture:, sha:, tag:, files:, destination:)
+  digest = recovery.fetch("target_digest")
+  digest_hex = digest.delete_prefix("sha256:")
+  build_identity = recovery.fetch("target_build_identity")
+  config_digest = recovery.fetch("target_config_digest")
+  inspection = JSON.parse(File.binread(File.join(destination, "image-inspect-#{architecture}.json")))
+  unless inspection.is_a?(Array) && inspection.length == 1 &&
+      inspection[0].is_a?(Hash) && inspection[0]["Os"] == "linux" &&
+      inspection[0]["Architecture"] == architecture && inspection[0]["Id"] == config_digest &&
+      inspection[0].dig("Config", "Labels", "org.opencontainers.image.revision") == sha &&
+      inspection[0].dig("Config", "Labels", "com.basecamp.campfire.build-identity") == build_identity
+    raise ReleaseStateError, "#{architecture} retained image inspection is invalid"
+  end
+
+  validation = JSON.parse(File.binread(File.join(destination, "container-validation-#{architecture}.json")))
+  validate_exact_keys! validation, %w[
+    app_version architecture build_identity buildkit_provenance_sha256 checks config_digest
+    format_version image image_inspection_sha256 kind oci_archive_sha256 platform
+    request_limit_probe_bytes runnable_digest runtime_archive_sha256 runtime_binding sbom_sha256
+    source_revision transport_mode validated_manifest_digest
+  ], "#{architecture} container validation evidence"
+  checks = validate_exact_keys!(validation.fetch("checks"), %w[
+    asset_precompile_transport boot_health entrypoint_and_labels graceful_exit_code
+    immutable_runtime_paths mutable_runtime_directories non_root_user platform_config procps
+    provenance request_limit runtime_transport_neutrality sbom transport_contract
+  ], "#{architecture} container validation checks")
+  expected_passed_checks = checks.except("graceful_exit_code", "request_limit")
+  unless validation.fetch("format_version") == 1 &&
+      validation.fetch("kind") == "campfire-container-validation" &&
+      validation.fetch("app_version") == tag.delete_prefix("v") &&
+      validation.fetch("architecture") == architecture &&
+      validation.fetch("platform") == "linux/#{architecture}" &&
+      validation.fetch("source_revision") == sha && validation.fetch("build_identity") == build_identity &&
+      validation.fetch("runnable_digest") == digest &&
+      validation.fetch("validated_manifest_digest") == digest &&
+      validation.fetch("config_digest") == config_digest &&
+      validation.fetch("runtime_binding") == "registry-manifest-digest" &&
+      validation.fetch("transport_mode") == "external-https-loopback-probe" &&
+      validation.fetch("image_inspection_sha256") == files.fetch("image-inspect-#{architecture}.json") &&
+      validation.fetch("sbom_sha256") == files.fetch("sbom-#{architecture}.spdx.json") &&
+      validation.fetch("buildkit_provenance_sha256") == files.fetch("buildkit-provenance-#{architecture}.json") &&
+      validation.fetch("request_limit_probe_bytes").is_a?(Integer) &&
+      validation.fetch("request_limit_probe_bytes").positive? &&
+      validation.fetch("oci_archive_sha256").nil? &&
+      validation.fetch("runtime_archive_sha256").nil? &&
+      expected_passed_checks.values.all? { _1 == "passed" } &&
+      checks.fetch("request_limit").match?(/\AHTTP\/1\.[01] 413\z/) &&
+      checks.fetch("graceful_exit_code") == 0
+    raise ReleaseStateError, "#{architecture} retained container validation is invalid"
+  end
+
+  sbom = JSON.parse(File.binread(File.join(destination, "sbom-#{architecture}.spdx.json")))
+  unless sbom["predicateType"] == "https://spdx.dev/Document" &&
+      sbom["subject"].is_a?(Array) && sbom["subject"].length == 1 &&
+      sbom.dig("subject", 0, "digest") == { "sha256" => digest_hex } &&
+      sbom.dig("predicate", "SPDXID") == "SPDXRef-DOCUMENT" &&
+      sbom.dig("predicate", "spdxVersion").to_s.start_with?("SPDX-") &&
+      sbom.dig("predicate", "packages").is_a?(Array) && sbom.dig("predicate", "packages").any?
+    raise ReleaseStateError, "#{architecture} retained SPDX statement is invalid"
+  end
+
+  provenance = JSON.parse(File.binread(File.join(destination, "buildkit-provenance-#{architecture}.json")))
+  definition = provenance.dig("predicate", "buildDefinition")
+  llb = definition&.dig("internalParameters", "buildConfig", "llbDefinition")
+  unless provenance["predicateType"] == "https://slsa.dev/provenance/v1" &&
+      provenance["subject"].is_a?(Array) && provenance["subject"].length == 1 &&
+      provenance.dig("subject", 0, "digest") == { "sha256" => digest_hex } &&
+      definition&.fetch("buildType", nil) ==
+        "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" &&
+      definition["resolvedDependencies"].is_a?(Array) && definition["resolvedDependencies"].length >= 2 &&
+      llb.is_a?(Array) && llb.any? {
+        _1.dig("op", "platform", "OS") == "linux" &&
+          _1.dig("op", "platform", "Architecture") == architecture
+      } && ReleaseObjectLockAnchors.canonical_json(provenance.fetch("predicate")).include?(sha)
+    raise ReleaseStateError, "#{architecture} retained BuildKit provenance statement is invalid"
+  end
+  true
+rescue JSON::ParserError, KeyError, NoMethodError, Errno::ENOENT => error
+  raise ReleaseStateError, "#{architecture} retained architecture evidence is invalid: #{error.message}"
 end
 
 def validate_architecture_evidence!(evidence, architecture:, repository:, sha:, tag:, image:,
@@ -2791,7 +3085,7 @@ def validate_architecture_evidence!(evidence, architecture:, repository:, sha:, 
   )
   expected_file_hashes = {
     "container_validation_sha256" => "container-validation-#{architecture}.json",
-    "image_inspection_sha256" => "container-validation-#{architecture}.json",
+    "image_inspection_sha256" => "image-inspect-#{architecture}.json",
     "buildkit.sbom_sha256" => "sbom-#{architecture}.spdx.json",
     "buildkit.provenance_sha256" => "buildkit-provenance-#{architecture}.json",
     "signed.parent_bundle_sha256" => "parent-provenance-#{architecture}.bundle.jsonl",
@@ -2841,6 +3135,10 @@ def validate_architecture_evidence!(evidence, architecture:, repository:, sha:, 
     raise ReleaseStateError, "#{architecture} recovery evidence contract is invalid"
   end
 
+  validate_retained_architecture_files!(
+    evidence, architecture:, sha:, tag:, files:, destination:
+  )
+
   upgrade_path = File.join(destination, "upgrade-recovery-#{architecture}.json")
   unless evidence.fetch("upgrade_receipt_sha256") == Digest::SHA256.file(upgrade_path).hexdigest
     raise ReleaseStateError, "#{architecture} upgrade receipt hash does not match its retained file"
@@ -2852,7 +3150,7 @@ rescue KeyError, NoMethodError
 end
 
 def validate_release_evidence!(repository:, run_id:, run_attempt:, destination:, sha:, tag:, image:,
-    operation_nonce:, attestation_runner: Open3.method(:capture3))
+    operation_nonce:, attestation_runner: method(:capture_command))
   entries = Dir.children(destination).sort
   unless entries == RELEASE_EVIDENCE_INVENTORY
     raise ReleaseStateError, "Workflow evidence bundle has missing or unexpected files"
@@ -2969,7 +3267,7 @@ def validate_release_evidence!(repository:, run_id:, run_attempt:, destination:,
     "authority" => "bin/release",
     "workflow_scope" => "attempt-scoped staging only",
     "required_release_driver_evidence" => [
-      "live no-overwrite registry probe bound to immutable aliases",
+      "repository no-overwrite evidence from an operation-bound disposable alias",
       "dual Object Lock anchor receipts for the authenticated journal head"
     ]
   }
@@ -2984,6 +3282,7 @@ def validate_release_evidence!(repository:, run_id:, run_attempt:, destination:,
   )
 
   %w[ container-validation-amd64.json container-validation-arm64.json
+      image-inspect-amd64.json image-inspect-arm64.json
       sbom-amd64.spdx.json sbom-arm64.spdx.json buildkit-provenance-amd64.json
       buildkit-provenance-arm64.json parent-provenance-verification-amd64.json
       parent-provenance-verification-arm64.json runnable-provenance-verification-amd64.json
@@ -3052,11 +3351,12 @@ def retain_and_promote_workflow_evidence!(lock:, journal:, anchors:, directory:,
 end
 
 def download_release_evidence!(repository:, run_id:, run_attempt:, destination:, sha:, tag:, image:,
-    operation_nonce:)
+    operation_nonce:, mutation_runner: nil)
   FileUtils.rm_rf destination
   FileUtils.mkdir_p destination
   run! "gh", "run", "download", run_id.to_s, "--repo", repository,
-    "--name", "release-evidence-#{run_attempt}", "--dir", destination
+    "--name", "release-evidence-#{run_attempt}", "--dir", destination,
+    runner: mutation_runner
   validated_workflow_run!(
     repository:, run_id:, sha:, release_tag: tag, operation_nonce:, attempt: run_attempt
   )
@@ -3065,7 +3365,7 @@ def download_release_evidence!(repository:, run_id:, run_attempt:, destination:,
   )
 end
 
-def upload_release_assets_immutably(repository, tag, paths, journal:)
+def upload_release_assets_immutably(repository, tag, paths, journal:, runner:)
   paths.each do |path|
     release = observed_github_release!(journal:, repository:, tag:)
     unless release.fetch("isDraft")
@@ -3077,7 +3377,7 @@ def upload_release_assets_immutably(repository, tag, paths, journal:)
     if existing = assets.find { _1.fetch("name") == name }
       abort "Release aborted: immutable GitHub asset #{name} differs." unless existing.fetch("digest") == expected_digest
     else
-      run! "gh", "release", "upload", tag, path, "--repo", repository
+      run! "gh", "release", "upload", tag, path, "--repo", repository, runner:
     end
   end
   release = observed_github_release!(journal:, repository:, tag:)
@@ -3141,6 +3441,16 @@ def observed_github_release!(journal:, repository:, tag:)
   release = github_release(repository, tag)
   validate_observed_github_release_state!(journal:, release:)
   release
+end
+
+def validate_live_reconcile_rollback!(journal:, repository:, tag:)
+  release = observed_github_release!(journal:, repository:, tag:)
+  if release && !release.fetch("isDraft")
+    raise ReleaseStateError, "A public GitHub release cannot be rolled back"
+  end
+  true
+rescue KeyError, NoMethodError
+  raise ReleaseStateError, "GitHub release state is invalid for rollback"
 end
 
 def authenticated_github_release_state!(journal:, repository:, tag:, notes_file:, asset_paths:)
@@ -3252,11 +3562,12 @@ class ReleaseLock
       )
       recover_tombstones! initial_journal, key, invocation_id, anchors:, invocation_lock:
       existing = read_state(
-        lock_directory, key:, invocation_id:, allow_absent: true, cleanup_staging: false
+        lock_directory, key:, invocation_id:, invocation_lock:, allow_absent: true,
+        cleanup_staging: false
       )
       if existing
         reconcile_anchors! anchors, existing, release, invocation_lock
-        existing = read_state(lock_directory, key:, invocation_id:)
+        existing = read_state(lock_directory, key:, invocation_id:, invocation_lock:)
         ReleaseJournal.validate_contract! existing.fetch(:journal), acquisition_contract(initial_journal)
         unless allow_existing
           raise ReleaseStateError, "Durable release state already exists; use explicit reconciliation"
@@ -3265,7 +3576,7 @@ class ReleaseLock
       end
 
       reconcile_anchors! anchors, nil, release, invocation_lock
-      recovered = recover_pending! initial_journal, key, invocation_id
+      recovered = recover_pending! initial_journal, key, invocation_id, invocation_lock
       if recovered
         reconcile_anchors! anchors, recovered, release, invocation_lock
         return build_lock(recovered, key, invocation_lock, anchors)
@@ -3293,7 +3604,7 @@ class ReleaseLock
         publication_guard: "#{state_lock_pin_guard}; #{live_owner_guard(invocation_id)}",
         fault_after:
       )
-      state = read_state(lock_directory, key:, invocation_id:)
+      state = read_state(lock_directory, key:, invocation_id:, invocation_lock:)
       unless state.fetch(:journal) == journal
         raise ReleaseStateError, "Phase-zero release journal did not persist exactly"
       end
@@ -3305,8 +3616,10 @@ class ReleaseLock
       raise ReleaseStateError, "Durable phase-zero lock acquisition failed: #{error.message}"
     end
 
-    def existing_state(key:, invocation_id:, cleanup_staging: true)
-      read_state lock_directory, key:, invocation_id:, allow_absent: true, cleanup_staging:
+    def existing_state(key:, invocation_id: nil, invocation_lock: nil, cleanup_staging: true)
+      invocation_id ||= invocation_lock&.invocation_id
+      read_state lock_directory, key:, invocation_id:, invocation_lock:, allow_absent: true,
+        cleanup_staging:
     end
 
     def peek_existing_state(key:)
@@ -3349,7 +3662,8 @@ class ReleaseLock
       states.sort_by { _1.fetch(:lock_id) }
     end
 
-    def read_state(path, key:, invocation_id:, allow_absent: false, cleanup_staging: true)
+    def read_state(path, key:, invocation_id:, invocation_lock: nil, allow_absent: false,
+        cleanup_staging: true)
       snapshot = read_history_snapshot(path, invocation_id:)
       if snapshot == :absent
         return if allow_absent
@@ -3360,7 +3674,12 @@ class ReleaseLock
       if snapshot.fetch(:stages).any?
         validate_stages!(snapshot.fetch(:stages), state, key: key)
         if cleanup_staging
-          cleanup_journal_staging! path, state, key, invocation_id, stages: snapshot.fetch(:stages)
+          unless invocation_lock
+            raise ReleaseStateError, "Journal staging cleanup requires the monitored live-owner mutation runner"
+          end
+          cleanup_journal_staging!(
+            path, state, key, invocation_id, invocation_lock, stages: snapshot.fetch(:stages)
+          )
           snapshot = read_history_snapshot(path, invocation_id:)
           raise ReleaseStateError, "Durable release state disappeared during staging cleanup" if snapshot == :absent
           state = state_from_snapshot(snapshot, key:)
@@ -3501,7 +3820,7 @@ class ReleaseLock
       }
     end
 
-    def cleanup_journal_staging!(path, state, key, invocation_id, stages:)
+    def cleanup_journal_staging!(path, state, key, invocation_id, invocation_lock, stages:)
       validate_stages!(stages, state, key: key)
       stages.each do |record|
         staging = File.join(path, record.fetch(:name))
@@ -3521,7 +3840,7 @@ class ReleaseLock
           "test \"$(wc -c < #{Shellwords.escape(staging)} | tr -d ' ')\" = #{record.fetch(:bytes)}; " \
           "test \"$(sha256sum #{Shellwords.escape(staging)} | cut -d' ' -f1)\" = #{Shellwords.escape(record.fetch(:digest))}; " \
           "#{link_guard}rm #{Shellwords.escape(staging)}; sync -f #{Shellwords.escape(path)}"
-        _, stderr, status = capture_remote command
+        _, stderr, status = capture_remote command, mutation_runner: invocation_lock
         unless status.success?
           raise ReleaseStateError, "Could not remove authenticated journal staging: #{stderr}"
         end
@@ -3680,7 +3999,7 @@ class ReleaseLock
           raise ReleaseStateError, "Invalid release cleanup tombstone #{name.inspect}"
         end
         path = File.join(EXPORT_DEPLOY_LOCATION, name)
-        state = read_state(path, key:, invocation_id:)
+        state = read_state(path, key:, invocation_id:, invocation_lock:)
         unless TERMINAL_STATUSES.include?(state.dig(:journal, "status"))
           raise ReleaseStateError, "Nonterminal release cleanup tombstone requires reconciliation"
         end
@@ -3689,7 +4008,9 @@ class ReleaseLock
         if matching_release
           reconcile_anchors! anchors, state, initial_journal.fetch("release"), invocation_lock
         end
-        if matching_release && read_state(lock_directory, key:, invocation_id:, allow_absent: true).nil?
+        if matching_release && read_state(
+            lock_directory, key:, invocation_id:, invocation_lock:, allow_absent: true
+          ).nil?
           rename = atomic_no_replace_rename_command(path, lock_directory)
           move = "set -eu; #{state_lock_command}; #{state_lock_pin_guard}; " \
             "#{live_owner_guard(invocation_id)}; " \
@@ -3698,7 +4019,7 @@ class ReleaseLock
             "#{rename}; " \
             "sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}; " \
             "#{history_set_guard(lock_directory, state, allow_staging: false)}"
-          _, move_stderr, move_status = capture_remote move
+          _, move_stderr, move_status = capture_remote move, mutation_runner: invocation_lock
           raise ReleaseStateError, "Could not restore authenticated cleanup state: #{move_stderr}" unless move_status.success?
           return
         end
@@ -3706,14 +4027,16 @@ class ReleaseLock
       end
     end
 
-    def recover_pending!(initial_journal, key, invocation_id)
+    def recover_pending!(initial_journal, key, invocation_id, invocation_lock)
       command = "set -eu; #{live_owner_guard(invocation_id)}; " \
         "for path in #{Shellwords.escape(File.join(EXPORT_DEPLOY_LOCATION, PENDING_PREFIX))}*; do " \
         "if test -e \"$path\" || test -L \"$path\"; then basename \"$path\"; fi; done"
       stdout, stderr, status = capture_remote command
       raise ReleaseStateError, "Could not inspect pending phase-zero state: #{stderr}#{stdout}" unless status.success?
 
-      active = read_state(lock_directory, key:, invocation_id:, allow_absent: true)
+      active = read_state(
+        lock_directory, key:, invocation_id:, invocation_lock:, allow_absent: true
+      )
       stdout.lines.map(&:strip).reject(&:empty?).each do |name|
         metadata = parse_pending_stage_name(name, key:)
         path = File.join(EXPORT_DEPLOY_LOCATION, name)
@@ -3754,10 +4077,10 @@ class ReleaseLock
         end
 
         if state && active.nil? && contract_matches?(state.fetch(:journal), initial_journal)
-          move_pending_stage! path, observed, invocation_id
-          active = read_state(lock_directory, key:, invocation_id:)
+          move_pending_stage! path, observed, invocation_id, invocation_lock
+          active = read_state(lock_directory, key:, invocation_id:, invocation_lock:)
         else
-          remove_pending_stage! path, observed, invocation_id
+          remove_pending_stage! path, observed, invocation_id, invocation_lock
         end
       rescue KeyError => error
         raise ReleaseStateError, "Pending release state is invalid: #{error.message}"
@@ -3940,8 +4263,12 @@ class ReleaseLock
         })
       end
 
-      def capture_remote(command, stdin_data: nil)
-        Open3.capture3("ssh", remote, command, stdin_data:)
+      def capture_remote(command, stdin_data: nil, mutation_runner: nil)
+        if mutation_runner
+          mutation_runner.capture_mutation!("ssh", remote, command, stdin_data:)
+        else
+          Open3.capture3("ssh", remote, command, stdin_data:)
+        end
       end
 
       def receive_remote_artifact!(command, destination, expected)
@@ -4105,18 +4432,18 @@ class ReleaseLock
           "#{owner_guard}; #{history_guard}; #{stage_checks.join('; ')}; #{artifact_checks.join('; ')}"
       end
 
-      def move_pending_stage!(path, observed, invocation_id)
+      def move_pending_stage!(path, observed, invocation_id, invocation_lock)
         rename = atomic_no_replace_rename_command(path, lock_directory)
         command = "set -eu; #{state_lock_command}; #{state_lock_pin_guard}; " \
           "#{live_owner_guard(invocation_id)}; #{pending_entry_guard(path, observed)}; " \
           "test ! -e #{Shellwords.escape(lock_directory)}; test ! -L #{Shellwords.escape(lock_directory)}; " \
           "#{rename}; " \
           "sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}"
-        _, stderr, status = capture_remote command
+        _, stderr, status = capture_remote command, mutation_runner: invocation_lock
         raise ReleaseStateError, "Could not recover authenticated phase-zero state: #{stderr}" unless status.success?
       end
 
-      def remove_pending_stage!(path, observed, invocation_id)
+      def remove_pending_stage!(path, observed, invocation_id, invocation_lock)
         owner = File.join(path, OWNER_FILENAME)
         removals = []
         observed.fetch(:stages).each do |stage|
@@ -4133,7 +4460,7 @@ class ReleaseLock
           "#{live_owner_guard(invocation_id)}; #{pending_entry_guard(path, observed)}; " \
           "#{"rm #{removals.join(' ')};" if removals.any?} " \
           "rmdir #{Shellwords.escape(path)}; sync -f #{Shellwords.escape(EXPORT_DEPLOY_LOCATION)}"
-        _, stderr, status = capture_remote command
+        _, stderr, status = capture_remote command, mutation_runner: invocation_lock
         raise ReleaseStateError, "Could not remove provably unpublished phase-zero staging: #{stderr}" unless status.success?
       end
   end
@@ -4167,16 +4494,19 @@ class ReleaseLock
     @invocation_lock.run_mutation!(*command, env:)
   end
 
-  def capture_mutation!(*command, stdin_data: nil)
+  def capture_mutation!(*command, stdin_data: nil, env: {}, unsetenv_others: false)
     raise ReleaseStateError, "External release mutations require a live-owner process" unless @invocation_lock
 
     assert_held!
-    @invocation_lock.capture_mutation!(*command, stdin_data:)
+    @invocation_lock.capture_mutation!(
+      *command, stdin_data:, env:, unsetenv_others:
+    )
   end
 
   def read_journal
     state = self.class.read_state(
-      @lock_directory, key: @key, invocation_id: @invocation_lock&.invocation_id
+      @lock_directory, key: @key, invocation_id: @invocation_lock&.invocation_id,
+      invocation_lock: @invocation_lock
     )
     raise ReleaseStateError, "Release journal lock identity changed" unless state.fetch(:lock_id) == @lock_id
     adopt_state state
@@ -4233,7 +4563,8 @@ class ReleaseLock
   rescue StandardError
     begin
       state = self.class.read_state(
-        @lock_directory, key: @key, invocation_id: @invocation_lock&.invocation_id
+        @lock_directory, key: @key, invocation_id: @invocation_lock&.invocation_id,
+        invocation_lock: @invocation_lock
       )
       if state.fetch(:history_digest) == expected_digest
         journal["journal_revision"] = expected_revision
@@ -4376,10 +4707,13 @@ rescue ReleaseStateError => error
 end
 
 invocation_lock = nil
+live_mutation_runner = nil
 begin
 invocation_lock = ReleaseInvocationLock.acquire
+live_mutation_runner = ReleaseMutationFence::Runner.new(invocation_lock, -> { })
+journal_anchors.monitor_with! live_mutation_runner
 existing_state = ReleaseLock.existing_state(
-  key: journal_key, invocation_id: invocation_lock.invocation_id, cleanup_staging: false
+  key: journal_key, invocation_lock:, cleanup_staging: false
 )
 if existing_state
   validate_observed_github_release_state!(
@@ -4407,7 +4741,7 @@ verification_commands = [
   [ "bash", "-c", "cd test/support/axe && sha256sum --check axe-4.12.1.min.js.sha256" ],
   %w[ actionlint ]
 ]
-verification_commands.each { run!(*_1) }
+verification_commands.each { run!(*_1, runner: live_mutation_runner) }
 
 oidc_test_environment = {
   "OIDC_MODE" => "optional",
@@ -4417,7 +4751,8 @@ oidc_test_environment = {
   "OIDC_REDIRECT_URI" => "https://campfire.example.com/auth/openid_connect/callback",
   "TLS_DOMAIN" => "campfire.example.com"
 }
-run! "bin/rails", "test", "test/integration/oidc_full_stack_test.rb", env: oidc_test_environment
+run! "bin/rails", "test", "test/integration/oidc_full_stack_test.rb",
+  env: oidc_test_environment, runner: live_mutation_runner
 
 required_executables = %w[
   bin/boot
@@ -4468,14 +4803,15 @@ end
 if MANUAL_NOTES && !reconciling
   editor_command = [ ENV["VISUAL"], ENV["EDITOR"], "vim" ].find { !_1.to_s.empty? }
   editor = Shellwords.split(editor_command)
-  run!(*editor, notes_file)
+  run!(*editor, notes_file, runner: live_mutation_runner, interactive: true)
 end
 abort "Release aborted: release notes are still empty." if File.read(notes_file).strip.empty? || File.read(notes_file) == notes_template
 
 versioned_export = "tmp/campfire-#{VERSION}.zip"
 versioned_checksum = "#{versioned_export}.sha256"
 FileUtils.rm_f [ versioned_export, versioned_checksum ]
-run! "git", "archive", "--format=zip", "--output=#{versioned_export}", GIT_SHA
+run! "git", "archive", "--format=zip", "--output=#{versioned_export}", GIT_SHA,
+  runner: live_mutation_runner
 File.write versioned_checksum, "#{Digest::SHA256.file(versioned_export).hexdigest}  #{File.basename(versioned_export)}\n"
 
 phase_zero_journal = {
@@ -4517,7 +4853,7 @@ release_lock = ReleaseLock.acquire(
 release_lock.assert_held!
 journal = release_lock.read_journal
 state = ReleaseLock.existing_state(
-  key: journal_key, invocation_id: invocation_lock.invocation_id
+  key: journal_key, invocation_lock:
 )
 validate_durable_release_entry!(
   state:, expected_release:, reconciling:, settled_mutation_token:,
@@ -4539,15 +4875,17 @@ ReleaseLock.materialize_phase_zero_artifacts!(
 settle_release_mutation!(
   lock: release_lock, journal:, reconciling:, token: settled_mutation_token
 )
+live_rollback_guard = -> {
+  validate_live_reconcile_rollback!(journal:, repository: REPOSITORY, tag: TAG)
+}
 authenticate_reconcile_action!(
   lock: release_lock, journal:, action: reconcile_action,
+  rollback_guard: live_rollback_guard,
   fault_after: ->(boundary) { fault_after_external_mutation! boundary }
 )
-if reconcile_action == "rollback" && release_public
-  raise ReleaseStateError, "A public GitHub release cannot be rolled back"
-end
 if abandon_pre_promotion_reconciliation!(
     lock: release_lock, journal:, action: reconcile_action,
+    rollback_guard: live_rollback_guard,
     fault_after: ->(boundary) { fault_after_external_mutation! boundary }
   )
   FileUtils.rm_f notes_file
@@ -4608,7 +4946,7 @@ if rollback_prepared_promotion
     raise ReleaseStateError, "Rollback cannot invoke the forward publication preflight"
   }
 else
-run! "git", "fetch", RELEASE_REMOTE, "main", "--tags"
+run! "git", "fetch", RELEASE_REMOTE, "main", "--tags", runner: live_mutation_runner
 abort "Release aborted: verification changed the working tree." unless capture!("git", "status", "--porcelain", "--untracked-files=all").empty?
 ensure_latest_version! VERSION
 existing_tag_sha = remote_tag_sha(RELEASE_REMOTE, TAG)
@@ -4627,10 +4965,11 @@ start_release_phase! release_lock, journal, "tag", "tag" => TAG, "sha" => GIT_SH
 unless existing_tag_sha
   release_lock.assert_held!
   unless local_tag_sha
-    run! "git", "tag", "--sign", "--annotate", TAG, "--message", "Campfire #{TAG}", GIT_SHA
+    run! "git", "tag", "--sign", "--annotate", TAG, "--message", "Campfire #{TAG}", GIT_SHA,
+      runner: live_mutation_runner, interactive: true
     verify_tag_signature! TAG, TAG_SIGNER_FINGERPRINT
   end
-  run! "git", "push", RELEASE_REMOTE, "refs/tags/#{TAG}"
+  run! "git", "push", RELEASE_REMOTE, "refs/tags/#{TAG}", runner: live_mutation_runner
   abort "Release aborted: pushed tag does not point at HEAD." unless remote_tag_sha(RELEASE_REMOTE, TAG) == GIT_SHA
 else
   verify_tag_signature! TAG, TAG_SIGNER_FINGERPRINT
@@ -4645,11 +4984,11 @@ start_release_phase! release_lock, journal, "draft", "tag" => TAG
 if existing_release && !reconciling
   release_lock.assert_held!
   run! "gh", "release", "edit", TAG, "--repo", REPOSITORY, "--title", TAG,
-    "--notes-file", notes_file, "--prerelease=false"
+    "--notes-file", notes_file, "--prerelease=false", runner: live_mutation_runner
 elsif !existing_release
   release_lock.assert_held!
   run! "gh", "release", "create", TAG, "--repo", REPOSITORY, "--draft", "--verify-tag",
-    "--title", TAG, "--notes-file", notes_file
+    "--title", TAG, "--notes-file", notes_file, runner: live_mutation_runner
 end
 release_metadata = github_release(REPOSITORY, TAG)
 unless release_metadata.fetch("tagName") == TAG && release_metadata.fetch("name") == TAG &&
@@ -4657,6 +4996,7 @@ unless release_metadata.fetch("tagName") == TAG && release_metadata.fetch("name"
   abort "Release aborted: GitHub release metadata does not match the staged release."
 end
 validate_observed_github_release_state!(journal:, release: release_metadata)
+release_public = !release_metadata.fetch("isDraft")
 complete_release_phase! release_lock, journal, "draft",
   "state" => (release_metadata.fetch("isDraft") ? "draft" : "public")
 
@@ -4729,11 +5069,12 @@ else
     release_lock.assert_held!
     run! "gh", "workflow", "run", "publish-image.yml", "--repo", REPOSITORY, "--ref", "main",
       "--field", "release_tag=#{TAG}", "--field", "release_sha=#{GIT_SHA}",
-      "--field", "operation_nonce=#{operation_nonce}"
+      "--field", "operation_nonce=#{operation_nonce}", runner: live_mutation_runner
   end
   workflow_run_id = wait_for_workflow! repository: REPOSITORY, event: "workflow_dispatch",
     sha: GIT_SHA, branch: "main", release_tag: TAG, operation_nonce:,
-    excluded_ids: previous_workflows, allow_rerun: !reconciling
+    excluded_ids: previous_workflows, allow_rerun: !reconciling,
+    mutation_runner: live_mutation_runner
   workflow_run_attempt = validated_workflow_run!(
     repository: REPOSITORY, run_id: workflow_run_id, sha: GIT_SHA,
     release_tag: TAG, operation_nonce:
@@ -4769,14 +5110,14 @@ elsif journal["workflow_evidence_pending"]
     download_release_evidence!(
       repository: REPOSITORY, run_id: workflow_run_id, run_attempt: workflow_run_attempt,
       destination: evidence_directory, sha: GIT_SHA, tag: TAG, image: GHCR_IMAGE,
-      operation_nonce:
+      operation_nonce:, mutation_runner: live_mutation_runner
     )
   end
 else
   download_release_evidence!(
     repository: REPOSITORY, run_id: workflow_run_id, run_attempt: workflow_run_attempt,
     destination: evidence_directory, sha: GIT_SHA, tag: TAG, image: GHCR_IMAGE,
-    operation_nonce:
+    operation_nonce:, mutation_runner: live_mutation_runner
   )
 end
 evidence = validate_release_evidence!(
@@ -4786,7 +5127,8 @@ evidence = validate_release_evidence!(
 )
 revalidate_release_source!(
   remote: RELEASE_REMOTE, sha: GIT_SHA, version: VERSION, tag: TAG,
-  signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:
+  signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:,
+  mutation_runner: live_mutation_runner
 )
 evidence_contract = workflow_evidence_contract(
   directory: evidence_directory, run_id: workflow_run_id, run_attempt: workflow_run_attempt,
@@ -4815,16 +5157,20 @@ if release_phase_completed?(journal, "ghcr_immutable") &&
     (ghcr_phase.fetch("digest") != ghcr_digest || ghcr_phase.fetch("evidence_sha256") != evidence_sha256)
   abort "Release aborted: completed GHCR phase differs from the original workflow evidence."
 end
-probe_conflict_digest = evidence.fetch("build_indexes").fetch("amd64")
+ghcr_probe_seed_digest = evidence.fetch("build_indexes").fetch("amd64")
+probe_conflict_digest = evidence.fetch("build_indexes").fetch("arm64")
 prove_registry_tag_immutability!(
   lock: release_lock, journal:, registry: "ghcr.io", repository: GHCR_IMAGE,
-  seed_digest: ghcr_digest, conflict_digest: probe_conflict_digest,
-  seed_source: "#{GHCR_IMAGE}@#{ghcr_digest}",
+  alias_digest: ghcr_digest, seed_digest: ghcr_probe_seed_digest,
+  conflict_digest: probe_conflict_digest,
+  seed_source: "#{GHCR_IMAGE}@#{ghcr_probe_seed_digest}",
   conflict_source: "#{GHCR_IMAGE}@#{probe_conflict_digest}",
-  policy_references: ghcr_exact_tags,
+  alias_references: ghcr_exact_tags,
   read: ->(reference) { image_digest(reference) },
   media_type: ->(reference) { image_media_type(reference) },
-  fault_prefix: "ghcr_immutability_probe"
+  fault_prefix: "ghcr_immutability_probe", source_evidence_sha256: evidence_sha256,
+  control_reference: "#{GHCR_IMAGE}:release-mutability-control-#{workflow_run_id}-#{workflow_run_attempt}-#{operation_nonce[0, 16]}",
+  protected_workflow_gate: true
 )
 record_immutable_alias_evidence!(
   lock: release_lock, journal:, registry: "ghcr.io",
@@ -4927,13 +5273,13 @@ else
 end
 prove_registry_tag_immutability!(
   lock: release_lock, journal:, registry: "registry.once.com", repository: ONCE_IMAGE,
-  seed_digest: ghcr_digest, conflict_digest: probe_conflict_digest,
+  alias_digest: ghcr_digest, seed_digest: ghcr_digest, conflict_digest: probe_conflict_digest,
   seed_source: "#{ONCE_IMAGE}@#{ghcr_digest}",
   conflict_source: "#{GHCR_IMAGE}@#{probe_conflict_digest}",
-  policy_references: once_exact_tags,
+  alias_references: once_exact_tags,
   read: ->(reference) { image_digest(reference) },
   media_type: ->(reference) { image_media_type(reference) },
-  fault_prefix: "secondary_immutability_probe"
+  fault_prefix: "secondary_immutability_probe", source_evidence_sha256: evidence_sha256
 )
 record_immutable_alias_evidence!(
   lock: release_lock, journal:, registry: "registry.once.com",
@@ -4995,8 +5341,10 @@ complete_release_phase! release_lock, journal, "secondary_immutable",
 release_lock.assert_held!
 start_release_phase! release_lock, journal, "static_immutable",
   "files" => [ File.basename(versioned_export), File.basename(versioned_checksum) ]
-upload_immutable versioned_export, File.basename(versioned_export), GIT_SHA
-upload_immutable versioned_checksum, File.basename(versioned_checksum), GIT_SHA
+upload_immutable versioned_export, File.basename(versioned_export), GIT_SHA,
+  runner: live_mutation_runner
+upload_immutable versioned_checksum, File.basename(versioned_checksum), GIT_SHA,
+  runner: live_mutation_runner
 complete_release_phase! release_lock, journal, "static_immutable",
   "export_sha256" => Digest::SHA256.file(versioned_export).hexdigest,
   "checksum_sha256" => Digest::SHA256.file(versioned_checksum).hexdigest
@@ -5006,7 +5354,8 @@ live_release = observed_github_release!(journal:, repository: REPOSITORY, tag: T
 if !live_release.fetch("isDraft")
   verify_release_assets! REPOSITORY, TAG, release_assets, release: live_release
 else
-  upload_release_assets_immutably REPOSITORY, TAG, release_assets, journal:
+  upload_release_assets_immutably REPOSITORY, TAG, release_assets, journal:,
+    runner: live_mutation_runner
 end
 complete_release_phase! release_lock, journal, "github_assets",
   "assets" => release_assets.to_h { [ File.basename(_1), Digest::SHA256.file(_1).hexdigest ] }
@@ -5016,7 +5365,9 @@ static_checksum = "#{static_export}.sha256"
 FileUtils.cp versioned_export, static_export
 File.write static_checksum, "#{Digest::SHA256.file(static_export).hexdigest}  campfire.zip\n"
 start_release_phase! release_lock, journal, "static_staging", "target" => "campfire-#{VERSION}"
-static_target = stage_static_release! static_export, static_checksum, VERSION, GIT_SHA
+static_target = stage_static_release!(
+  static_export, static_checksum, VERSION, GIT_SHA, runner: live_mutation_runner
+)
 complete_release_phase! release_lock, journal, "static_staging",
   "target" => static_target,
   "archive_sha256" => Digest::SHA256.file(static_export).hexdigest,
@@ -5024,7 +5375,8 @@ complete_release_phase! release_lock, journal, "static_staging",
 
 revalidate_release_source!(
   remote: RELEASE_REMOTE, sha: GIT_SHA, version: VERSION, tag: TAG,
-  signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:
+  signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:,
+  mutation_runner: live_mutation_runner
 )
 release_lock.assert_held!
 major, minor, = VERSION.split(".")
@@ -5036,7 +5388,8 @@ publication_preflight = lambda do |require_draft: false|
   release_lock.assert_held!
   revalidate_release_source!(
     remote: RELEASE_REMOTE, sha: GIT_SHA, version: VERSION, tag: TAG,
-    signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:
+    signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:,
+    mutation_runner: live_mutation_runner
   )
   unless image_digest(ghcr_tag) == ghcr_digest && image_digest(ghcr_version) == ghcr_digest
     abort "Release aborted: immutable GHCR release aliases changed."

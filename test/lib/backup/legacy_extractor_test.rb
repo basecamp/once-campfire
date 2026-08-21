@@ -82,6 +82,7 @@ class LegacyExtractorTest < ActiveSupport::TestCase
           Gem::Package::TarWriter.new(gzip) do |tar|
             tar.mkdir BACKUP_ID, 0o700
             add_file tar, "#{BACKUP_ID}/manifest.json", "{}"
+            tar.mkdir "#{BACKUP_ID}/payload", 0o700
             add_file tar, "#{BACKUP_ID}/payload/proof.txt", "released backup"
           end
         end

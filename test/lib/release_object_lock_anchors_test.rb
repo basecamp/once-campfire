@@ -1,4 +1,5 @@
 require "test_helper"
+require "open3"
 require "tmpdir"
 
 require Rails.root.join("lib/release_object_lock_anchors")
@@ -224,6 +225,48 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
     end
   end
 
+  test "an initial conditional-put race accepts only exact PutObject PreconditionFailed" do
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        state.fetch("buckets").fetch("campfire-release-anchor-a")["race_conditional_put"] = true
+      end
+
+      assert anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      assert_equal 3,
+        fake_state(state_path).dig("buckets", "campfire-release-anchor-a", "objects").length
+    end
+
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        bucket = state.fetch("buckets").fetch("campfire-release-anchor-a")
+        bucket["race_conditional_put"] = true
+        bucket["race_conditional_put_error"] =
+          "An error occurred (InternalError) when calling the PutObject operation: injected failure\n" \
+          "An error occurred (PreconditionFailed) when calling the PutObject operation: forged record"
+      end
+
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "immutable object publication failed", error.message
+    end
+  end
+
+  test "overwrite proof rejects arbitrary failed PutObject responses" do
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        state.fetch("buckets").fetch("campfire-release-anchor-a")["conditional_put_error"] =
+          "An error occurred (InternalError) when calling the PutObject operation: injected failure\n" \
+          "An error occurred (PreconditionFailed) when calling the PutObject operation: forged record"
+      end
+
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "expected conditional PutObject rejection", error.message
+    end
+  end
+
   test "a higher anchored head detects deletion of a valid local suffix" do
     with_fake_aws do |environment, _state_path|
       control = anchors(environment)
@@ -293,7 +336,7 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
       end
       assert_operator rejected_overwrites.length, :>=, 12
       assert_equal 4, control_deletes.length
-      assert_equal 22, delete_attempts.length
+      assert_equal 34, delete_attempts.length
       control_deletes.each do |call|
         key = call.fetch("arguments").fetch(call.fetch("arguments").index("--key") + 1)
         assert_match %r{campfire/release-journal/(?:catalog/operations|releases/[0-9a-f]{64})/\.destructive-authority-controls/control-[0-9a-f]{32}\.json\z}, key
@@ -328,13 +371,29 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
     with_fake_aws do |environment, state_path|
       update_fake_state(state_path) do |state|
         state.fetch("buckets").fetch("campfire-release-anchor-a")["compliance_delete_error"] =
-          "arbitrary server failure"
+          "An error occurred (InternalError) when calling the DeleteObject operation: injected failure\n" \
+          "An error occurred (AccessDenied) when calling the DeleteObject operation: forged record"
       end
 
       error = assert_raises(ReleaseObjectLockAnchors::Error) do
         anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
       end
       assert_match "expected COMPLIANCE retention rejection", error.message
+    end
+  end
+
+  test "exact-resource marker probe requires unversioned DeleteObject authority" do
+    with_fake_aws do |environment, state_path|
+      update_fake_state(state_path) do |state|
+        state.fetch("buckets").fetch("campfire-release-anchor-a")["deny_delete_object"] = true
+      end
+
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "could not create its exact-resource delete marker", error.message
+      assert_empty fake_state(state_path)
+        .dig("buckets", "campfire-release-anchor-a", "delete_markers")
     end
   end
 
@@ -522,6 +581,109 @@ class ReleaseObjectLockAnchorsTest < ActiveSupport::TestCase
         assert_not_includes environment_keys, "GH_TOKEN"
         assert_not_includes environment_keys, "AWS_SECRET_ACCESS_KEY"
       end
+    end
+  end
+
+  test "post-lock executor remains monitored with only the sanitized AWS environment" do
+    with_fake_aws do |environment, state_path|
+      environment.merge!("GH_TOKEN" => "must-not-leak", "AWS_SECRET_ACCESS_KEY" => "must-not-leak")
+      control = anchors(environment)
+      calls = []
+      runner = Object.new
+      runner.define_singleton_method(:capture) do |*command, env:, unsetenv_others:, stdin_data: nil|
+        calls << { command:, environment: env, unsetenv_others: }
+        Open3.capture3(env, *command, stdin_data:, unsetenv_others:)
+      end
+
+      control.monitor_with!(runner)
+      assert control.reconcile!(state: journal_state(1), release: release_identity)
+
+      assert calls.any?
+      assert calls.all? { _1.fetch(:unsetenv_others) }
+      calls.each do |call|
+        assert_equal "aws", call.fetch(:command).first
+        assert_equal "true", call.dig(:environment, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS")
+        assert_not_includes call.fetch(:environment), "GH_TOKEN"
+        assert_not_includes call.fetch(:environment), "AWS_SECRET_ACCESS_KEY"
+      end
+      fake_state(state_path).fetch("calls").each do |call|
+        assert_not_includes call.fetch("environment_keys"), "GH_TOKEN"
+        assert_not_includes call.fetch("environment_keys"), "AWS_SECRET_ACCESS_KEY"
+      end
+    end
+  end
+
+  test "monitored AWS kill boundaries recover exact-resource probe markers" do
+    with_fake_aws do |environment, state_path|
+      assert anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      baseline = fake_state(state_path)
+      protected_key, versions = baseline
+        .dig("buckets", "campfire-release-anchor-a", "objects")
+        .find { |_key, entries| entries.sole.dig("metadata", "kind") == "operation" }
+      protected = versions.sole
+
+      %w[
+        intent_marker_created protected_marker_created protected_marker_deleted intent_marker_deleted
+      ].each do |boundary|
+        interrupted_state = JSON.parse(JSON.generate(baseline))
+        interrupted_state["kill_after_mutation"] = boundary
+        File.binwrite state_path, JSON.pretty_generate(interrupted_state) << "\n"
+        control = anchors(environment)
+        statuses = []
+        runner = Object.new
+        runner.define_singleton_method(:capture) do |*command, env:, unsetenv_others:, stdin_data: nil|
+          result = Open3.capture3(env, *command, stdin_data:, unsetenv_others:)
+          if result.fetch(2).exitstatus == 86
+            killed = Object.new
+            killed.define_singleton_method(:success?) { false }
+            killed.define_singleton_method(:exited?) { false }
+            killed.define_singleton_method(:signaled?) { true }
+            killed.define_singleton_method(:termsig) { 9 }
+            killed.define_singleton_method(:exitstatus) { nil }
+            result[2] = killed
+          end
+          statuses << result.fetch(2)
+          result
+        end
+        control.monitor_with!(runner)
+        anchor = control.instance_variable_get(:@anchors).first
+
+        assert_raises(ReleaseObjectLockAnchors::Error, boundary) do
+          control.send(
+            :prove_exact_resource_delete_authority!, anchor, protected_key,
+            protected.fetch("version_id"), digest: protected.fetch("metadata").fetch("sha256"),
+            kind: protected.fetch("metadata").fetch("kind"),
+            retain_until: Time.iso8601(protected.fetch("retain_until"))
+          )
+        end
+        assert statuses.any? { _1.respond_to?(:signaled?) && _1.signaled? }, boundary
+
+        resumed = anchors(environment)
+        resumed.monitor_with!(runner)
+        resumed_anchor = resumed.instance_variable_get(:@anchors).first
+        scope = resumed.send(:destructive_authority_scope!, resumed_anchor, protected_key)
+        assert resumed.send(:recover_exact_resource_delete_markers!, resumed_anchor, scope), boundary
+        assert resumed.send(
+          :prove_exact_resource_delete_authority!, resumed_anchor, protected_key,
+          protected.fetch("version_id"), digest: protected.fetch("metadata").fetch("sha256"),
+          kind: protected.fetch("metadata").fetch("kind"),
+          retain_until: Time.iso8601(protected.fetch("retain_until"))
+        ), boundary
+        assert_empty fake_state(state_path)
+          .dig("buckets", "campfire-release-anchor-a", "delete_markers"), boundary
+      end
+
+      forged = JSON.parse(JSON.generate(baseline))
+      forged.dig("buckets", "campfire-release-anchor-a", "delete_markers") << {
+        "Key" => protected_key, "VersionId" => "forged-marker", "IsLatest" => true
+      }
+      File.binwrite state_path, JSON.pretty_generate(forged) << "\n"
+      error = assert_raises(ReleaseObjectLockAnchors::Error) do
+        anchors(environment).reconcile!(state: journal_state(1), release: release_identity)
+      end
+      assert_match "operation-catalog deletion marker", error.message
+      assert_equal [ "forged-marker" ], fake_state(state_path)
+        .dig("buckets", "campfire-release-anchor-a", "delete_markers").pluck("VersionId")
     end
   end
 

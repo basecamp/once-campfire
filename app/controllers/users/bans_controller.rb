@@ -1,4 +1,5 @@
 class Users::BansController < ApplicationController
+  prepend_around_action :with_administrator_roster_mutation_fence
   before_action :ensure_can_administer
   before_action :set_user
 

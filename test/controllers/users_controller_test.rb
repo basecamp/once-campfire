@@ -24,6 +24,25 @@ class UsersControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_url
   end
 
+  test "requiring unauthenticated access retains the existing-cookie mutation fence" do
+    user = users(:david)
+    sign_in user
+    observed_fences = []
+    original_redirect = UsersController.instance_method(:redirect_signed_in_user_to_root)
+    UsersController.define_method(:redirect_signed_in_user_to_root) do
+      observed_fences << User::MutationFence.held?(Current.user.id)
+      original_redirect.bind_call(self)
+    end
+    UsersController.send :private, :redirect_signed_in_user_to_root
+
+    post join_url, params: { user: { name: "Must not create" } }
+
+    assert_redirected_to root_url
+    assert_equal [ true ], observed_fences
+  ensure
+    UsersController.send(:remove_method, :redirect_signed_in_user_to_root) if original_redirect
+  end
+
   test "new exchanges the fragment credential before showing signup" do
     get join_url
 

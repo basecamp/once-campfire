@@ -3,6 +3,7 @@ require "json"
 require "pathname"
 require "securerandom"
 require "time"
+require_relative "descriptor_tree"
 
 module CampfireBackup
   class OperationLock
@@ -24,18 +25,21 @@ module CampfireBackup
     end
 
     def self.acquire(directory, purpose:, create: true, shared: false,
-        lock_root: self.lock_root, inherited_file_fd: nil, inherited_shared_fd: nil)
+        create_parent: false, lock_root: self.lock_root, inherited_file_fd: nil,
+        inherited_shared_fd: nil)
       new(
-        directory, purpose:, create:, shared:, lock_root:, inherited_file_fd:, inherited_shared_fd:
+        directory, purpose:, create:, shared:, create_parent:, lock_root:, inherited_file_fd:,
+        inherited_shared_fd:
       ).tap(&:acquire!)
     end
 
     def initialize(directory, purpose:, create: true, shared: false, lock_root: self.class.lock_root,
-        inherited_file_fd: nil, inherited_shared_fd: nil)
+        create_parent: false, inherited_file_fd: nil, inherited_shared_fd: nil)
       @requested_directory = Pathname(directory).expand_path
       @requested_lock_root = Pathname(lock_root).expand_path
       @purpose = purpose
       @create = create
+      @create_parent = create_parent
       @shared = shared
       @inherited_file_fd = inherited_file_fd
       @inherited_shared_fd = inherited_shared_fd
@@ -51,14 +55,17 @@ module CampfireBackup
       prepare_namespace!
       @inherited_file_fd ? adopt_file! : acquire_file!
 
-      requested_parent = @requested_directory.dirname
-      requested_parent.mkpath if @create
+      requested_parent = prepare_requested_parent!
       unless requested_parent.directory? && !requested_parent.symlink?
         raise "Campfire operation lock parent is not an independent directory"
       end
 
       @parent = requested_parent.realpath
       unless @parent == @canonical_requested_parent
+        raise "Campfire operation lock parent changed during acquisition"
+      end
+      if @canonical_requested_parent_identity &&
+          identity(@parent) != @canonical_requested_parent_identity
         raise "Campfire operation lock parent changed during acquisition"
       end
       @directory = parent.join(@requested_directory.basename)
@@ -75,17 +82,15 @@ module CampfireBackup
       ) << "\n"
       write_metadata @file, metadata
       write_metadata @shared_file, metadata if @shared_file
-      File.open(@namespace, &:fsync)
-      File.open(directory, &:fsync) if @shared_file
+      @namespace_tree.flush_root
+      @target_tree.flush_root if @shared_file
       assert_current!
       self
     rescue Errno::EACCES, Errno::EAGAIN
-      @shared_file&.close
-      @file&.close
+      close_resources
       raise "Campfire storage is in use by another process"
     rescue StandardError
-      @shared_file&.close
-      @file&.close
+      close_resources
       raise
     end
 
@@ -96,24 +101,31 @@ module CampfireBackup
       if @namespace && current_identity(@namespace) != @namespace_identity
         raise "Campfire operation lock parent changed while locked"
       end
+      @namespace_tree&.assert_root_current!
       unless current_identity(directory) == @target_identity
         raise "Campfire operation target changed while locked"
       end
 
       if @file
         opened = @file.stat
-        current = path.lstat
-        unless opened.file? && opened.nlink == 1 && current.file? &&
-            [ opened.dev, opened.ino ] == [ current.dev, current.ino ]
-          raise "Campfire operation lock path changed while locked"
+        @namespace_tree.open_regular_file(
+          path.basename.to_s,
+          expected_identity: [ opened.dev, opened.ino, opened.ftype ]
+        ) do |_current, current|
+          unless opened.file? && opened.nlink == 1 && current.file? && current.nlink == 1
+            raise "Campfire operation lock path changed while locked"
+          end
         end
       end
       if @shared_file
         shared_opened = @shared_file.stat
-        shared_current = shared_path.lstat
-        unless shared_opened.file? && shared_opened.nlink == 1 && shared_current.file? &&
-            [ shared_opened.dev, shared_opened.ino ] == [ shared_current.dev, shared_current.ino ]
-          raise "Campfire shared operation lock path changed while locked"
+        @target_tree.open_regular_file(
+          SHARED_FILENAME,
+          expected_identity: [ shared_opened.dev, shared_opened.ino, shared_opened.ftype ]
+        ) do |_current, shared_current|
+          unless shared_opened.file? && shared_opened.nlink == 1 && shared_current.file?
+            raise "Campfire shared operation lock path changed while locked"
+          end
         end
       end
       true
@@ -147,18 +159,19 @@ module CampfireBackup
     end
 
     def release
-      return unless @file || @shared_file
+      return unless @file || @shared_file || @target_tree || @namespace_tree
 
-      if @shared_file
-        @shared_file.flock File::LOCK_UN unless @inherited_shared
-        @shared_file.close
-        @shared_file = nil
-      end
-      if @file
-        @file.flock File::LOCK_UN unless @inherited_file
-        @file.close
-        @file = nil
-      end
+      errors = []
+      close_lock_file(@shared_file, inherited: @inherited_shared, errors:)
+      @shared_file = nil
+      close_lock_file(@file, inherited: @inherited_file, errors:)
+      @file = nil
+      close_resource(@target_tree, errors:)
+      @target_tree = nil
+      close_resource(@namespace_tree, errors:)
+      @namespace_tree = nil
+      raise errors.first if errors.any?
+
       true
     end
 
@@ -189,9 +202,12 @@ module CampfireBackup
       def prepare_canonical_paths!
         @canonical_requested_parent = canonical_future_path(@requested_directory.dirname)
         @canonical_lock_root = @requested_lock_root.realpath
-        canonical_target = @canonical_requested_parent.join(@requested_directory.basename)
+        @canonical_target = @canonical_requested_parent.join(@requested_directory.basename)
+        if @canonical_requested_parent.exist?
+          @canonical_requested_parent_identity = identity(@canonical_requested_parent)
+        end
         parent_is_filesystem_root = @canonical_requested_parent.root?
-        if contained_by?(canonical_target, @canonical_lock_root) ||
+        if contained_by?(@canonical_target, @canonical_lock_root) ||
             (!parent_is_filesystem_root && contained_by?(@canonical_requested_parent, @canonical_lock_root))
           raise "Campfire operation lock root must be outside the target parent"
         end
@@ -216,8 +232,41 @@ module CampfireBackup
         end
 
         @namespace_identity = identity(@namespace)
-        key = Digest::SHA256.hexdigest(@requested_directory.to_s)
+        @namespace_tree = DescriptorTree.new(
+          @namespace, expected_identity: @namespace_identity,
+          description: "Campfire operation lock root"
+        )
+        key = Digest::SHA256.hexdigest(@canonical_target.to_s)
         @path = @namespace.join("#{key}.lock")
+      end
+
+      def prepare_requested_parent!
+        requested_parent = @requested_directory.dirname
+        return requested_parent if requested_parent.exist? || requested_parent.symlink?
+
+        unless @create && @create_parent
+          raise "Campfire operation lock parent is not an independent directory"
+        end
+
+        requested_grandparent = requested_parent.dirname
+        unless requested_grandparent.directory? && !requested_grandparent.symlink?
+          raise "Campfire operation lock parent is not an independent directory"
+        end
+        canonical_grandparent = requested_grandparent.realpath
+        unless canonical_grandparent.join(requested_parent.basename) == @canonical_requested_parent
+          raise "Campfire operation lock parent changed during acquisition"
+        end
+
+        grandparent_tree = DescriptorTree.new(
+          canonical_grandparent, description: "Campfire operation target grandparent"
+        )
+        grandparent_tree.mkdir(requested_parent.basename.to_s, mode: 0o700)
+        grandparent_tree.flush_root
+        requested_parent
+      rescue Errno::EEXIST
+        raise "Campfire operation lock parent changed during acquisition"
+      ensure
+        grandparent_tree&.close
       end
 
       def canonical_future_path(path)
@@ -235,18 +284,12 @@ module CampfireBackup
       end
 
       def acquire_file!
-        if path.symlink? || (path.exist? && !path.file?)
-          raise "Campfire operation lock path is not a regular file"
-        end
-
-        flags = File::RDWR | File::CREAT
-        flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-        @file = File.open(path, flags, 0o600)
-        opened = @file.stat
-        current = path.lstat
-        unless opened.file? && opened.nlink == 1 && current.file? &&
-            [ opened.dev, opened.ino ] == [ current.dev, current.ino ]
-          raise "Campfire operation lock path changed during acquisition"
+        @namespace_tree.open_or_create_regular_file(path.basename.to_s, mode: 0o600) do |file, opened|
+          unless opened.file? && opened.nlink == 1
+            raise "Campfire operation lock path is not a regular file"
+          end
+          @file = file.dup
+          @file.close_on_exec = true
         end
         unless @file.flock(File::LOCK_EX | File::LOCK_NB)
           raise "Campfire storage is in use by another process"
@@ -257,10 +300,13 @@ module CampfireBackup
         @file = inherited_file(@inherited_file_fd)
         @inherited_file = true
         opened = @file.stat
-        current = path.lstat
-        unless opened.file? && opened.nlink == 1 && current.file? &&
-            [ opened.dev, opened.ino ] == [ current.dev, current.ino ]
-          raise "Campfire inherited operation lock does not match its stable target"
+        @namespace_tree.open_regular_file(
+          path.basename.to_s,
+          expected_identity: [ opened.dev, opened.ino, opened.ftype ]
+        ) do |_file, current|
+          unless opened.file? && opened.nlink == 1 && current.file? && current.nlink == 1
+            raise "Campfire inherited operation lock does not match its stable target"
+          end
         end
         unless @file.flock(File::LOCK_EX | File::LOCK_NB)
           raise "Campfire storage is in use by another process"
@@ -271,18 +317,12 @@ module CampfireBackup
 
       def acquire_shared_file!
         @shared_path = directory.join(SHARED_FILENAME)
-        if shared_path.symlink? || (shared_path.exist? && !shared_path.file?)
-          raise "Campfire shared operation lock path is not a regular file"
-        end
-
-        flags = File::RDWR | File::CREAT
-        flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
-        @shared_file = File.open(shared_path, flags, 0o600)
-        opened = @shared_file.stat
-        current = shared_path.lstat
-        unless opened.file? && opened.nlink == 1 && current.file? &&
-            [ opened.dev, opened.ino ] == [ current.dev, current.ino ]
-          raise "Campfire shared operation lock path changed during acquisition"
+        @target_tree.open_or_create_regular_file(SHARED_FILENAME, mode: 0o600) do |file, opened|
+          unless opened.file? && opened.nlink == 1
+            raise "Campfire shared operation lock path is not a regular file"
+          end
+          @shared_file = file.dup
+          @shared_file.close_on_exec = true
         end
         unless @shared_file.flock(File::LOCK_EX | File::LOCK_NB)
           raise "Campfire storage is in use by another process"
@@ -296,10 +336,12 @@ module CampfireBackup
         @shared_file = inherited_file(@inherited_shared_fd)
         @inherited_shared = true
         opened = @shared_file.stat
-        current = shared_path.lstat
-        unless opened.file? && opened.nlink == 1 && current.file? &&
-            [ opened.dev, opened.ino ] == [ current.dev, current.ino ]
-          raise "Campfire inherited operation lock does not match its shared target"
+        @target_tree.open_regular_file(
+          SHARED_FILENAME, expected_identity: [ opened.dev, opened.ino, opened.ftype ]
+        ) do |_file, current|
+          unless opened.file? && opened.nlink == 1 && current.file?
+            raise "Campfire inherited operation lock does not match its shared target"
+          end
         end
         unless @shared_file.flock(File::LOCK_EX | File::LOCK_NB)
           raise "Campfire storage is in use by another process"
@@ -316,19 +358,62 @@ module CampfireBackup
       end
 
       def prepare_target!
-        if directory.exist? || directory.symlink?
-          unless directory.directory? && !directory.symlink?
-            raise "Campfire operation target is not an independent directory"
+        parent_tree = DescriptorTree.new(
+          parent, expected_identity: @parent_identity,
+          description: "Campfire operation target parent"
+        )
+        name = directory.basename.to_s
+        if parent_tree.entry_missing?(name)
+          unless @create
+            raise "Campfire operation lock directory does not exist: #{directory}"
           end
-        elsif @create
-          Dir.mkdir directory, 0o700
-          File.open(parent, &:fsync)
-        else
-          raise "Campfire operation lock directory does not exist: #{directory}"
+          parent_tree.mkdir(name, mode: 0o700)
+          parent_tree.flush_root
         end
-        @target_identity = identity(directory)
+        parent_tree.open_directory(name) do |_target, stat|
+          @target_identity = [ stat.dev, stat.ino, stat.ftype ].freeze
+        end
+        @target_tree = DescriptorTree.new(
+          directory, expected_identity: @target_identity,
+          description: "Campfire operation target"
+        )
       rescue Errno::EEXIST
         raise "Campfire operation target changed during acquisition"
+      ensure
+        parent_tree&.close
+      end
+
+      def close_resources
+        errors = []
+        close_resource(@shared_file, errors:)
+        @shared_file = nil
+        close_resource(@file, errors:)
+        @file = nil
+        close_resource(@target_tree, errors:)
+        @target_tree = nil
+        close_resource(@namespace_tree, errors:)
+        @namespace_tree = nil
+        errors
+      end
+
+      def close_lock_file(file, inherited:, errors:)
+        return unless file
+
+        begin
+          file.flock File::LOCK_UN unless inherited
+        rescue StandardError => error
+          errors << error
+        ensure
+          close_resource(file, errors:)
+        end
+      end
+
+      def close_resource(resource, errors:)
+        return unless resource
+
+        resource.close unless resource.respond_to?(:closed?) && resource.closed?
+      rescue StandardError => error
+        errors << error
       end
 
       def identity(path)
@@ -353,14 +438,19 @@ module CampfireBackup
   end
 
   class OwnedPaths
-    def initialize(root)
+    def initialize(root, descriptor_tree: nil)
       @root = Pathname(root).expand_path
+      @descriptor_tree = descriptor_tree
       @entries = {}
     end
 
-    def record(path)
+    def record(path, stat: nil)
       path = contained_path(path)
-      stat = path.lstat
+      stat ||= if @descriptor_tree
+        @descriptor_tree.open_entry(relative_path(path)) { |_file, opened| opened }
+      else
+        path.lstat
+      end
       @entries[path.to_s] = [ stat.dev, stat.ino, stat.ftype ]
       path
     end
@@ -376,13 +466,21 @@ module CampfireBackup
     def each_current
       @entries.each do |name, identity|
         path = Pathname(name)
-        raise "Operation-owned path disappeared: #{path}" unless path.exist? || path.symlink?
+        if @descriptor_tree
+          @descriptor_tree.open_entry(relative_path(path), expected_identity: identity) do |file, stat|
+            assert_independent_metadata_target! path, stat
+            yield path, stat, file
+          end
+        else
+          raise "Operation-owned path disappeared: #{path}" unless path.exist? || path.symlink?
 
-        stat = path.lstat
-        unless [ stat.dev, stat.ino, stat.ftype ] == identity
-          raise "Operation-owned path changed concurrently: #{path}"
+          stat = path.lstat
+          unless [ stat.dev, stat.ino, stat.ftype ] == identity
+            raise "Operation-owned path changed concurrently: #{path}"
+          end
+          assert_independent_metadata_target! path, stat
+          yield path, stat
         end
-        yield path, stat
       end
     end
 
@@ -390,6 +488,12 @@ module CampfireBackup
       incomplete = []
       @entries.sort_by { |name, _| -Pathname(name).each_filename.count }.each do |name, identity|
         path = Pathname(name)
+        if @descriptor_tree
+          @descriptor_tree.remove(
+            relative_path(path), expected_identity: identity, directory: identity.last == "directory"
+          )
+          next
+        end
         next unless path.exist? || path.symlink?
 
         stat = path.lstat
@@ -403,7 +507,7 @@ module CampfireBackup
         else
           path.unlink
         end
-      rescue Errno::ENOTEMPTY, Errno::EEXIST, Errno::EACCES, Errno::EPERM
+      rescue RuntimeError, SystemCallError
         incomplete << path
       end
       incomplete
@@ -416,6 +520,16 @@ module CampfireBackup
           raise "Operation-owned path escaped its destination"
         end
         path
+      end
+
+      def relative_path(path)
+        path.relative_path_from(@root).to_s
+      end
+
+      def assert_independent_metadata_target!(path, stat)
+        unless stat.directory? || (stat.file? && stat.nlink == 1)
+          raise "Operation-owned path is not safe for metadata mutation: #{path}"
+        end
       end
   end
 end

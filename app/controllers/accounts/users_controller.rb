@@ -1,4 +1,5 @@
 class Accounts::UsersController < ApplicationController
+  prepend_around_action :with_administrator_roster_mutation_fence, only: %i[ update destroy ]
   before_action :ensure_can_administer, :set_user, only: %i[ update destroy ]
 
   def index

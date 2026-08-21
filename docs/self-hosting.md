@@ -3,8 +3,12 @@
 Campfire's Docker image contains everything needed for a fully-functional, single-machine deployment.
 This includes the web app, background jobs, caching, file serving, and SSL.
 
-> [!TIP]
-> The easiest way to self-host Campfire is with [ONCE](https://github.com/basecamp/once), which handles installation, updates, and backups for you. See the [README](../README.md#deploying-with-once) for details. This guide covers running the Docker image by hand.
+> [!WARNING]
+> [ONCE](https://github.com/basecamp/once) can perform the initial installation,
+> but its current automatic update and volume-backup flows do not implement
+> Campfire's runtime lock or quiesced recovery contracts. Keep automatic updates
+> and backups disabled and use the procedures in this guide. See the
+> [README](../README.md#deploying-with-once) for the exact incompatibility.
 
 We recommend using `ghcr.io/basecamp/once-campfire:latest`, which always points to the most recent tagged release - the most stable and battle-tested version of Campfire.
 
@@ -94,6 +98,7 @@ proxy.
 Campfire needs a few secret values that are specific to your instance:
 
 - `SECRET_KEY_BASE` - the basis for cryptographic features like signed cookies. This should be a long, unguessable random string.
+- `CAMPFIRE_FIRST_RUN_TOKEN` - a one-time bootstrap secret required to create the initial administrator.
 - `VAPID_PRIVATE_KEY`/`VAPID_PUBLIC_KEY` - a key pair used for sending Web Push notifications.
 
 You can generate them by running:
@@ -106,11 +111,12 @@ It prints a fresh set of values ready to set as environment variables:
 
 ```
 SECRET_KEY_BASE=...
+CAMPFIRE_FIRST_RUN_TOKEN=...
 VAPID_PRIVATE_KEY=...
 VAPID_PUBLIC_KEY=...
 ```
 
-Keep them safe and reuse the same values across restarts and upgrades - changing them later will invalidate sessions and push notification subscriptions.
+Keep them safe and reuse the signing and push values across restarts and upgrades - changing them later will invalidate sessions and push notification subscriptions. Enter `CAMPFIRE_FIRST_RUN_TOKEN` only on the initial setup form; remove it from the container environment after the administrator has been created.
 
 #### SSL
 
@@ -182,6 +188,7 @@ docker run \
   --restart unless-stopped \
   --volume campfire:/rails/storage \
   --env SECRET_KEY_BASE=$YOUR_SECRET_KEY_BASE \
+  --env CAMPFIRE_FIRST_RUN_TOKEN=$YOUR_FIRST_RUN_TOKEN \
   --env VAPID_PUBLIC_KEY=$YOUR_PUBLIC_KEY \
   --env VAPID_PRIVATE_KEY=$YOUR_PRIVATE_KEY \
   --env TLS_DOMAIN=chat.example.com \
@@ -201,6 +208,7 @@ services:
       - "443:443"
     environment:
       - SECRET_KEY_BASE=abcdefabcdef
+      - CAMPFIRE_FIRST_RUN_TOKEN=replace-with-at-least-32-random-bytes
       - TLS_DOMAIN=chat.example.com
       - VAPID_PRIVATE_KEY=myvapidprivatekey
       - VAPID_PUBLIC_KEY=myvapidpublickey
@@ -247,6 +255,12 @@ guarded procedure below rather than relying on application rollback as a
 data-recovery mechanism. The first upgrade across the identity migration fails
 before database preparation unless the stopped source volume has a fresh,
 authenticated recovery authorization for the exact target image.
+ONCE automatic updates are not a substitute for this procedure. ONCE starts a
+replacement against the mounted volume while the old container is still
+running, but the old runtime holds Campfire's target-local exclusive operation
+lock until it exits. The replacement correctly fails before preparation. Do
+not remove the lock or weaken this single-writer boundary; perform the stopped,
+guarded replacement described below.
 The identity migration's destructive `down` path is unavailable in production:
 the upgrade receipt does not authorize a downgrade, and Campfire has no separate
 authenticated rollback-archive and target-build contract. Restore the tested
@@ -256,8 +270,10 @@ pre-upgrade generation to a new volume instead.
 
 Do not copy the live SQLite or Redis files. A recoverable generation must be
 created while the source volume is quiesced, with no web, worker, or Redis
-process using it. The generation contains its own SQLite snapshot, uploaded
-files, Redis state, an installation marker, and an authenticated manifest.
+process using it. A current-format generation contains its own SQLite snapshot,
+uploaded files, durable Redis state, an installation marker, and an
+authenticated manifest. The pre-identity legacy Redis exception is documented
+below.
 
 Generate a dedicated backup authentication key once, then generate a separate
 256-bit archive-encryption key with an explicit operator-assigned key ID:
@@ -370,9 +386,9 @@ retrying.
 
 The running image and every backup, archive, extraction, installation, and
 migration operation take two locks. A stable lock under
-`CAMPFIRE_OPERATION_LOCK_ROOT` is keyed by the target's absolute textual path,
-so replacing the target or its parent cannot create a second lock domain in the
-same container. `.campfire-operation.lock` inside the mounted target gives
+`CAMPFIRE_OPERATION_LOCK_ROOT` is keyed by the target's canonical physical
+path, so path aliases, or replacing the target or its parent, cannot create a
+second lock domain in the same container. `.campfire-operation.lock` inside the mounted target gives
 separate containers the same lock inode even though their stable roots are
 process-private. The image provisions a root-owned sticky lock root and sets
 `CAMPFIRE_OPERATION_LOCK_ROOT` for both UID 1000 and one-off commands run with a
@@ -382,6 +398,15 @@ root with mode `1777`. It must be outside any target or parent that an operation
 can replace. Containment is checked against the canonical physical target parent
 and lock root, so a symlinked ancestor cannot hide the root inside the replaceable
 tree. There is no fallback lock namespace.
+
+The packaged backup and recovery commands are single-threaded scripts. Their
+portable descriptor-relative implementation serializes short process-wide
+`fchdir` sections because supported Ruby versions do not expose `openat`; do not
+load these scripts into a multithreaded application process. Capacity checks for
+descriptor-managed extraction and private verification staging run `df` in a
+single-purpose child after that child changes to the inherited pinned directory
+descriptor. Path-only legacy scratch workspaces receive a path-based capacity
+check and are not claimed to have descriptor-pinned capacity.
 
 The kernel `flock`, not the text left in a file, determines ownership. Do not
 delete a lock file or the configured lock root to resolve contention. Stop the
@@ -463,6 +488,16 @@ Before the first upgrade that introduces the identity migration, use the exact
 target image digest only as a one-off backup tool against the stopped old
 volume. Supplying a command overrides the image `CMD`, so `bin/boot` and
 `db:prepare` do not run:
+
+The legacy image used for this transition configured Redis with `appendonly no`
+and `save ""`; its queues, cache, and cable state were ephemeral and never
+existed on the Campfire volume. The target-image backup tool therefore cannot
+include pending legacy Redis jobs, and a restored legacy generation starts with
+an empty Redis history. Before running the stop command below, remove
+application traffic, let active work finish, and verify that every Resque queue
+and worker is empty. Reconcile any remaining work explicitly rather than
+claiming it was backed up. The recovery test proves that new jobs execute after
+restore; it cannot prove recovery of pre-stop ephemeral Redis state.
 
 ```sh
 TARGET_IMAGE=ghcr.io/basecamp/once-campfire@sha256:replace-with-target-digest
@@ -635,27 +670,57 @@ before any plaintext is written, and requires the declared ciphertext, exact
 EOF, and GCM tag to match before parsing the embedded HMAC statement or tar.
 Only after both GCM and HMAC verification succeed can it create generation
 paths. It rejects traversal, duplicates, links, special files, and content
-outside the recorded backup ID. Verification reconstructs
+outside the recorded backup ID. The final extracted tree must exactly equal the
+authenticated archive's files and explicit directories plus the reserved root
+operation lock. Every destination component is opened or
+created relative to pinned directory descriptors, so replacing an ancestor
+with a symlink cannot redirect a write. Verification reconstructs
 the image's expected schema
 from its complete migration set and compares tables, columns, indexes, foreign
 keys, check constraints, and virtual tables. It also checks account cardinality,
 SQLite integrity, every uploaded blob, exact payload membership, and strict
 Redis AOF/RDB layout and loadability.
+The manifest digest, SQLite integrity queries, and schema copy all consume one
+no-follow source descriptor. Verification copies exactly the authenticated
+database bytes into a private unlinked descriptor, requires source EOF, hashes
+the source again, and runs SQLite and schema checks only against that private
+copy. Redis validation similarly consumes a private exact authenticated copy,
+so its checkers and replay server never read or modify the generation paths.
+The bundled native SQLite check confirms the connection's main-file descriptor
+names the staged inode. Manifest and Redis-manifest reads are bounded, and every
+successful payload check is repeated against the same pinned generation tree
+and name-bound file identities.
 
-The installer accepts only an empty destination, copies through a temporary
-database name, flushes files and directories, applies ownership, and then
+The installer accepts only an empty destination, pins the verified generation
+root, and copies exactly each authenticated byte count through no-follow,
+single-link source descriptors. Every copy requires EOF, checks its copied
+digest, then rewinds and hashes the source descriptor again. It publishes the
+database through a temporary name, flushes files and directories, applies child
+ownership, and then
 repeats hashes, schema checks, blob checks, Redis validation, and installation
 identity checks against no-follow descriptors for the final destination bytes.
 Files, directories, the restore marker, and both operation locks are chowned,
-chmodded, and synced only through inode-verified no-follow descriptors; the
-destination root is handed to UID 1000 last.
+chmodded, and synced only through inode-verified no-follow descriptors. During
+a production restore the root-owned destination descriptor remains mode `000`,
+so UID 1000 cannot traverse any restored child during final validation or
+marker removal. After the marker removal and exact final inventory are durable,
+the installer performs the final root chown/chmod/fsync as its commit boundary.
+Any error in that window attempts to restore root mode `000`; no later ordinary
+operation can turn a committed restore into a reported failure.
+Creation, linking, removal, metadata handoff, and final reads traverse from the
+pinned destination descriptor one component at a time with no-follow opens;
+they never follow an ancestor replacement symlink to its target, and subsequent
+identity checks reject a displaced tree.
 It requires the exact authenticated file and directory inventory and binds each
 validated descriptor to the inode captured before validation. Before changing the
 destination it durably creates `restore-in-progress.json`; `bin/boot` refuses
 any volume where that path remains. The installer removes and flushes the marker
 only after final ownership, durability, and verification checks succeed. On a
 precommit failure it removes only the files it placed but deliberately preserves
-the marker, so retrying the same destination also fails closed. Do not continue
+the marker, so retrying the same destination also fails closed. If a failure
+lands after durable marker removal but before the final root handoff completes,
+the marker may be absent but the root is relocked at mode `000`; that destination
+is still failed and disposable, not a bootable restore. Do not continue
 after a warning or error, delete the marker, or retry into that path or volume.
 Preserve the original Campfire volume, discard only the disposable failed
 destination after confirming its exact name, create a different empty
@@ -663,8 +728,10 @@ destination, and rerun the full extract, verify, and install sequence.
 
 The published image runs as UID and GID `1000`. A root restore must explicitly
 set both `RESTORE_UID=1000` and `RESTORE_GID=1000`; any other requested owner is
-rejected before backup files are installed. A non-root restore is accepted only
-when the invoking process already has that exact runtime identity.
+rejected before backup files are installed. Production installation requires
+the documented root one-off container: a process already running as UID 1000
+cannot both deny UID 1000 traversal and continue descriptor-relative restore
+work, so non-root production installation fails closed.
 
 Launch a replacement Campfire container with `campfire-restored`, the original
 image version or a newer schema-compatible image, and the original environment.

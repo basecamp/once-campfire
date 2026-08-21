@@ -286,6 +286,12 @@ if root.join("bin/release").file?
       "verify-receipts:",
       "name: Verify exact architecture receipts",
       'needs: validate',
+      'if: ${{ always() }}',
+      'name: Require successful validation matrix',
+      'VALIDATE_RESULT: ${{ needs.validate.result }}',
+      'image_inspection="$directory/image-inspect.json"',
+      'sbom="$directory/sbom.spdx.json"',
+      'buildkit_provenance="$directory/buildkit-provenance.json"',
       '"native_host_architecture": "passed"',
       'run_receipt="$directory/run.json"',
       'upgrade_receipt="$directory/upgrade-recovery.json"',
@@ -318,8 +324,37 @@ if root.join("bin/release").file?
     aggregate_receipts = container_workflow.dig("jobs", "verify-receipts")
     unless aggregate_receipts.is_a?(Hash) &&
         aggregate_receipts["name"] == "Verify exact architecture receipts" &&
-        aggregate_receipts["needs"] == "validate"
-      errors << "#{relative}: aggregate verify-receipts must depend on the complete native architecture matrix"
+        aggregate_receipts["needs"] == "validate" &&
+        aggregate_receipts["if"] == "${{ always() }}"
+      errors << "#{relative}: aggregate verify-receipts must always run after the complete native architecture matrix"
+    end
+    receipt_downloads = Array(aggregate_receipts&.fetch("steps", nil)).select do |step|
+      step["name"].to_s.start_with?("Download ")
+    end
+    aggregate_step = workflow_step.call(container_workflow, "Verify exact amd64 and arm64 receipt set")
+    validation_gate = workflow_step.call(container_workflow, "Require successful validation matrix")
+    unless receipt_downloads.length == 2 &&
+        receipt_downloads.all? { _1["if"] == "${{ always() }}" } &&
+        aggregate_step&.fetch("if", nil) == "${{ always() }}" &&
+        validation_gate&.fetch("if", nil) == "${{ always() }}" &&
+        validation_gate&.dig("env", "VALIDATE_RESULT") == "${{ needs.validate.result }}" &&
+        validation_gate&.fetch("run", "").include?('[[ "$VALIDATE_RESULT" != success ]]')
+      errors << "#{relative}: aggregate receipts must be inspected before explicitly requiring validate success"
+    end
+    aggregate_run = aggregate_step&.fetch("run", "").to_s
+    [
+      'image_inspection_sha256=$(sha256sum "$image_inspection"',
+      '.image_inspection_sha256 == $image_inspection_sha256',
+      '.predicateType == "https://spdx.dev/Document"',
+      '.predicateType == "https://slsa.dev/provenance/v1"',
+      '.op.platform.OS == "linux" and .op.platform.Architecture == $architecture'
+    ].each do |control|
+      unless aggregate_run.include?(control)
+        errors << "#{relative}: aggregate architecture evidence validation is missing: #{control}"
+      end
+    end
+    unless aggregate_run.scan('.subject[0].digest == {"sha256": $digest}').length >= 2
+      errors << "#{relative}: aggregate SBOM and provenance must each bind one exact architecture digest"
     end
     if application_ci
       expected_scopes = [ %w[ main release/** ], %w[ main release/** ] ].sort
@@ -390,6 +425,7 @@ if root.join("bin/release").file?
       "source_files=(", 'cp "$source_directory/recovery.json"',
       'cp "$source_directory/upgrade-recovery.json"',
       'cp "$source_directory/container-validation.json"',
+      'cp "$source_directory/image-inspect.json"',
       'cp "$source_directory/sbom.spdx.json"',
       'cp "$source_directory/buildkit-provenance.json"',
       'cp "$source_directory/parent-provenance.bundle.jsonl"',
@@ -400,6 +436,48 @@ if root.join("bin/release").file?
       unless architecture_assembly_run.include?(control)
         errors << "#{relative}: architecture evidence assembly is missing: #{control}"
       end
+    end
+    architecture_receipt = workflow_step.call(publish_workflow, "Record architecture evidence receipt")
+    architecture_receipt_run = architecture_receipt&.fetch("run", "").to_s
+    unless architecture_receipt_run.include?(
+      '--arg inspection_sha256 "$(sha256sum "$evidence_directory/image-inspect.json"'
+    ) && !architecture_receipt_run.include?(
+      '--arg inspection_sha256 "$(sha256sum "$evidence_directory/container-validation.json"'
+    )
+      errors << "#{relative}: image inspection hash must bind the retained image-inspect.json"
+    end
+    manifest_step = workflow_step.call(publish_workflow, "Create and sign digest-bound manifest")
+    manifest_run = manifest_step&.fetch("run", "").to_s
+    [
+      'image_inspection="$evidence_directory/image-inspect-$arch.json"',
+      'image_inspection_sha256=$(sha256sum "$image_inspection"',
+      '.image_inspection_sha256 == $image_inspection_sha256',
+      '.predicateType == "https://spdx.dev/Document"',
+      '.predicateType == "https://slsa.dev/provenance/v1"',
+      '.op.platform.OS == "linux" and .op.platform.Architecture == $architecture'
+    ].each do |control|
+      unless manifest_run.include?(control)
+        errors << "#{relative}: exact architecture evidence validation is missing: #{control}"
+      end
+    end
+    unless manifest_run.scan('.subject[0].digest == {"sha256": $digest}').length >= 2
+      errors << "#{relative}: SBOM and BuildKit provenance must each bind one exact architecture digest"
+    end
+    ghcr_probe = workflow_step.call(publish_workflow, "Prove GHCR rejects disposable alias overwrite")
+    ghcr_probe_run = ghcr_probe&.fetch("run", "").to_s
+    [
+      'probe_reference="${canonical_image}:release-mutability-control-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${OPERATION_NONCE:0:16}"',
+      'absence_status=$?', 'manifest[[:space:]]unknown|not[[:space:]]found',
+      '"${canonical_image}@${seed_digest}"', '"${canonical_image}@${conflict_digest}"',
+      'GHCR permits alias overwrite; immutable release aliases are unsafe',
+      'transient_pattern=', 'immutable_pattern=', 'for verification in 1 2'
+    ].each do |control|
+      unless ghcr_probe_run.include?(control)
+        errors << "#{relative}: non-destructive GHCR immutability gate is missing: #{control}"
+      end
+    end
+    if ghcr_probe_run.include?("RELEASE_TAG") || ghcr_probe_run.include?(":latest")
+      errors << "#{relative}: GHCR mutability probes may target only a disposable operation-bound alias"
     end
     evidence_step = workflow_step.call(publish_workflow, "Record release evidence")
     evidence_run = evidence_step&.fetch("run", "").to_s
@@ -424,10 +502,11 @@ if root.join("bin/release").file?
     release_evidence_policy_files = %w[
       release-evidence.json index-provenance.bundle.jsonl index-provenance-verification.json
       promotion-requirements.json recovery-amd64.json upgrade-recovery-amd64.json
-      container-validation-amd64.json sbom-amd64.spdx.json buildkit-provenance-amd64.json
+      container-validation-amd64.json image-inspect-amd64.json sbom-amd64.spdx.json
+      buildkit-provenance-amd64.json
       parent-provenance-amd64.bundle.jsonl runnable-provenance-amd64.bundle.jsonl
       parent-provenance-verification-amd64.json runnable-provenance-verification-amd64.json
-      recovery-arm64.json upgrade-recovery-arm64.json container-validation-arm64.json
+      recovery-arm64.json upgrade-recovery-arm64.json container-validation-arm64.json image-inspect-arm64.json
       sbom-arm64.spdx.json buildkit-provenance-arm64.json parent-provenance-arm64.bundle.jsonl
       runnable-provenance-arm64.bundle.jsonl parent-provenance-verification-arm64.json
       runnable-provenance-verification-arm64.json
@@ -439,6 +518,7 @@ if root.join("bin/release").file?
       errors << "#{relative}: release evidence upload must be the exact flat inventory"
     end
     required = [
+      "GH_HOST: github.com",
       "linux/amd64",
       "linux/arm64",
       "BUILDKIT_MULTI_PLATFORM=1",
@@ -479,6 +559,7 @@ if root.join("bin/release").file?
       "promotion_requirements=$(jq -cS -n",
       "evidence_file_names=(",
       "required_release_driver_evidence:",
+      "repository no-overwrite evidence from an operation-bound disposable alias",
       "dual Object Lock anchor receipts",
       "name: release-evidence-${{ github.run_attempt }}",
       "retention-days: 90"
@@ -566,9 +647,14 @@ if root.join("bin/release").file?
       "buildConfig.llbDefinition", "request_limit_bytes=106954752", "Transfer-Encoding: chunked",
       '--data-binary "@$oversized_request"', "boot_health",
       '[[ "$oci_config_digest" == "$config_digest" ]]',
-      "validated_manifest_digest", "config-digest-matched-dual-build", "RUNTIME_ARCHIVE"
+      "validated_manifest_digest", "config-digest-matched-dual-build", "RUNTIME_ARCHIVE",
+      "image-inspect.json", "REGISTRY_TOKEN", "/blobs/$statement_digest",
+      '.subject[0].digest == {"sha256": $digest}'
     ].each do |token|
       errors << "script/ci/validate-container-image: missing evidence check: #{token}" unless helper_source.include?(token)
+    end
+    if helper_source.include?("{{json .SBOM}}") || helper_source.include?("{{json .Provenance}}")
+      errors << "script/ci/validate-container-image: subject-less registry attestation summaries are forbidden"
     end
     recovery_source = recovery.read
     reject_stale_backup_references.call(recovery_source, "script/ci/verify-image-recovery")
@@ -709,6 +795,9 @@ if root.join("bin/release").file?
     abort "mixed release identity" unless contract.fetch("release") == release &&
       contract.fetch("release").keys.sort == %w[ repository sha tag version ] &&
       contract.fetch("workflow_run") == workflow
+    abort "GitHub CLI host pin missing" unless
+      command_environment([ "gh", "api", "user" ], "GH_HOST" => "attacker.example") ==
+        { "GH_HOST" => "github.com" }
     rejected = Struct.new(:exitstatus) do
       def exited? = true
       def success? = false
@@ -731,7 +820,8 @@ if root.join("bin/release").file?
     abort "GitHub publication command count changed" unless publication_commands.length == 1
     publication_command, publication_environment = publication_commands.fetch(0)
     abort "GitHub publication still couples latest-channel mutation" unless
-      publication_environment.empty? && publication_command.include?("--latest=false") &&
+      publication_environment == { "GH_HOST" => "github.com" } &&
+      publication_command.include?("--latest=false") &&
       !publication_command.include?("--latest")
     entry = {
       reconciling: false, resuming: false, reconcile_sha: "", git_sha: "c" * 40,
@@ -767,6 +857,38 @@ if root.join("bin/release").file?
   )
   errors << "bin/release: executable immutable-release contract failed: #{stderr}" unless status.success?
   release_main_source = release_source
+  unless release_main_source.include?('GITHUB_CLI_ENVIRONMENT = { "GH_HOST" => "github.com" }.freeze')
+    errors << "bin/release: every GitHub CLI invocation must pin GH_HOST to github.com"
+  end
+  registry_probe_source = release_main_source[
+    /def prove_registry_tag_immutability!.*?(?=\ndef create_registry_alias_with_policy!)/m
+  ]
+  registry_probe_targets = registry_probe_source&.scan(
+    /"imagetools", "create", "--tag", ([a-z_]+)/
+  )&.flatten
+  unless registry_probe_targets == %w[ control_reference control_reference ] &&
+      registry_probe_source.include?('"exact_alias_conflict_probes" => false') &&
+      !registry_probe_source.include?("policy_references")
+    errors << "bin/release: production registry aliases may never be conflict-probe targets"
+  end
+  [
+    "journal_anchors.monitor_with! live_mutation_runner",
+    'run! "git", "push", RELEASE_REMOTE, "refs/tags/#{TAG}", runner: live_mutation_runner',
+    '"--notes-file", notes_file, "--prerelease=false", runner: live_mutation_runner',
+    '"--title", TAG, "--notes-file", notes_file, runner: live_mutation_runner',
+    '"--field", "operation_nonce=#{operation_nonce}", runner: live_mutation_runner',
+    "Workflow reruns require the monitored live-owner mutation runner",
+    "mutation_runner: live_mutation_runner",
+    "def upload_immutable(local_path, remote_name, revision, runner:)",
+    "def stage_static_release!(archive_path, checksum_path, version, revision, runner:)",
+    "def upload_release_assets_immutably(repository, tag, paths, journal:, runner:)",
+    "capture_remote command, mutation_runner: invocation_lock",
+    "capture_remote move, mutation_runner: invocation_lock"
+  ].each do |control|
+    unless release_main_source.include?(control)
+      errors << "bin/release: monitored live-owner mutation control is missing: #{control}"
+    end
+  end
   [
     "script/ci/verify-javascript",
     "test/support/accessibility/verify_manual_at_template.rb",
@@ -823,7 +945,9 @@ if root.join("bin/release").file?
     object_lock_source = object_lock_helper.read
     [
       "workflow_evidence_pending", "retain_pending_evidence!", "restore_pending_evidence!",
-      "after_first_anchor", "after_both_anchors"
+      "after_first_anchor", "after_both_anchors", "monitor_with!",
+      "PreconditionFailed", 'error.fetch(:operation) == "PutObject"', "AWS_CLI_ERROR_RECORD",
+      "recover_exact_resource_delete_markers!"
     ].each do |control|
       unless object_lock_source.include?(control)
         errors << "lib/release_object_lock_anchors.rb: pending evidence control is missing: #{control}"
@@ -900,7 +1024,8 @@ if root.join("bin/release").file?
     [
       "Object Lock", "independently administered Object Lock", "branch protection",
       "Container validation", "Verify exact architecture receipts", "native `linux/arm64`",
-      "Sigstore public-good", "journal format 6", "s3:ListBucket", "before `promotion.converge!`"
+      "Sigstore public-good", "journal format 6", "s3:ListBucket", '"s3:DeleteObject",',
+      ".exact-resource-delete-marker-intents", "before `promotion.converge!`"
     ].each do |token|
       errors << "docs/releasing.md: required release evidence guidance is missing: #{token}" unless documentation.include?(token)
     end

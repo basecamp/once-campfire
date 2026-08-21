@@ -1,4 +1,8 @@
 <h1 class="for-screen-reader">Chat Bot Setup</h1>
+<% if bot.errors.any? %>
+  <p id="bot-form-errors" class="txt-small colorize--red" role="alert"><%= bot.errors.full_messages.to_sentence %></p>
+<% end %>
+
 <label class="align-center center avatar__form gap" data-controller="upload-preview">
   <div class="btn input--file">
     <%= image_tag "camera.svg", aria: { hidden: "true" }, size: 20 %>
@@ -24,9 +28,15 @@
 <div class="flex align-center gap">
   <%= translation_button(:webhook_url) %>
   <label class="flex align-center gap flex-item-grow txt-large input input--actor">
-    <%= form.url_field :webhook_url, class: "input", placeholder: "Webhook URL" %>
+    <%= form.url_field :webhook_url, class: "input", placeholder: "Webhook URL", pattern: "https://.*",
+          maxlength: Webhook::Endpoint::MAXIMUM_URL_BYTES,
+          aria: {
+            invalid: bot.errors[:webhook_url].any?,
+            describedby: [ ("bot-form-errors" if bot.errors[:webhook_url].any?), "bot-webhook-hint" ].compact.join(" ")
+          } %>
     <%= image_tag "web.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
   </label>
 </div>
+<p id="bot-webhook-hint" class="txt-small colorize--gray">Optional. Must be a public HTTPS URL on port 443.</p>
 
 <%= profile_form_submit_button %>

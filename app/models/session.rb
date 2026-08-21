@@ -39,6 +39,7 @@ class Session < ApplicationRecord
 
     unless Oidc.required_active?
       local = relation.where.not(authentication_method: "oidc").where(identity_id: nil)
+      local = local.where.not(authentication_method: "transfer") if Oidc.enabled?
       return Oidc.enabled? ? local.or(federated) : local
     end
 
@@ -50,6 +51,7 @@ class Session < ApplicationRecord
 
   def self.start!(user:, user_agent:, ip_address:, identity: nil, authentication_method: nil,
       oidc_session_id: nil, oidc_issued_at: nil)
+    prune_expired! unless connection.transaction_open?
     Oidc::SessionGeneration.with_current do |generation|
       transaction do
         user = User.lock_active! user
@@ -61,16 +63,56 @@ class Session < ApplicationRecord
             issued_at: oidc_issued_at
           )
         end
-        prune_expired!
         create! user:, user_agent:, ip_address:, identity:, authentication_method:, oidc_session_id:,
           oidc_issued_at:, oidc_session_generation: (generation if authentication_method == "oidc")
       end
     end
   end
 
+  def self.authenticate_exact!(id:, token:, user_id:)
+    session = includes(:identity, :user).find_by(id:, token:, user_id:)
+    unless session&.valid_for_authentication?
+      raise User::AuthorizationError, "authenticated session was revoked"
+    end
+
+    session
+  end
+
+  def self.revoke_all!(relation = all, limit: nil)
+    scope = relation.reorder(arel_table[:id])
+    scope = scope.limit(limit) if limit
+    rows = scope.pluck(arel_table[:id], arel_table[:user_id])
+    return 0 if rows.empty?
+
+    destroyed = 0
+    User::MutationFence.with(rows.map(&:last)) do
+      transaction do
+        where(id: rows.map(&:first)).order(:id).each do |session|
+          session.destroy!
+          destroyed += 1
+        end
+      end
+    end
+    destroyed
+  end
+
+  def self.revoke_all_in_batches!(relation = all, batch_size: 100)
+    total = 0
+    loop do
+      count = revoke_all!(relation, limit: batch_size)
+      total += count
+      return total if count.zero?
+    end
+  end
+
   def self.prune_expired!(limit: 100)
-    expired_ids = where(expires_at: ...Time.current).order(:expires_at).limit(limit).select(:id)
-    where(id: expired_ids).delete_all
+    ids = where(expires_at: ...Time.current).order(:expires_at, :id).limit(limit).ids
+    revoke_all! where(id: ids)
+  end
+
+  def revoke!
+    self.class.revoke_all! self.class.where(id:)
+    self
   end
 
   def resume(user_agent:, ip_address:)
@@ -86,6 +128,7 @@ class Session < ApplicationRecord
     return false unless user.active?
     return false if expires_at&.past?
     return false unless valid_identity_binding?
+    return false if authentication_method == "transfer" && Oidc.enabled?
     if authentication_method == "oidc"
       return Oidc.current_identity?(identity) && !identity.provider_revoked_at? &&
         oidc_configuration_fingerprint == Oidc.configuration.fingerprint &&
@@ -152,6 +195,11 @@ class Session < ApplicationRecord
     end
 
     def authentication_method_allowed_by_policy
+      if authentication_method == "transfer" && Oidc.enabled?
+        errors.add :authentication_method, "is disabled while single sign-on is enabled"
+        return
+      end
+
       if Oidc.rollback_prepared?
         errors.add :authentication_method, "is disabled while rollback is prepared"
         return

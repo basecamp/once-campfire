@@ -103,6 +103,74 @@ class CampfireBackup::RecoveryMarkersTest < ActiveSupport::TestCase
     end
   end
 
+  test "descriptor marker creation rejects a name replaced before publication" do
+    with_storage do |storage|
+      tree = CampfireBackup::DescriptorTree.new(storage)
+      original_create = tree.method(:create_file)
+      displaced = storage.join("displaced-marker")
+      tree.define_singleton_method(:create_file) do |relative, **options, &block|
+        original_create.call(relative, **options) do |file, stat|
+          block.call(file, stat)
+          File.rename storage.join(relative), displaced
+          storage.join(relative).write "replacement"
+        end
+      end
+
+      error = assert_raises(RuntimeError) do
+        CampfireBackup::RecoveryMarkers.begin_restore!(
+          storage, backup_id: "20260731T120000Z-0123456789abcdef",
+          operation_id: "1" * 32, descriptor_tree: tree
+        )
+      end
+
+      assert_match "changed during creation", error.message
+      assert displaced.file?
+      assert_equal "replacement", storage.join(
+        CampfireBackup::RecoveryMarkers::RESTORE_FILENAME
+      ).read
+    ensure
+      tree&.close
+    end
+  end
+
+  test "descriptor marker removal preserves a replacement raced into its name" do
+    with_storage do |storage|
+      tree = CampfireBackup::DescriptorTree.new(storage)
+      marker = CampfireBackup::RecoveryMarkers.begin_restore!(
+        storage, backup_id: "20260731T120000Z-0123456789abcdef", operation_id: "1" * 32,
+        descriptor_tree: tree
+      )
+      displaced = storage.join("displaced-marker")
+      original_rename = File.method(:rename)
+      raced = false
+      File.define_singleton_method(:rename) do |source, destination|
+        if !raced && source.to_s == CampfireBackup::RecoveryMarkers::RESTORE_FILENAME
+          original_rename.call(source, displaced.to_s)
+          File.write(source, "replacement")
+          raced = true
+        end
+        original_rename.call(source, destination)
+      end
+
+      error = assert_raises(RuntimeError) do
+        CampfireBackup::RecoveryMarkers.complete_restore!(marker, descriptor_tree: tree)
+      end
+
+      assert raced
+      assert_match "was preserved", error.message
+      assert displaced.file?
+      quarantine = storage.children.find { _1.basename.to_s.start_with?(".campfire-quarantine-") }
+      assert_equal "replacement", quarantine.join("entry").read
+    ensure
+      if original_rename
+        File.define_singleton_method(:rename) do |source, destination|
+          original_rename.call(source, destination)
+        end
+      end
+      tree&.close
+    end
+  end
+
   private
     def with_storage
       Dir.mktmpdir("campfire-recovery-markers") do |directory|

@@ -24,6 +24,7 @@ concurrency:
 permissions: {}
 
 env:
+  GH_HOST: github.com
   IMAGE_DESCRIPTION: Campfire is a web-based chat application with multiple rooms, direct messages, file attachments with previews, search, web push notifications, @mentions, and bot integrations. Single-tenant; production-ready image with web app, background jobs, caching, file serving, and SSL.
   SOURCE_URL: https://github.com/${{ github.repository }}
   BUILDKIT_IMAGE: docker.io/moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
@@ -567,6 +568,8 @@ jobs:
           CONTAINER_PLATFORM: ${{ matrix.platform }}
           SOURCE_REVISION: ${{ inputs.release_sha }}
           ARCHITECTURE: ${{ matrix.arch }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           docker pull --platform "$CONTAINER_PLATFORM" "$IMAGE"
@@ -603,7 +606,7 @@ jobs:
           evidence_directory="$RUNNER_TEMP/release-evidence-$ARCHITECTURE"
           jq \
             --arg parent_digest "$PARENT_DIGEST" \
-            --arg inspection_sha256 "$(sha256sum "$evidence_directory/container-validation.json" | cut -d' ' -f1)" \
+            --arg inspection_sha256 "$(sha256sum "$evidence_directory/image-inspect.json" | cut -d' ' -f1)" \
             --arg sbom_sha256 "$(sha256sum "$evidence_directory/sbom.spdx.json" | cut -d' ' -f1)" \
             --arg buildkit_provenance_sha256 "$(sha256sum "$evidence_directory/buildkit-provenance.json" | cut -d' ' -f1)" \
             --arg parent_bundle_sha256 "$(sha256sum "$evidence_directory/parent-provenance.bundle.jsonl" | cut -d' ' -f1)" \
@@ -644,6 +647,7 @@ jobs:
           cp "$RUNNER_TEMP/recovery-${ARCHITECTURE}.json" "$artifact_directory/recovery.json"
           cp "$source_directory/upgrade-recovery.json" "$artifact_directory/upgrade-recovery.json"
           cp "$source_directory/container-validation.json" "$artifact_directory/container-validation.json"
+          cp "$source_directory/image-inspect.json" "$artifact_directory/image-inspect.json"
           cp "$source_directory/sbom.spdx.json" "$artifact_directory/sbom.spdx.json"
           cp "$source_directory/buildkit-provenance.json" "$artifact_directory/buildkit-provenance.json"
           cp "$source_directory/parent-provenance.bundle.jsonl" "$artifact_directory/parent-provenance.bundle.jsonl"
@@ -654,6 +658,7 @@ jobs:
           expected_files=(
             buildkit-provenance.json
             container-validation.json
+            image-inspect.json
             parent-provenance.bundle.jsonl
             parent-provenance-verification.json
             recovery.json
@@ -752,6 +757,7 @@ jobs:
           source_files=(
             buildkit-provenance.json
             container-validation.json
+            image-inspect.json
             parent-provenance.bundle.jsonl
             parent-provenance-verification.json
             recovery.json
@@ -770,6 +776,7 @@ jobs:
             cp "$source_directory/recovery.json" "$destination/recovery-${arch}.json"
             cp "$source_directory/upgrade-recovery.json" "$destination/upgrade-recovery-${arch}.json"
             cp "$source_directory/container-validation.json" "$destination/container-validation-${arch}.json"
+            cp "$source_directory/image-inspect.json" "$destination/image-inspect-${arch}.json"
             cp "$source_directory/sbom.spdx.json" "$destination/sbom-${arch}.spdx.json"
             cp "$source_directory/buildkit-provenance.json" "$destination/buildkit-provenance-${arch}.json"
             cp "$source_directory/parent-provenance.bundle.jsonl" "$destination/parent-provenance-${arch}.bundle.jsonl"
@@ -783,6 +790,8 @@ jobs:
             buildkit-provenance-arm64.json
             container-validation-amd64.json
             container-validation-arm64.json
+            image-inspect-amd64.json
+            image-inspect-arm64.json
             parent-provenance-amd64.bundle.jsonl
             parent-provenance-arm64.bundle.jsonl
             parent-provenance-verification-amd64.json
@@ -818,6 +827,60 @@ jobs:
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - name: Prove GHCR rejects disposable alias overwrite
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_image="${REGISTRY}/${IMAGE_NAME,,}"
+          evidence_directory="$RUNNER_TEMP/release-evidence"
+          probe_reference="${canonical_image}:release-mutability-control-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${OPERATION_NONCE:0:16}"
+          seed_digest=$(jq -r '.parent_digest' "$evidence_directory/recovery-amd64.json")
+          conflict_digest=$(jq -r '.parent_digest' "$evidence_directory/recovery-arm64.json")
+          digest_pattern='^sha256:[0-9a-f]{64}$'
+          [[ "$seed_digest" =~ $digest_pattern && "$conflict_digest" =~ $digest_pattern ]]
+          [[ "$seed_digest" != "$conflict_digest" ]]
+
+          set +e
+          absence_output=$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}' 2>&1)
+          absence_status=$?
+          set -e
+          if [[ "$absence_status" -eq 0 ]]; then
+            echo "Disposable GHCR mutability control already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+          absence_output=$(tr '[:upper:]' '[:lower:]' <<< "$absence_output")
+          [[ "$absence_output" =~ manifest[[:space:]]unknown|not[[:space:]]found ]] || {
+            echo "Could not prove the disposable GHCR mutability control is unused" >&2
+            exit 1
+          }
+
+          docker buildx imagetools create --tag "$probe_reference" "${canonical_image}@${seed_digest}"
+          [[ "$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}')" == "$seed_digest" ]]
+
+          conflict_log="$RUNNER_TEMP/ghcr-mutability-conflict.log"
+          set +e
+          docker buildx imagetools create --tag "$probe_reference" \
+            "${canonical_image}@${conflict_digest}" > "$conflict_log" 2>&1
+          conflict_status=$?
+          set -e
+          if [[ "$conflict_status" -eq 0 ]]; then
+            [[ "$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}')" == "$conflict_digest" ]]
+            echo "GHCR permits alias overwrite; immutable release aliases are unsafe" >&2
+            exit 1
+          fi
+
+          rejection=$(<"$conflict_log")
+          rejection=$(tr '[:upper:]' '[:lower:]' <<< "$rejection")
+          transient_pattern='unauthori[sz]ed|authentication required|insufficient.scope|requested access.*denied|timeout|timed out|connection|network|no such host|tls|certificate|unsupported|not implemented|unknown command|manifest unknown'
+          rejection_pattern='denied|forbidden|conflict|invalid'
+          immutable_pattern='immutable|cannot (overwrite|replace|update).*(tag|manifest)|(tag|manifest).*already exists'
+          [[ ! "$rejection" =~ $transient_pattern ]]
+          [[ "$rejection" =~ $rejection_pattern && "$rejection" =~ $immutable_pattern ]]
+          for verification in 1 2; do
+            : "$verification"
+            [[ "$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}')" == "$seed_digest" ]]
+          done
 
       - name: Create and sign digest-bound manifest
         id: manifest
@@ -857,15 +920,20 @@ jobs:
             [[ "$(jq -r '.signed_provenance.source_ref' "$evidence")" == "refs/heads/main" ]]
             [[ "$(jq -r '.signed_provenance.signer_workflow' "$evidence")" == "publish-image.yml" ]]
             [[ "$(jq -r '.recovery' "$evidence")" == "passed" ]]
+            architecture_digest=$(<"$RUNNER_TEMP/digests/digest-$arch")
+            image_inspection="$evidence_directory/image-inspect-$arch.json"
+            sbom="$evidence_directory/sbom-$arch.spdx.json"
+            buildkit_provenance="$evidence_directory/buildkit-provenance-$arch.json"
             container_validation_sha256=$(sha256sum "$evidence_directory/container-validation-$arch.json" | cut -d' ' -f1)
+            image_inspection_sha256=$(sha256sum "$image_inspection" | cut -d' ' -f1)
+            sbom_sha256=$(sha256sum "$sbom" | cut -d' ' -f1)
+            buildkit_provenance_sha256=$(sha256sum "$buildkit_provenance" | cut -d' ' -f1)
             [[ "$(jq -r '.container_validation_sha256' "$evidence")" == "$container_validation_sha256" ]]
-            [[ "$(jq -r '.image_inspection_sha256' "$evidence")" == "$container_validation_sha256" ]]
+            [[ "$(jq -r '.image_inspection_sha256' "$evidence")" == "$image_inspection_sha256" ]]
             [[ "$(jq -r '.upgrade_receipt_sha256' "$evidence")" == \
               "$(sha256sum "$evidence_directory/upgrade-recovery-$arch.json" | cut -d' ' -f1)" ]]
-            [[ "$(jq -r '.buildkit.sbom_sha256' "$evidence")" == \
-              "$(sha256sum "$evidence_directory/sbom-$arch.spdx.json" | cut -d' ' -f1)" ]]
-            [[ "$(jq -r '.buildkit.provenance_sha256' "$evidence")" == \
-              "$(sha256sum "$evidence_directory/buildkit-provenance-$arch.json" | cut -d' ' -f1)" ]]
+            [[ "$(jq -r '.buildkit.sbom_sha256' "$evidence")" == "$sbom_sha256" ]]
+            [[ "$(jq -r '.buildkit.provenance_sha256' "$evidence")" == "$buildkit_provenance_sha256" ]]
             [[ "$(jq -r '.signed_provenance.parent_bundle_sha256' "$evidence")" == \
               "$(sha256sum "$evidence_directory/parent-provenance-$arch.bundle.jsonl" | cut -d' ' -f1)" ]]
             [[ "$(jq -r '.signed_provenance.runnable_bundle_sha256' "$evidence")" == \
@@ -874,6 +942,59 @@ jobs:
               "$(sha256sum "$evidence_directory/parent-provenance-verification-$arch.json" | cut -d' ' -f1)" ]]
             [[ "$(jq -r '.signed_provenance.runnable_verification_sha256' "$evidence")" == \
               "$(sha256sum "$evidence_directory/runnable-provenance-verification-$arch.json" | cut -d' ' -f1)" ]]
+            jq -e \
+              --arg architecture "$arch" \
+              --arg config_digest "$(jq -r '.target_config_digest' "$evidence")" \
+              --arg revision "$RELEASE_SHA" \
+              --arg build_identity "$expected_build_identity" '
+                length == 1 and .[0].Os == "linux" and .[0].Architecture == $architecture and
+                .[0].Id == $config_digest and
+                .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
+                .[0].Config.Labels["com.basecamp.campfire.build-identity"] == $build_identity
+              ' "$image_inspection" >/dev/null
+            jq -e \
+              --arg architecture "$arch" \
+              --arg platform "linux/$arch" \
+              --arg revision "$RELEASE_SHA" \
+              --arg build_identity "$expected_build_identity" \
+              --arg runnable_digest "$architecture_digest" \
+              --arg config_digest "$(jq -r '.target_config_digest' "$evidence")" \
+              --arg image_inspection_sha256 "$image_inspection_sha256" \
+              --arg sbom_sha256 "$sbom_sha256" \
+              --arg provenance_sha256 "$buildkit_provenance_sha256" '
+                .format_version == 1 and .kind == "campfire-container-validation" and
+                .architecture == $architecture and .platform == $platform and
+                .source_revision == $revision and .build_identity == $build_identity and
+                .runnable_digest == $runnable_digest and
+                .validated_manifest_digest == $runnable_digest and .config_digest == $config_digest and
+                .image_inspection_sha256 == $image_inspection_sha256 and
+                .sbom_sha256 == $sbom_sha256 and
+                .buildkit_provenance_sha256 == $provenance_sha256 and
+                .checks.sbom == "passed" and .checks.provenance == "passed"
+              ' "$evidence_directory/container-validation-$arch.json" >/dev/null
+            jq -e --arg digest "${architecture_digest#sha256:}" '
+              .predicateType == "https://spdx.dev/Document" and
+              (.subject | type) == "array" and (.subject | length) == 1 and
+              .subject[0].digest == {"sha256": $digest} and
+              .predicate.SPDXID == "SPDXRef-DOCUMENT" and
+              (.predicate.spdxVersion | startswith("SPDX-")) and
+              (.predicate.packages | length) > 0
+            ' "$sbom" >/dev/null
+            jq -e \
+              --arg digest "${architecture_digest#sha256:}" \
+              --arg architecture "$arch" \
+              --arg revision "$RELEASE_SHA" '
+                .predicateType == "https://slsa.dev/provenance/v1" and
+                (.subject | type) == "array" and (.subject | length) == 1 and
+                .subject[0].digest == {"sha256": $digest} and
+                .predicate.buildDefinition.buildType ==
+                  "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
+                (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
+                (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
+                any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
+                  .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
+                (.predicate | tostring | contains($revision))
+              ' "$buildkit_provenance" >/dev/null
             jq -e \
               --arg target_reference "${canonical_image}@$(<"$RUNNER_TEMP/digests/digest-$arch")" \
               --arg legacy_reference "$LEGACY_IMAGE" '
@@ -993,7 +1114,7 @@ jobs:
             {
               authority: "bin/release",
               required_release_driver_evidence: [
-                "live no-overwrite registry probe bound to immutable aliases",
+                "repository no-overwrite evidence from an operation-bound disposable alias",
                 "dual Object Lock anchor receipts for the authenticated journal head"
               ],
               workflow_scope: "attempt-scoped staging only"
@@ -1008,6 +1129,7 @@ jobs:
             recovery-amd64.json
             upgrade-recovery-amd64.json
             container-validation-amd64.json
+            image-inspect-amd64.json
             sbom-amd64.spdx.json
             buildkit-provenance-amd64.json
             parent-provenance-amd64.bundle.jsonl
@@ -1017,6 +1139,7 @@ jobs:
             recovery-arm64.json
             upgrade-recovery-arm64.json
             container-validation-arm64.json
+            image-inspect-arm64.json
             sbom-arm64.spdx.json
             buildkit-provenance-arm64.json
             parent-provenance-arm64.bundle.jsonl
@@ -1111,6 +1234,7 @@ jobs:
             ${{ runner.temp }}/release-evidence/recovery-amd64.json
             ${{ runner.temp }}/release-evidence/upgrade-recovery-amd64.json
             ${{ runner.temp }}/release-evidence/container-validation-amd64.json
+            ${{ runner.temp }}/release-evidence/image-inspect-amd64.json
             ${{ runner.temp }}/release-evidence/sbom-amd64.spdx.json
             ${{ runner.temp }}/release-evidence/buildkit-provenance-amd64.json
             ${{ runner.temp }}/release-evidence/parent-provenance-amd64.bundle.jsonl
@@ -1120,6 +1244,7 @@ jobs:
             ${{ runner.temp }}/release-evidence/recovery-arm64.json
             ${{ runner.temp }}/release-evidence/upgrade-recovery-arm64.json
             ${{ runner.temp }}/release-evidence/container-validation-arm64.json
+            ${{ runner.temp }}/release-evidence/image-inspect-arm64.json
             ${{ runner.temp }}/release-evidence/sbom-arm64.spdx.json
             ${{ runner.temp }}/release-evidence/buildkit-provenance-arm64.json
             ${{ runner.temp }}/release-evidence/parent-provenance-arm64.bundle.jsonl

@@ -1,6 +1,7 @@
 class AccountsController < ApplicationController
   before_action :ensure_can_administer, only: :update
   before_action :set_account
+  skip_around_action :with_session_mutation_fence, only: :update
 
   def edit
     users = account_users.ordered.without_bots
@@ -9,7 +10,7 @@ class AccountsController < ApplicationController
   end
 
   def update
-    @account.update_with_staged_logo! account_params, actor: Current.user
+    @account.update_with_staged_logo! account_params, actor: Current.user, current_session: Current.session
     redirect_to edit_account_url, notice: "✓"
   end
 

@@ -22,16 +22,25 @@ class Account < ApplicationRecord
     logo.variant(size).processed if logo.variable?
   end
 
-  def update_with_staged_logo!(attributes, actor:)
+  def update_with_staged_logo!(attributes, actor:, current_session: nil)
     attributes = attributes.to_h.symbolize_keys
     upload = attributes.delete(:logo)
+    current_session_id = current_session&.id
+    current_session_token = current_session&.token&.dup
 
     StagedUpload.with(upload) do |blob|
-      transaction do
-        User.lock_administrator! actor
-        account = self.class.lock.find(id)
-        account.update!(attributes)
-        StagedUpload.attach! account.logo, blob if blob
+      User::MutationFence.with(actor.id) do
+        if current_session
+          Session.authenticate_exact!(
+            id: current_session_id, token: current_session_token, user_id: actor.id
+          )
+        end
+        transaction do
+          locked_actor = User.lock_administrator! actor
+          account = self.class.lock.find(id)
+          account.update!(attributes)
+          StagedUpload.attach! account.logo, blob if blob
+        end
       end
     end
     reload

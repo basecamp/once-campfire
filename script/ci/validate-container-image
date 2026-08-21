@@ -39,6 +39,37 @@ file_sha256() {
   sha256sum "$1" | cut -d' ' -f1
 }
 
+validate_sbom_statement() {
+  local statement=$1 subject_digest=$2
+  jq -e --arg digest "${subject_digest#sha256:}" '
+    .predicateType == "https://spdx.dev/Document" and
+    (.subject | type) == "array" and (.subject | length) == 1 and
+    .subject[0].digest == {"sha256": $digest} and
+    .predicate.SPDXID == "SPDXRef-DOCUMENT" and
+    (.predicate.spdxVersion | startswith("SPDX-")) and
+    (.predicate.packages | length) > 0
+  ' "$statement" >/dev/null
+}
+
+validate_provenance_statement() {
+  local statement=$1 subject_digest=$2
+  jq -e \
+    --arg digest "${subject_digest#sha256:}" \
+    --arg architecture "$architecture" \
+    --arg revision "$source_revision" '
+    .predicateType == "https://slsa.dev/provenance/v1" and
+    (.subject | type) == "array" and (.subject | length) == 1 and
+    .subject[0].digest == {"sha256": $digest} and
+    .predicate.buildDefinition.buildType ==
+      "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
+    (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
+    (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
+    any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
+      .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
+    (.predicate | tostring | contains($revision))
+  ' "$statement" >/dev/null
+}
+
 image_inspection="$evidence_directory/image-inspect.json"
 docker image inspect "$image" > "$image_inspection"
 jq -e \
@@ -157,42 +188,30 @@ if [[ -n "$oci_archive" ]]; then
     [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
     attestation_manifest="$oci_root/blobs/sha256/${attestation_digest#sha256:}"
     [[ -f "$attestation_manifest" ]]
-    while IFS=$'\t' read -r statement_digest predicate_type; do
+    [[ "sha256:$(file_sha256 "$attestation_manifest")" == "$attestation_digest" ]]
+    while IFS=$'\t' read -r statement_digest predicate_type media_type statement_size; do
       [[ "$statement_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+      [[ "$media_type" == "application/vnd.in-toto+json" ]]
+      [[ "$statement_size" =~ ^[1-9][0-9]*$ ]]
       statement="$oci_root/blobs/sha256/${statement_digest#sha256:}"
       [[ -f "$statement" ]]
+      [[ "sha256:$(file_sha256 "$statement")" == "$statement_digest" ]]
+      [[ "$(wc -c < "$statement")" -eq "$statement_size" ]]
       case "$predicate_type" in
         https://spdx.dev/Document)
           ((sbom_count += 1))
           cp "$statement" "$sbom_path"
-          jq -e --arg digest "${runnable_digest#sha256:}" '
-            .predicateType == "https://spdx.dev/Document" and
-            any(.subject[]?; .digest.sha256 == $digest) and
-            .predicate.SPDXID == "SPDXRef-DOCUMENT" and
-            (.predicate.spdxVersion | startswith("SPDX-")) and
-            (.predicate.packages | length) > 0
-          ' "$statement" >/dev/null
+          validate_sbom_statement "$statement" "$runnable_digest"
           ;;
         https://slsa.dev/provenance/*)
           ((provenance_count += 1))
           cp "$statement" "$provenance_path"
-          jq -e \
-            --arg digest "${runnable_digest#sha256:}" \
-            --arg architecture "$architecture" \
-            --arg revision "$source_revision" '
-            .predicateType == "https://slsa.dev/provenance/v1" and
-            any(.subject[]?; .digest.sha256 == $digest) and
-            .predicate.buildDefinition.buildType ==
-              "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
-            (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
-            (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
-            any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
-              .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
-            (.predicate | tostring | contains($revision))
-          ' "$statement" >/dev/null
+          validate_provenance_statement "$statement" "$runnable_digest"
           ;;
       esac
-    done < <(jq -r '.layers[] | [.digest, (.annotations["in-toto.io/predicate-type"] // "")] | @tsv' "$attestation_manifest")
+    done < <(jq -r '.layers[] |
+      [.digest, (.annotations["in-toto.io/predicate-type"] // ""), .mediaType, (.size | tostring)] |
+      @tsv' "$attestation_manifest")
   done
   [[ "$sbom_count" -eq 1 && "$provenance_count" -eq 1 ]]
   oci_archive_sha256=$(file_sha256 "$oci_archive")
@@ -204,32 +223,81 @@ elif [[ -n "$attestation_image" ]]; then
   [[ -n "$target_digest" ]]
   registry_manifest="$evidence_directory/build-index.json"
   docker buildx imagetools inspect "$attestation_image" --raw > "$registry_manifest"
+  parent_digest=${attestation_image##*@}
+  [[ "$parent_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ "sha256:$(file_sha256 "$registry_manifest")" == "$parent_digest" ]]
   jq -e --arg architecture "$architecture" --arg digest "$target_digest" '
     [.manifests[] |
       select(.annotations["vnd.docker.reference.type"] != "attestation-manifest") |
       select(.platform.os == "linux" and .platform.architecture == $architecture and .digest == $digest)
     ] | length == 1
   ' "$registry_manifest" >/dev/null
-  jq -e --arg digest "$target_digest" '
-    [.manifests[] |
-      select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") |
-      select(.annotations["vnd.docker.reference.digest"] == $digest)
-    ] | length >= 1
-  ' "$registry_manifest" >/dev/null
-  docker buildx imagetools inspect "$attestation_image" --format '{{json .SBOM}}' > "$sbom_path"
-  docker buildx imagetools inspect "$attestation_image" --format '{{json .Provenance}}' > "$provenance_path"
-  jq -e '
-    .SPDX.SPDXID == "SPDXRef-DOCUMENT" and
-    (.SPDX.spdxVersion | startswith("SPDX-")) and
-    (.SPDX.packages | length) > 0
-  ' "$sbom_path" >/dev/null
-  jq -e --arg platform "$platform" --arg revision "$source_revision" '
-    .SLSA.buildType == "https://mobyproject.org/buildkit@v1" and
-    .SLSA.invocation.environment.platform == $platform and
-    (.SLSA.materials | length) >= 2 and
-    (.SLSA.buildConfig.llbDefinition | length) > 0 and
-    (.SLSA | tostring | contains($revision))
-  ' "$provenance_path" >/dev/null
+  mapfile -t attestation_digests < <(jq -r --arg digest "$target_digest" '
+    .manifests[] |
+    select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") |
+    select(.annotations["vnd.docker.reference.digest"] == $digest) |
+    .digest
+  ' "$registry_manifest")
+  [[ ${#attestation_digests[@]} -ge 1 ]]
+
+  registry_reference=${attestation_image%@*}
+  registry=${registry_reference%%/*}
+  repository=${registry_reference#*/}
+  registry_username=${REGISTRY_USERNAME:?REGISTRY_USERNAME is required for registry attestations}
+  registry_token=${REGISTRY_TOKEN:?REGISTRY_TOKEN is required for registry attestations}
+  [[ "$registry" == "ghcr.io" ]]
+  [[ "$repository" =~ ^[a-z0-9][a-z0-9._/-]*[a-z0-9]$ && "$repository" != *..* ]]
+  pull_token=$(curl --fail --silent --show-error --get \
+    --user "$registry_username:$registry_token" \
+    --data-urlencode "service=$registry" \
+    --data-urlencode "scope=repository:$repository:pull" \
+    "https://$registry/token" | jq -er \
+      '(.token // .access_token) | select(type == "string" and length > 0)')
+  registry_root=$(mktemp -d "${RUNNER_TEMP:-/tmp}/campfire-registry-attestations.XXXXXX")
+  trap 'rm -rf "$registry_root"' EXIT
+  sbom_count=0
+  provenance_count=0
+  for attestation_digest in "${attestation_digests[@]}"; do
+    [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+    attestation_manifest="$registry_root/${attestation_digest#sha256:}.json"
+    curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+      --header "Authorization: Bearer $pull_token" \
+      --header "Accept: application/vnd.oci.image.manifest.v1+json" \
+      --output "$attestation_manifest" \
+      "https://$registry/v2/$repository/manifests/$attestation_digest"
+    [[ "sha256:$(file_sha256 "$attestation_manifest")" == "$attestation_digest" ]]
+    jq -e '.schemaVersion == 2 and (.layers | type) == "array"' "$attestation_manifest" >/dev/null
+
+    while IFS=$'\t' read -r statement_digest predicate_type media_type statement_size; do
+      [[ "$statement_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+      [[ "$media_type" == "application/vnd.in-toto+json" ]]
+      [[ "$statement_size" =~ ^[1-9][0-9]*$ ]]
+      statement="$registry_root/${statement_digest#sha256:}.statement.json"
+      curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+        --header "Authorization: Bearer $pull_token" \
+        --output "$statement" \
+        "https://$registry/v2/$repository/blobs/$statement_digest"
+      [[ "sha256:$(file_sha256 "$statement")" == "$statement_digest" ]]
+      [[ "$(wc -c < "$statement")" -eq "$statement_size" ]]
+      case "$predicate_type" in
+        https://spdx.dev/Document)
+          ((sbom_count += 1))
+          cp "$statement" "$sbom_path"
+          validate_sbom_statement "$statement" "$target_digest"
+          ;;
+        https://slsa.dev/provenance/*)
+          ((provenance_count += 1))
+          cp "$statement" "$provenance_path"
+          validate_provenance_statement "$statement" "$target_digest"
+          ;;
+      esac
+    done < <(jq -r '.layers[] |
+      [.digest, (.annotations["in-toto.io/predicate-type"] // ""), .mediaType, (.size | tostring)] |
+      @tsv' "$attestation_manifest")
+  done
+  [[ "$sbom_count" -eq 1 && "$provenance_count" -eq 1 ]]
+  rm -rf "$registry_root"
+  trap - EXIT
   runnable_digest=$target_digest
   docker buildx imagetools inspect "$image" --raw > "$runnable_manifest_path"
   [[ "sha256:$(file_sha256 "$runnable_manifest_path")" == "$runnable_digest" ]]

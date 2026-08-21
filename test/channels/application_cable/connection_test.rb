@@ -1,6 +1,25 @@
 require "test_helper"
 
 class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
+  test "rejects an oversized command before Action Cable buffering or JSON decoding" do
+    env = Rack::MockRequest.env_for "/cable", "HTTP_HOST" => "localhost"
+    cable_connection = ApplicationCable::Connection.new(ActionCable.server, env)
+    command = "x" * (ApplicationCable::Connection::MAXIMUM_COMMAND_BYTES + 1)
+    cable_connection.send(:message_buffer).expects(:append).never
+    cable_connection.expects(:close).with(reason: "Command too large", reconnect: false)
+
+    cable_connection.on_message command
+  end
+
+  test "admits a command at the application byte limit" do
+    env = Rack::MockRequest.env_for "/cable", "HTTP_HOST" => "localhost"
+    cable_connection = ApplicationCable::Connection.new(ActionCable.server, env)
+    command = "x" * ApplicationCable::Connection::MAXIMUM_COMMAND_BYTES
+    cable_connection.send(:message_buffer).expects(:append).with(command)
+
+    cable_connection.on_message command
+  end
+
   test "connects with valid user_id cookie" do
     cookies.signed[:session_token] = sessions(:david_safari).token
 
@@ -74,7 +93,7 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
     connect
 
     Session.stubs(:find_by).with(id: session.id).returns(session)
-    session.stubs(:destroy!).raises(ActiveRecord::StatementInvalid, "database unavailable")
+    session.stubs(:revoke!).raises(ActiveRecord::StatementInvalid, "database unavailable")
     connection.expects(:close).with(reason: "Session expired", reconnect: false)
 
     assert_raises(ActiveRecord::StatementInvalid) { connection.send :expire_session }

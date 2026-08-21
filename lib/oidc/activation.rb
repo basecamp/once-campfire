@@ -60,32 +60,27 @@ module Oidc
           raise Error, error
         end
 
-        compatible_sessions = Session.unexpired.joins(:user).merge(User.active).where(
-          authentication_method: "oidc",
-          oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
-          identity_id: Identity.where(
-            issuer: Oidc.issuer, provider_fingerprint: Oidc.provider_fingerprint
-          ).select(:id)
-        )
-        Session.where.not(id: compatible_sessions.select(:id)).find_each(&:destroy!)
-        Push::Subscription.where(session_id: nil).delete_all
         account.update!(
           oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
           oidc_required_at: Time.current,
           oidc_break_glass_user: recovery_user,
           oidc_transition_state: nil
         )
-
-        raise Error, "session cleanup was incomplete" if Session.where.not(id: compatible_sessions.select(:id)).exists?
-        raise Error, "push cleanup was incomplete" if Push::Subscription.where(session_id: nil).exists?
       end
+
+      incompatible_sessions = Session.where.not(id: compatible_sessions.select(:id))
+      Session.revoke_all_in_batches! incompatible_sessions
+      Push::Subscription.where(session_id: nil).delete_all
+
+      raise Error, "session cleanup was incomplete" if incompatible_sessions.exists?
+      raise Error, "push cleanup was incomplete" if Push::Subscription.where(session_id: nil).exists?
     end
 
     def prepare_rollback!(confirmation:)
       unless confirmation == "DELETE ALL SESSIONS"
         raise Error, "set CONFIRM='DELETE ALL SESSIONS' to acknowledge global sign-out"
       end
-      user_ids = Account.transaction do
+      Account.transaction do
         account = Account.lock.sole
         if Identity.where(provisioned: true).exists?
           raise Error, "an OIDC-incompatible rollback would strand JIT-provisioned users; stay on an OIDC-capable image"
@@ -94,9 +89,6 @@ module Oidc
           raise Error, "an OIDC-incompatible rollback would strand users without local passwords"
         end
 
-        affected_user_ids = Session.distinct.pluck(:user_id)
-        Push::Subscription.delete_all
-        Session.delete_all
         account.update!(
           oidc_configuration_fingerprint: nil,
           oidc_required_at: nil,
@@ -104,11 +96,11 @@ module Oidc
           oidc_verified_at: nil,
           oidc_transition_state: "rollback_prepared"
         )
-
-        raise Error, "session cleanup was incomplete" if Session.exists? || Push::Subscription.exists?
-        affected_user_ids
       end
-      User.where(id: user_ids).find_each(&:disconnect_remote_connections)
+
+      Session.revoke_all_in_batches!
+      Push::Subscription.delete_all
+      raise Error, "session cleanup was incomplete" if Session.exists? || Push::Subscription.exists?
     end
 
     def cancel_rollback!(confirmation:, recovery_password:)
@@ -165,6 +157,16 @@ module Oidc
     end
 
     private
+      def compatible_sessions
+        Session.unexpired.joins(:user).merge(User.active).where(
+          authentication_method: "oidc",
+          oidc_configuration_fingerprint: Oidc.configuration.fingerprint,
+          identity_id: Identity.where(
+            issuer: Oidc.issuer, provider_fingerprint: Oidc.provider_fingerprint
+          ).select(:id)
+        )
+      end
+
       def migrated?
         Account.column_names.include?("oidc_required_at") &&
           Account.column_names.include?("oidc_transition_state") &&

@@ -40,8 +40,9 @@ subjected to current-schema and pre-migration recovery tests. The manifest job
 then verifies those exact child digests and uploads attempt-scoped final release
 evidence. It does not create release aliases. Only after the successful evidence
 artifact is downloadable does `bin/release` validate its digest, signatures,
-children, run ID, run attempt, and per-operation dispatch nonce and idempotently create missing immutable
-`vMAJOR.MINOR.PATCH` and `MAJOR.MINOR.PATCH` aliases.
+children, run ID, run attempt, and per-operation dispatch nonce and idempotently
+create missing policy-protected `vMAJOR.MINOR.PATCH` and `MAJOR.MINOR.PATCH`
+aliases.
 
 Before either registry-writing job starts, an unprivileged preflight reads the
 GitHub environment configuration and requires at least one reviewer with
@@ -75,7 +76,9 @@ statements and digest are recorded.
 The `verify-receipts` job downloads both exact attempt-scoped receipts. Each
 architecture receipt directly binds `run.json`, `container-validation.json`,
 `recovery-receipt.json`, and `upgrade-recovery.json` by SHA-256. The aggregate
-job requires and independently validates all four source files, verifies the
+job also retains and independently validates `image-inspect.json`, the exact
+single-subject SPDX statement, and the exact single-subject BuildKit provenance
+statement. It verifies the
 amd64/x86_64 and arm64/aarch64 pair against the same source revision, and carries
 all four hashes into each entry of one exact-schema architecture-set receipt.
 Branch protection requires its displayed check name, `Verify exact architecture
@@ -101,9 +104,11 @@ with the images that were executed. Architecture evidence and the final release
 evidence are retained by GitHub for 90 days only as transport and diagnostic
 copies. They are not the durable reconciliation authority.
 
-The workflow creates only attempt-scoped staging references. `bin/release`
-downloads that exact attempt's evidence and records authenticated immutable
-alias and `promotion_prepared` journal heads before `promotion.converge!`.
+The workflow creates attempt-scoped staging references and one operation-bound
+disposable GHCR policy control; it never conflict-writes a production release
+alias. `bin/release` downloads that exact attempt's evidence and records the
+repository/disposable policy scope, explicit absence of exact-alias conflict
+probes, alias target intent, and `promotion_prepared` journal heads before `promotion.converge!`.
 Before writing any retained evidence object, it records the operation nonce,
 run ID and attempt, and exact file names, byte counts, and SHA-256 hashes as an
 authenticated `workflow_evidence_pending` journal revision and reads that
@@ -114,8 +119,9 @@ replace the pending state with the final `workflow_evidence` journal contract.
 Every authenticated journal revision and its content-addressed head are
 synchronously retained and read back from both Object Lock anchors before the
 release driver can make the next external mutation. GitHub artifacts prove what
-CI checked; the live registry probes and dual anchors prove the separate
-production controls used by the release driver.
+CI checked; the disposable registry controls provide observable repository
+policy evidence, and the dual anchors retain the driver's exact claims. They do
+not prove exact per-alias policy coverage.
 
 The dispatch phase generates a 256-bit operation nonce and authenticates it in
 the journal before calling GitHub. The protected workflow must declare the exact
@@ -172,6 +178,8 @@ upgrade-recovery-amd64.json
 upgrade-recovery-arm64.json
 container-validation-amd64.json
 container-validation-arm64.json
+image-inspect-amd64.json
+image-inspect-arm64.json
 sbom-amd64.spdx.json
 sbom-arm64.spdx.json
 buildkit-provenance-amd64.json
@@ -223,6 +231,9 @@ key for their full retention lifetime.
 `bin/release` removes this variable from its process environment before its
 first subprocess is launched. The decoded key is passed only to in-process HMAC
 operations; editors, Git, GitHub CLI, Docker, Cosign, and SSH never inherit it.
+Every GitHub CLI subprocess also receives `GH_HOST=github.com`; an ambient
+`GH_HOST` cannot redirect release reads, attestations, dispatches, uploads, or
+publication mutations.
 
 AWS CLI v2 is a mandatory release-host prerequisite. Production releases set
 `RELEASE_JOURNAL_ANCHOR_PROVIDER=aws`; this mode rejects both
@@ -273,13 +284,25 @@ exact version ID, successfully deletes that version after it has no active
 retention, and proves it is gone. A policy that grants deletion only to a
 separate probe prefix cannot qualify. This control establishes that the active
 principal has destructive `DeleteObjectVersion` authority in the protected
-namespace. The script then attempts a version-specific
-delete of the COMPLIANCE-retained object and accepts only the expected S3
-`DeleteObject` `AccessDenied` or explicit COMPLIANCE-retention classification.
+namespace. Before touching an exact retained key, the script creates a temporary
+delete marker whose content-addressed intent key commits to that retained
+object's exact key, version ID, checksum metadata, kind, retention deadline, and
+anchor-set identity. It then creates and removes one temporary delete marker on
+the retained key and removes the intent marker. A restart first authenticates
+the pending intent against the still-retained exact object, removes at most that
+one protected-key marker, and finally removes the intent marker. Thus loss of an
+AWS CLI response or a killed monitored executor cannot leave an unrecoverable
+marker, while a protected-key marker without its exact pending intent still
+fails closed. The script then attempts a version-specific delete of the
+COMPLIANCE-retained object and accepts only the canonical AWS CLI `AccessDenied`
+record for the `DeleteObject` operation.
 Timeouts, connectivity failures, unsupported operations, and arbitrary nonzero
 exits are not retention evidence. It also
 reissues the content address with `If-None-Match: *` and requires rejection, so
-an implementation that accepts a second version cannot qualify. AWS CLI child
+an implementation that accepts a second version cannot qualify. Initial races
+and overwrite proofs accept only AWS CLI's exact `PreconditionFailed` error for
+the `PutObject` operation; another nonzero result is not conditional-write
+evidence. AWS CLI child
 processes receive only `HOME`, `PATH`, explicit AWS config/credential file and
 CA paths, and locale settings; ambient AWS keys, GitHub tokens, journal keys,
 and application secrets are removed. Configure credentials in the named
@@ -315,10 +338,58 @@ and preferably a separate region. Grant the named release role only
 `s3:ListBucketVersions`, `s3:GetBucketVersioning`,
 `s3:GetBucketObjectLockConfiguration`, `s3:GetObject`, `s3:GetObjectVersion`,
 `s3:GetObjectRetention`, `s3:PutObject`, `s3:PutObjectRetention`, and
-`s3:DeleteObjectVersion`. Grant bucket-level list actions on the bucket and
-object actions only on the configured prefix. The last permission is
-intentional: the live version-specific delete must reach S3 and be rejected by
-COMPLIANCE retention rather than fail because the caller lacks delete authority.
+`s3:DeleteObject` and `s3:DeleteObjectVersion`. Grant bucket-level actions only
+on the exact bucket and object actions only on
+`arn:aws:s3:::BUCKET/CONFIGURED_PREFIX/*`. `s3:DeleteObject` must cover both the
+retained object keys and their in-namespace
+`.exact-resource-delete-marker-intents` keys: limiting it to a separate probe
+prefix does not prove authority on the retained resource. The two delete
+permissions are intentional. Temporary marker creation and cleanup must reach
+S3, and the live version-specific retained-object delete must be rejected by
+COMPLIANCE retention rather than by missing IAM authority. A minimal resource
+split for each independently administered bucket is:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReleaseAnchorIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReleaseAnchorBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketObjectLockConfiguration"
+      ],
+      "Resource": "arn:aws:s3:::BUCKET"
+    },
+    {
+      "Sid": "ReleaseAnchorExactPrefixObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:GetObjectRetention",
+        "s3:PutObject",
+        "s3:PutObjectRetention",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::BUCKET/CONFIGURED_PREFIX/*"
+    }
+  ]
+}
+```
+
+Replace both placeholders exactly; do not widen the object resource to the
+whole bucket.
 Do not grant `s3:BypassGovernanceRetention`, bucket deletion, lifecycle mutation,
 or policy mutation. Independently controlled bucket policy and organization SCPs
 must prevent the release role and repository administrators from changing those
@@ -349,40 +420,43 @@ requires resolving the desired tag through its registry or source API, checking
 the multi-architecture index and children, and committing the observed digest;
 never substitute a guessed digest or an architecture-specific child digest.
 
-There is no registry-policy acknowledgement variable. For each registry,
-`bin/release` first writes the unique
-`release-mutability-control-OPERATION_ID` tag at the verified release index and
-successfully overwrites it with a distinct recovery-evidenced build index. That
-authenticated successful control write proves current write authority,
-connectivity, and mutable-control policy. The two source manifests are inspected
-and must have the same supported index media type.
+There is no registry-policy acknowledgement variable. The protected workflow
+uses the unique
+`release-mutability-control-RUN_ID-RUN_ATTEMPT-OPERATION_NONCE_PREFIX` GHCR tag.
+It proves the tag absent, seeds it with one recovery-evidenced build index,
+attempts to replace it with the other same-media-type build index, accepts only
+a recognizable server-side immutable-tag rejection, and reads the seed digest
+twice. A successful authenticated workflow run and the retained evidence bind
+that gate; `bin/release` reconstructs the exact control reference and verifies
+that it still resolves to the seed digest. The driver performs the analogous
+operation-bound disposable test for `registry.once.com` under its live-owner
+mutation runner.
 
-The driver then exercises every real exact alias, not a differently named proxy.
-It compare-reads an alias, seeds a missing alias with the release index, attempts
-to replace it with the distinct same-media-type index, and reads the alias twice.
-The command must return a recognizable server-side immutable-tag denial and both
-reads must preserve the release digest. Authentication failures, authorization
-failures, timeouts, TLS or network errors, unsupported operations, unknown
-manifests, signals, and arbitrary nonzero exits are not immutability evidence.
-The journal retains the mutable-control observations and, for every actual
-alias, the classified rejection, exit status, output hash, and preserved digest;
-that evidence is retained in both Object Lock accounts before promotion.
+Neither test ever sends a conflicting manifest to a production exact alias.
+The journal says so explicitly with `exact_alias_conflict_probes: false`, records
+the policy scope as `repository_disposable_alias`, and separately records the
+intended exact-alias-to-digest mapping. This is strong repository/disposable
+evidence, not a claim that the driver directly proved immutability for each
+production alias. Authentication failures, authorization failures, timeouts,
+TLS or network errors, unsupported operations, unknown manifests, signals, and
+arbitrary nonzero exits are not policy evidence.
 
-Both GHCR and `registry.once.com` must provide an atomic no-overwrite policy for
+GHCR and `registry.once.com` must still provide atomic no-overwrite policy for
 the actual exact aliases: GHCR `vMAJOR.MINOR.PATCH` and
 `MAJOR.MINOR.PATCH`, and secondary-registry `MAJOR.MINOR.PATCH` and the
-40-character release-SHA tag. The `release-mutability-control-*`, attempt/build
-staging, and moving channel namespaces must remain mutable; exact aliases must
-not. Restrict writes and policy administration to independently controlled
-release principals, disable package/tag deletion for those principals, and
-retain exact aliases for the release retention period.
+40-character release-SHA tag. Configure the disposable control namespace under
+the corresponding no-overwrite policy while leaving attempt/build staging and
+moving channels writable. Restrict writes and policy administration to
+independently controlled release principals, disable package/tag deletion for
+those principals, and retain exact aliases for the release retention period.
 
 Docker Registry and Buildx expose no portable conditional create/CAS for a tag.
-Testing the exact alias and re-reading around every write minimizes the race, but
-only the registry's atomic server-side no-overwrite rule closes it. That rule,
-its coverage of each alias namespace, deletion prevention, and separation of
-policy administrators are hard infrastructure prerequisites that this code can
-test but cannot create. A registry without those controls is unsupported for
+The driver therefore compare-reads each production alias, creates it only when
+absent, and reads the result twice; a visible conflict or unsettled result fails
+closed. Only the registry's atomic server-side rule closes the remaining race.
+Exact alias-rule coverage, deletion prevention, and separation of policy
+administrators remain external infrastructure prerequisites that a disposable
+probe cannot establish. A registry without those controls is unsupported for
 production releases.
 
 An existing signed tag, draft or public release, or release asset is never
@@ -493,6 +567,12 @@ remote service could still arrive. A launched child that exits without a
 verified target leaves the same unresolved state. Journal publication SSH
 children are monitored the same way while staging and hard-linking immutable
 history entries.
+After acquisition, every other external mutation also uses that monitored
+process-group runner: signed-tag pushes, GitHub release creation/edit/upload,
+workflow dispatch or rerun, static-host upload/staging, and Object Lock AWS CLI
+publication. Lock loss terminates and settles the complete process group before
+control returns. Object Lock reads use the same runner after acquisition as
+well, while retaining `unsetenv_others` and the sanitized AWS environment.
 
 Every moving-channel convergence receives an authenticated random generation.
 Mutation markers, explicit settled-token acknowledgements, and completed-step
@@ -526,8 +606,10 @@ bin/release MAJOR.MINOR.PATCH
 `RELEASE_RECONCILE_ACTION` is mandatory whenever
 `RELEASE_RECONCILE_SHA` is set and is rejected on an ordinary release. The
 driver parses it before Git, GitHub, registry, or static publication work, then
-writes the exact action and a random action generation into the authenticated,
-dual-anchored journal before selecting a forward or rollback path. If final
+writes an eligible action and a random action generation into the authenticated,
+dual-anchored journal before selecting a forward or rollback path. In particular,
+a public GitHub release makes rollback ineligible before rollback authority can
+be persisted. If final
 workflow evidence is already retained, the run ID and attempt arguments are
 optional; supplied values must still match the retained identity.
 
@@ -588,14 +670,16 @@ and never dispatches one after public completion. If authenticated state proves
 that the workflow phase never started while the release is still a draft, it
 may perform that first dispatch exactly once. Otherwise it revalidates the
 original successful workflow evidence and exact image digest before adopting
-the authenticated lock. Before alias creation, the release reruns or verifies
-the retained live no-overwrite probe, then the HMAC journal records the complete
-probe-evidence and exact-tag-to-digest mapping independently of registry state.
+the authenticated lock. Before alias creation, the release verifies the retained
+GHCR disposable no-overwrite gate and runs or resumes the secondary registry's
+disposable gate, then the HMAC journal records the scoped policy evidence and
+exact-tag-to-digest target mapping independently of registry state. It explicitly
+does not claim an exact-alias conflict probe.
 The code rechecks each alias immediately before creation and after mutation; a
 visible conflict, rejected write, or unsettled postcondition leaves explicit
 unresolved state and cannot report success. The proven server-side immutable-tag
-policy supplies the atomic no-overwrite guarantee across competing registry
-writers. If either GHCR
+policy must supply the atomic no-overwrite guarantee across competing registry
+writers; the disposable test alone does not prove exact rule coverage. If either GHCR
 release alias is missing after successful evidence recovery, the script creates
 only that missing alias from the evidenced digest. If secondary-registry staging
 or either exact alias is missing, reconciliation may copy and sign that same
@@ -635,12 +719,9 @@ include `reconcile_action_authenticated`, `pre_promotion_abandon_started`,
 `workflow_evidence_after_pending_contract`,
 `workflow_evidence_after_first_anchor`, `workflow_evidence_after_both_anchors`,
 `workflow_evidence_before_journal_promotion`,
-`ghcr_immutability_probe_control_seed`,
-`ghcr_immutability_probe_control_overwrite`, `ghcr_immutability_probe_seed`,
-`ghcr_immutability_probe_conflict`, `secondary_staging`,
+`secondary_staging`,
 `secondary_immutability_probe_control_seed`,
-`secondary_immutability_probe_control_overwrite`, `secondary_immutability_probe_seed`,
-`secondary_immutability_probe_conflict`, `secondary_signature`, `secondary_version_alias`,
+`secondary_immutability_probe_control_conflict`, `secondary_signature`, `secondary_version_alias`,
 `secondary_sha_alias`, `ghcr_minor`, `ghcr_major`, `ghcr_latest`, `once_latest`,
 `static_once-store-app-101`, `static_once-store-app-102`, `github_public`,
 `github_latest`, `journal_anchor_1_operation`, `journal_anchor_1_revision`,
@@ -705,11 +786,11 @@ these symlinks with regular files.
 The release remains a draft while the following complete:
 
 1. Exact GHCR architecture recovery tests, signatures, attestations, index
-   child-digest verification, and durable attempt-scoped evidence upload.
-2. Authenticated mutable-control writes and live same-media-type conflicts
-   against every exact immutable GHCR alias, followed by the corresponding
-   secondary-registry controls and aliases, GitHub, and static export
-   artifacts.
+   child-digest verification, an operation-bound disposable GHCR no-overwrite
+   test, and durable attempt-scoped evidence upload.
+2. Verification of that scoped GHCR policy evidence, the corresponding
+   disposable secondary-registry test, one-time creation of missing exact
+   aliases without conflict probes, and GitHub/static export artifacts.
 3. GHCR version channels, secondary-registry `latest`, and all static host
    pointers, followed by independent digest/checksum verification.
 

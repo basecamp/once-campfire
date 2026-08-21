@@ -6,14 +6,14 @@ class Sessions::TransfersController < ApplicationController
   allow_unauthenticated_access
 
   def show
-    return redirect_to new_session_path, alert: "Session transfer is unavailable while single sign-on is required." if Oidc.required?
+    return redirect_to new_session_path, alert: "Session transfer is unavailable while single sign-on is enabled." if Oidc.enabled?
 
     @transfer_ready = CredentialIntent.valid_transfer?(session[TRANSFER_INTENT_SESSION_KEY])
     session.delete TRANSFER_INTENT_SESSION_KEY unless @transfer_ready
   end
 
   def intent
-    return head :forbidden if Oidc.required?
+    return head :forbidden if Oidc.enabled?
 
     session[TRANSFER_INTENT_SESSION_KEY] = CredentialIntent.exchange_transfer!(params[:token])
     redirect_to session_transfer_path
@@ -23,7 +23,7 @@ class Sessions::TransfersController < ApplicationController
   end
 
   def update
-    return head :forbidden if Oidc.required?
+    return head :forbidden if Oidc.enabled?
 
     token = session[TRANSFER_INTENT_SESSION_KEY]
     new_session = CredentialIntent.consume_transfer!(token) do |user|

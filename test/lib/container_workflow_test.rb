@@ -45,9 +45,30 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
 
   test "aggregate verifier executes and accepts only exact amd64 and arm64 receipts" do
     workflow = YAML.safe_load(Rails.root.join(".github/workflows/container.yml").read, aliases: false)
-    step = workflow.fetch("jobs").fetch("verify-receipts").fetch("steps")
+    assert_equal "${{ always() }}", workflow.dig("jobs", "verify-receipts", "if")
+    steps = workflow.fetch("jobs").fetch("verify-receipts").fetch("steps")
+    downloads = steps.select { _1.fetch("name", "").start_with?("Download ") }
+    assert_equal 2, downloads.length
+    assert downloads.all? { _1["if"] == "${{ always() }}" }
+    step = steps
       .find { _1["name"] == "Verify exact amd64 and arm64 receipt set" }
     assert step
+    assert_equal "${{ always() }}", step.fetch("if")
+
+    validation_gate = steps.find { _1["name"] == "Require successful validation matrix" }
+    assert validation_gate
+    assert_equal "${{ always() }}", validation_gate.fetch("if")
+    assert_equal "${{ needs.validate.result }}", validation_gate.dig("env", "VALIDATE_RESULT")
+    success_environment = { "VALIDATE_RESULT" => "success" }
+    _stdout, stderr, status = Open3.capture3(
+      success_environment, "bash", "-c", validation_gate.fetch("run")
+    )
+    assert status.success?, stderr
+    _stdout, stderr, status = Open3.capture3(
+      { "VALIDATE_RESULT" => "failure" }, "bash", "-c", validation_gate.fetch("run")
+    )
+    assert_not status.success?
+    assert_includes stderr, "validate result was failure"
 
     Dir.mktmpdir("campfire-container-receipts") do |directory|
       runner_temp = Pathname(directory)
@@ -85,7 +106,7 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
           entry.fetch("upgrade_receipt_sha256")
       end
 
-      %w[ run.json upgrade-recovery.json ].each do |name|
+      %w[ image-inspect.json sbom.spdx.json buildkit-provenance.json run.json upgrade-recovery.json ].each do |name|
         path = runner_temp.join("container-receipts/arm64", name)
         source = path.binread
         path.delete
@@ -115,6 +136,23 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
       arm64_receipt.write JSON.generate(receipt)
       _stdout, _stderr, status = Open3.capture3(environment, verifier.to_s)
       assert_not status.success?, "self-consistent invalid upgrade receipt"
+
+      write_evidence(runner_temp, "arm64")
+      directory = runner_temp.join("container-receipts/arm64")
+      {
+        "image-inspect.json" => ->(document) { document[0]["Id"] = "sha256:#{'0' * 64}" },
+        "sbom.spdx.json" => ->(document) { document.fetch("subject")[0]["digest"]["sha256"] = "0" * 64 },
+        "buildkit-provenance.json" => ->(document) { document.fetch("subject")[0]["digest"]["sha256"] = "0" * 64 }
+      }.each do |name, mutate|
+        path = directory.join(name)
+        document = JSON.parse(path.read)
+        mutate.call(document)
+        path.write JSON.generate(document)
+        rebind_validation_evidence(directory)
+        _stdout, _stderr, status = Open3.capture3(environment, verifier.to_s)
+        assert_not status.success?, "self-consistent invalid #{name}"
+        write_evidence(runner_temp, "arm64")
+      end
     end
   end
 
@@ -129,7 +167,10 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
       write_evidence(runner_temp, "amd64")
       source = runner_temp.join("container-receipts/amd64")
       evidence = runner_temp.join("container-evidence-amd64").tap(&:mkpath)
-      %w[ container-validation.json recovery-receipt.json run.json upgrade-recovery.json ].each do |name|
+      %w[
+        buildkit-provenance.json container-validation.json image-inspect.json recovery-receipt.json
+        run.json sbom.spdx.json upgrade-recovery.json
+      ].each do |name|
         FileUtils.cp source.join(name), evidence.join(name)
       end
       build_identity = JSON.parse(source.join("receipt.json").read).fetch("build_identity")
@@ -158,6 +199,98 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
     end
   end
 
+  test "GHCR immutability gate overwrites only a disposable control and fails closed" do
+    workflow = YAML.safe_load(Rails.root.join(".github/workflows/publish-image.yml").read, aliases: false)
+    step = workflow.fetch("jobs").fetch("manifest").fetch("steps")
+      .find { _1["name"] == "Prove GHCR rejects disposable alias overwrite" }
+    assert step
+    probe_run = step.fetch("run").sub("${IMAGE_NAME,,}", "${IMAGE_NAME}")
+
+    Dir.mktmpdir("campfire-ghcr-probe") do |directory|
+      runner_temp = Pathname(directory)
+      evidence = runner_temp.join("release-evidence").tap(&:mkpath)
+      seed_digest = "sha256:#{'a' * 64}"
+      conflict_digest = "sha256:#{'b' * 64}"
+      evidence.join("recovery-amd64.json").write JSON.generate(parent_digest: seed_digest)
+      evidence.join("recovery-arm64.json").write JSON.generate(parent_digest: conflict_digest)
+      fake_bin = runner_temp.join("bin").tap(&:mkpath)
+      fake_docker = fake_bin.join("docker")
+      fake_docker.write <<~'BASH'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        state=${FAKE_DOCKER_STATE:?}
+        log=${FAKE_DOCKER_LOG:?}
+        mode=${FAKE_DOCKER_MODE:?}
+        if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
+          if [[ ! -f "$state" ]]; then
+            if [[ "$mode" == network ]]; then
+              echo "network timeout" >&2
+            else
+              echo "manifest unknown" >&2
+            fi
+            exit 1
+          fi
+          printf '%s\n' "$(<"$state")"
+        elif [[ "$1 $2 $3" == "buildx imagetools create" ]]; then
+          reference=""
+          for ((index = 1; index <= $#; index++)); do
+            if [[ "${!index}" == --tag ]]; then
+              ((index += 1))
+              reference=${!index}
+              break
+            fi
+          done
+          source=${!#}
+          digest=${source##*@}
+          printf '%s\t%s\n' "$reference" "$digest" >> "$log"
+          if [[ -f "$state" && "$mode" == immutable && "$(<"$state")" != "$digest" ]]; then
+            echo "denied: tag is immutable" >&2
+            exit 1
+          fi
+          printf '%s\n' "$digest" > "$state"
+        else
+          echo "unexpected docker command: $*" >&2
+          exit 64
+        fi
+      BASH
+      fake_docker.chmod 0o755
+      state = runner_temp.join("registry-state")
+      log = runner_temp.join("registry-log")
+      environment = {
+        "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}",
+        "RUNNER_TEMP" => runner_temp.to_s,
+        "REGISTRY" => "ghcr.io",
+        "IMAGE_NAME" => "basecamp/once-campfire",
+        "OPERATION_NONCE" => "9" * 64,
+        "GITHUB_RUN_ID" => "123",
+        "GITHUB_RUN_ATTEMPT" => "2",
+        "FAKE_DOCKER_STATE" => state.to_s,
+        "FAKE_DOCKER_LOG" => log.to_s
+      }
+
+      _stdout, stderr, status = Open3.capture3(
+        environment.merge("FAKE_DOCKER_MODE" => "network"), "bash", "-c", probe_run
+      )
+      assert_not status.success?
+      assert_includes stderr, "Could not prove the disposable GHCR mutability control is unused"
+
+      _stdout, stderr, status = Open3.capture3(
+        environment.merge("FAKE_DOCKER_MODE" => "mutable"), "bash", "-c", probe_run
+      )
+      assert_not status.success?
+      assert_includes stderr, "GHCR permits alias overwrite; immutable release aliases are unsafe"
+      assert_equal conflict_digest, state.read.strip
+      assert log.each_line.all? { _1.start_with?("ghcr.io/basecamp/once-campfire:release-mutability-control-123-2-") }
+
+      FileUtils.rm_f [ state, log ]
+      _stdout, stderr, status = Open3.capture3(
+        environment.merge("FAKE_DOCKER_MODE" => "immutable"), "bash", "-c", probe_run
+      )
+      assert status.success?, stderr
+      assert_equal seed_digest, state.read.strip
+    end
+  end
+
   private
     def write_evidence(runner_temp, architecture)
       platform, host_architecture = {
@@ -168,6 +301,51 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
       build_identity = Digest::SHA256.hexdigest("build-#{architecture}")
       runnable_digest = "sha256:#{Digest::SHA256.hexdigest("manifest-#{architecture}")}"
       config_digest = "sha256:#{Digest::SHA256.hexdigest("config-#{architecture}")}"
+      image_inspection = [ {
+        Id: config_digest,
+        Os: "linux",
+        Architecture: architecture,
+        Config: {
+          Labels: {
+            "org.opencontainers.image.revision": SOURCE_REVISION,
+            "com.basecamp.campfire.build-identity": build_identity
+          }
+        }
+      } ]
+      image_inspection_path = directory.join("image-inspect.json")
+      image_inspection_path.write JSON.generate(image_inspection)
+      subject = [ {
+        name: "campfire-ci:#{architecture}", digest: { sha256: runnable_digest.delete_prefix("sha256:") }
+      } ]
+      sbom = {
+        _type: "https://in-toto.io/Statement/v0.1",
+        predicateType: "https://spdx.dev/Document",
+        subject:,
+        predicate: {
+          SPDXID: "SPDXRef-DOCUMENT", spdxVersion: "SPDX-2.3", packages: [ { name: "campfire" } ]
+        }
+      }
+      sbom_path = directory.join("sbom.spdx.json")
+      sbom_path.write JSON.generate(sbom)
+      provenance = {
+        _type: "https://in-toto.io/Statement/v0.1",
+        predicateType: "https://slsa.dev/provenance/v1",
+        subject:,
+        predicate: {
+          buildDefinition: {
+            buildType: "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md",
+            externalParameters: { source_revision: SOURCE_REVISION },
+            resolvedDependencies: [ { uri: "Dockerfile" }, { uri: "ruby" } ],
+            internalParameters: {
+              buildConfig: {
+                llbDefinition: [ { op: { platform: { OS: "linux", Architecture: architecture } } } ]
+              }
+            }
+          }
+        }
+      }
+      provenance_path = directory.join("buildkit-provenance.json")
+      provenance_path.write JSON.generate(provenance)
       validation = {
         format_version: 1,
         kind: "campfire-container-validation",
@@ -182,9 +360,9 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
         config_digest:,
         runtime_binding: "config-digest-matched-dual-build",
         transport_mode: "external-https-loopback-probe",
-        image_inspection_sha256: "1" * 64,
-        sbom_sha256: "2" * 64,
-        buildkit_provenance_sha256: "3" * 64,
+        image_inspection_sha256: Digest::SHA256.file(image_inspection_path).hexdigest,
+        sbom_sha256: Digest::SHA256.file(sbom_path).hexdigest,
+        buildkit_provenance_sha256: Digest::SHA256.file(provenance_path).hexdigest,
         oci_archive_sha256: "4" * 64,
         runtime_archive_sha256: "5" * 64,
         request_limit_probe_bytes: 106_954_752,
@@ -309,5 +487,27 @@ class ContainerWorkflowTest < ActiveSupport::TestCase
         status: "passed"
       }
       directory.join("receipt.json").write JSON.generate(receipt)
+    end
+
+    def rebind_validation_evidence(directory)
+      validation_path = directory.join("container-validation.json")
+      validation = JSON.parse(validation_path.read)
+      validation["image_inspection_sha256"] = Digest::SHA256.file(directory.join("image-inspect.json")).hexdigest
+      validation["sbom_sha256"] = Digest::SHA256.file(directory.join("sbom.spdx.json")).hexdigest
+      validation["buildkit_provenance_sha256"] = Digest::SHA256.file(
+        directory.join("buildkit-provenance.json")
+      ).hexdigest
+      validation_path.write JSON.generate(validation)
+
+      recovery_path = directory.join("recovery-receipt.json")
+      recovery = JSON.parse(recovery_path.read)
+      recovery["container_validation_sha256"] = Digest::SHA256.file(validation_path).hexdigest
+      recovery_path.write JSON.generate(recovery)
+
+      receipt_path = directory.join("receipt.json")
+      receipt = JSON.parse(receipt_path.read)
+      receipt["container_validation_sha256"] = Digest::SHA256.file(validation_path).hexdigest
+      receipt["recovery_receipt_sha256"] = Digest::SHA256.file(recovery_path).hexdigest
+      receipt_path.write JSON.generate(receipt)
     end
 end

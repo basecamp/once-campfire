@@ -31,7 +31,7 @@ class Oidc::LogoutToken < ApplicationRecord
                 Oidc::LogoutTokenVerifier::CLOCK_SKEW
             )
           )
-          sessions_for(claims).destroy_all
+          Session.revoke_all! sessions_for(claims)
         end
       end
       true

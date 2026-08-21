@@ -379,6 +379,12 @@ module CampfireBackup
 
       def with_unlinked_temporary_file(directory)
         directory = private_staging_directory(directory)
+        if directory.respond_to?(:with_unlinked_temporary_file)
+          return directory.with_unlinked_temporary_file do |temporary|
+            configure_plaintext_file temporary
+            yield temporary
+          end
+        end
         if file = open_anonymous_temporary_file(directory)
           opened = file.stat
           unless opened.file? && opened.nlink.zero?
@@ -426,6 +432,8 @@ module CampfireBackup
       end
 
       def available_bytes(path)
+        return path.available_bytes if path.respond_to?(:available_bytes)
+
         output, status = CampfireBackup::Subprocess.capture2("df", "-Pk", Pathname(path).to_s)
         raise "Could not determine backup plaintext staging capacity" unless status.success?
 
@@ -455,6 +463,15 @@ module CampfireBackup
 
       private
         def private_staging_directory(directory)
+          if directory.respond_to?(:pinned_root_stat)
+            directory_stat = directory.pinned_root_stat
+            unless directory_stat.directory? && directory_stat.uid == Process.euid &&
+                (directory_stat.mode & 0o077).zero?
+              raise "Backup plaintext staging directory must be private"
+            end
+            return directory
+          end
+
           directory = Pathname(directory).expand_path
           directory_stat = directory.lstat
           unless directory_stat.directory? && directory_stat.uid == Process.euid &&

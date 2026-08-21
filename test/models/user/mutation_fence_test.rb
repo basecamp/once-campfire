@@ -3,7 +3,8 @@ require "test_helper"
 class User::MutationFenceTest < ActiveSupport::TestCase
   test "readiness creates opens locks and removes a probe file" do
     assert User::MutationFence.ready?
-    assert_empty Dir[Rails.root.join("storage/user-mutation-fences/.readiness-*.lock")]
+    lock_root = User::MutationFence.send(:lock_root)
+    assert_empty Dir[lock_root.join(".readiness-*.lock")]
   end
 
   test "readiness fails closed when a probe file cannot be opened" do
@@ -43,5 +44,32 @@ class User::MutationFenceTest < ActiveSupport::TestCase
     result_reader&.close unless result_reader&.closed?
     result_writer&.close unless result_writer&.closed?
     Process.wait(child) if child
+  end
+
+  test "contended nested user fences fail closed instead of deadlocking" do
+    first_id, second_id = users(:david).id, users(:jason).id
+    ready = Queue.new
+    continue = Queue.new
+    results = Queue.new
+    workers = [ [ first_id, second_id ], [ second_id, first_id ] ].map do |outer_id, inner_id|
+      Thread.new do
+        User::MutationFence.with(outer_id) do
+          ready << true
+          continue.pop
+          User::MutationFence.with(inner_id) { results << :acquired }
+        end
+      rescue StandardError => error
+        results << error
+      end
+    end
+    2.times { ready.pop }
+    2.times { continue << true }
+    workers.each { assert _1.join(2), "nested mutation fences deadlocked" }
+
+    outcomes = 2.times.map { results.pop }
+    assert outcomes.any? { _1.is_a?(User::MutationFence::Unavailable) }
+  ensure
+    2.times { continue << true } if continue
+    workers&.each { _1.join(2) }
   end
 end

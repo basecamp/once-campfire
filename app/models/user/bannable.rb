@@ -2,10 +2,12 @@ module User::Bannable
   extend ActiveSupport::Concern
 
   def ban_by!(actor:)
-    User::MutationFence.with(id) do
-      self.class.transaction do
-        self.class.lock_administrator! actor
-        self.class.lock.find(id).send :apply_ban!
+    User::MutationFence.with_administrator_roster do
+      User::MutationFence.with([ actor.id, id ]) do
+        self.class.transaction do
+          self.class.lock_administrator! actor
+          self.class.lock.find(id).send :apply_ban!
+        end
       end
     end
   end
@@ -25,6 +27,7 @@ module User::Bannable
   private
     def apply_ban!
       with_lock do
+        ensure_other_active_administrator!
         create_bans_from_sessions
         self.ban_cleanup_generation += 1
         self.status = :banned
@@ -72,6 +75,6 @@ module User::Bannable
 
     def apply_ban
       push_subscriptions.delete_all
-      sessions.destroy_all
+      Session.revoke_all! sessions
     end
 end

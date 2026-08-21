@@ -19,6 +19,10 @@ class ReleaseObjectLockAnchors
   DESTRUCTIVE_CONTROL_EXPIRY_MARGIN_SECONDS = 2
   DESTRUCTIVE_CONTROL_NAMESPACE = ".destructive-authority-controls"
   DESTRUCTIVE_CONTROL_NAME_PATTERN = /\Acontrol-([0-9a-f]{32})\.json\z/
+  EXACT_RESOURCE_DELETE_INTENT_NAMESPACE = ".exact-resource-delete-marker-intents"
+  EXACT_RESOURCE_DELETE_INTENT_NAME_PATTERN = /\Aintent-([0-9a-f]{64})\z/
+  PROTECTED_OBJECT_KINDS = %w[ head operation revision workflow-evidence ].freeze
+  AWS_CLI_ERROR_RECORD = /\AAn error occurred \(([A-Za-z][A-Za-z0-9]*)\) when calling the ([A-Za-z][A-Za-z0-9]*) operation: ([^\r\n]+)\n?\z/
   IGNORE_CONFIGURED_ENDPOINT_URLS = true
   REQUIRED_CONFIGURATION = %w[ PROFILE ACCOUNT_ID BUCKET PREFIX ].freeze
   PROVIDER_ENVIRONMENT_VARIABLE = "RELEASE_JOURNAL_ANCHOR_PROVIDER"
@@ -145,6 +149,7 @@ class ReleaseObjectLockAnchors
     @sleeper = sleeper
     @fault_after = fault_after
     @destructive_authority = {}
+    @recovered_exact_resource_delete_scopes = {}
     @default_retentions = {}
     @environment = SAFE_ENVIRONMENT.filter_map do |name|
       [ name, environment[name] ] if environment.key?(name)
@@ -195,11 +200,24 @@ class ReleaseObjectLockAnchors
     raise Error, "Release journal anchor prerequisite response is invalid"
   end
 
+  def monitor_with!(runner)
+    @executor = lambda do |safe_environment, *command|
+      runner.capture(*command, env: safe_environment, unsetenv_others: true)
+    end
+    self
+  end
+
   def reconcile!(state:, release:)
     validate! unless @validated
     release = validate_release!(release)
     validate_local_anchor_set!(state) if state
     local = state && local_descriptors(state, release)
+    @anchors.each do |anchor|
+      recover_exact_resource_delete_markers!(anchor, full_key(anchor, "catalog/operations"))
+      recover_exact_resource_delete_markers!(
+        anchor, full_key(anchor, "releases/#{release_id(release)}")
+      )
+    end
     catalogs = @anchors.to_h { [ _1.number, load_operation_catalog(_1) ] }
     compare_operation_catalogs!(catalogs, local, release)
     observed = @anchors.to_h { [ _1.number, load_heads(_1, release) ] }
@@ -244,6 +262,9 @@ class ReleaseObjectLockAnchors
       validate_local_anchor_set! state
       release = validate_release!(state.fetch(:journal).fetch("release"))
       operation_descriptor(local_descriptors(state, release).first)
+    end
+    @anchors.each do |anchor|
+      recover_exact_resource_delete_markers!(anchor, full_key(anchor, "catalog/operations"))
     end
     if local.map { _1.fetch(:operation_id) }.uniq.length != local.length ||
         local.map { _1.fetch(:release_id) }.uniq.length != local.length
@@ -397,6 +418,11 @@ class ReleaseObjectLockAnchors
     def restore_evidence_contract!(journal:, destination:, contract_key:, allow_incomplete:)
       context = evidence_context!(journal, contract_key)
       contract = context.fetch(:contract)
+      @anchors.each do |anchor|
+        recover_exact_resource_delete_markers!(
+          anchor, full_key(anchor, "releases/#{release_id(context.fetch(:release))}")
+        )
+      end
       FileUtils.mkdir_p destination
       unless Dir.children(destination).empty?
         raise Error, "Workflow evidence restore destination must be empty"
@@ -946,6 +972,9 @@ class ReleaseObjectLockAnchors
     end
 
     def ensure_object!(anchor, key, source, retain_until, kind)
+      recover_exact_resource_delete_markers!(
+        anchor, destructive_authority_scope!(anchor, key)
+      )
       digest = Digest::SHA256.hexdigest(source)
       versions = exact_versions(anchor, key)
       if versions.fetch(:versions).empty?
@@ -961,7 +990,7 @@ class ReleaseObjectLockAnchors
 
     def put_object(anchor, key, source, digest, retain_until, kind)
       with_body(source) do |path|
-        _stdout, _stderr, status = execute(
+        stdout, stderr, status = execute(
           anchor, "s3api", "put-object", *bucket_arguments(anchor), "--key", key,
           "--body", path, "--content-type", "application/json", "--checksum-algorithm", "SHA256",
           "--checksum-sha256", Base64.strict_encode64([ digest ].pack("H*")),
@@ -970,7 +999,8 @@ class ReleaseObjectLockAnchors
         )
         return if status.success?
 
-        unless exact_versions(anchor, key).fetch(:versions).one?
+        unless s3_put_precondition_failed?(stdout, stderr, status) &&
+            exact_versions(anchor, key).fetch(:versions).one?
           raise Error, "Release journal anchor #{anchor.number} immutable object publication failed"
         end
       end
@@ -983,7 +1013,7 @@ class ReleaseObjectLockAnchors
       end
       version = inventory.fetch(:versions).first
       with_body(source) do |path|
-        _stdout, _stderr, overwrite = execute(
+        stdout, stderr, overwrite = execute(
           anchor, "s3api", "put-object", *bucket_arguments(anchor), "--key", key,
           "--body", path, "--content-type", "application/json", "--checksum-algorithm", "SHA256",
           "--checksum-sha256", Base64.strict_encode64([ digest ].pack("H*")),
@@ -992,6 +1022,10 @@ class ReleaseObjectLockAnchors
         )
         if overwrite.success?
           raise Error, "Release journal anchor #{anchor.number} accepted an overwrite of a content address"
+        end
+        unless s3_put_precondition_failed?(stdout, stderr, overwrite)
+          raise Error,
+            "Release journal anchor #{anchor.number} did not return the expected conditional PutObject rejection"
         end
       end
 
@@ -1005,7 +1039,9 @@ class ReleaseObjectLockAnchors
       end
       exact_resource_delete_authorized =
         s3_delete_error_code(delete_stdout, delete_stderr, deletion) == "AccessDenied" &&
-        prove_exact_resource_delete_authority!(anchor, key, version.fetch("VersionId"))
+        prove_exact_resource_delete_authority!(
+          anchor, key, version.fetch("VersionId"), digest:, kind:, retain_until:
+        )
       unless compliance_delete_rejection?(
         delete_stdout, delete_stderr, deletion,
         exact_resource_delete_authorized:
@@ -1020,8 +1056,165 @@ class ReleaseObjectLockAnchors
       end
     end
 
-    def prove_exact_resource_delete_authority!(anchor, key, protected_version_id)
-      # Removing an unretained marker proves DeleteObjectVersion authority on the protected key itself.
+    def prove_exact_resource_delete_authority!(anchor, key, protected_version_id, digest:, kind:,
+        retain_until:)
+      scope = destructive_authority_scope!(anchor, key)
+      recover_exact_resource_delete_markers!(anchor, scope)
+      intent_key = exact_resource_delete_intent_key(
+        anchor, scope, key, protected_version_id, digest, kind, retain_until
+      )
+      intent_inventory = exact_versions(anchor, intent_key)
+      unless intent_inventory.values.all?(&:empty?)
+        raise Error, "Release journal anchor #{anchor.number} exact-resource delete intent already exists"
+      end
+
+      recovery_key = [ anchor.number, scope ]
+      @recovered_exact_resource_delete_scopes.delete(recovery_key)
+      intent_marker_id = create_temporary_delete_marker!(anchor, intent_key)
+      marker_version_id = create_temporary_delete_marker!(
+        anchor, key, protected_version_id:
+      )
+      delete_temporary_marker!(
+        anchor, key, marker_version_id, protected_version_id:, recovery: false
+      )
+      delete_temporary_marker!(
+        anchor, intent_key, intent_marker_id, protected_version_id: nil, recovery: false
+      )
+      @recovered_exact_resource_delete_scopes[recovery_key] = true
+      true
+    end
+
+    def recover_exact_resource_delete_markers!(anchor, scope)
+      recovery_key = [ anchor.number, scope ]
+      return true if @recovered_exact_resource_delete_scopes[recovery_key]
+
+      intent_prefix = exact_resource_delete_intent_prefix(scope)
+      pending = list_versions(anchor, intent_prefix)
+      unless pending.fetch(:versions).empty?
+        raise Error, "Release journal anchor #{anchor.number} exact-resource delete intent inventory is invalid"
+      end
+      markers = pending.fetch(:delete_markers).group_by { _1.fetch("Key") }
+      if markers.empty?
+        @recovered_exact_resource_delete_scopes[recovery_key] = true
+        return true
+      end
+
+      markers.each do |intent_key, entries|
+        name = intent_key.delete_prefix(intent_prefix)
+        unless intent_key.start_with?(intent_prefix) &&
+            EXACT_RESOURCE_DELETE_INTENT_NAME_PATTERN.match?(name) && entries.one? &&
+            valid_version_id?(entries.sole.fetch("VersionId"))
+          raise Error,
+            "Release journal anchor #{anchor.number} exact-resource delete intent inventory is invalid"
+        end
+      end
+
+      excluded_prefixes = [ destructive_control_prefix(scope), intent_prefix ]
+      protected = list_versions(anchor, "#{scope}/").fetch(:versions).reject do |version|
+        excluded_prefixes.any? { version.fetch("Key").start_with?(_1) }
+      end
+      descriptors = protected.map do |version|
+        exact_resource_delete_intent_descriptor!(anchor, scope, version)
+      end.group_by { _1.fetch(:intent_key) }
+
+      markers.each do |intent_key, entries|
+        matches = descriptors.fetch(intent_key, [])
+        unless matches.one?
+          raise Error,
+            "Release journal anchor #{anchor.number} exact-resource delete intent has no unique retained target"
+        end
+        descriptor = matches.sole
+        protected_key = descriptor.fetch(:protected_key)
+        protected_version_id = descriptor.fetch(:protected_version_id)
+        inventory = exact_versions(anchor, protected_key)
+        unless inventory.fetch(:versions).one? &&
+            inventory.fetch(:versions).sole.fetch("VersionId") == protected_version_id &&
+            inventory.fetch(:delete_markers).length <= 1
+          raise Error,
+            "Release journal anchor #{anchor.number} pending exact-resource delete marker is invalid"
+        end
+        if marker = inventory.fetch(:delete_markers).first
+          marker_version_id = marker.fetch("VersionId")
+          unless valid_version_id?(marker_version_id)
+            raise Error,
+              "Release journal anchor #{anchor.number} pending exact-resource delete marker is invalid"
+          end
+          delete_temporary_marker!(
+            anchor, protected_key, marker_version_id, protected_version_id:, recovery: true
+          )
+        end
+        delete_temporary_marker!(
+          anchor, intent_key, entries.sole.fetch("VersionId"), protected_version_id: nil,
+          recovery: true
+        )
+      end
+      @recovered_exact_resource_delete_scopes[recovery_key] = true
+      true
+    rescue KeyError, NoMethodError, ArgumentError
+      raise Error, "Release journal anchor #{anchor.number} exact-resource delete intent response is invalid"
+    end
+
+    def exact_resource_delete_intent_descriptor!(anchor, scope, version)
+      protected_key = version.fetch("Key")
+      protected_version_id = version.fetch("VersionId")
+      unless protected_key.start_with?("#{scope}/") && valid_version_id?(protected_version_id)
+        raise Error, "Release journal anchor #{anchor.number} retained delete-intent target is invalid"
+      end
+      head = json_command!(
+        anchor, "s3api", "head-object", *bucket_arguments(anchor), "--key", protected_key,
+        "--version-id", protected_version_id, "--checksum-mode", "ENABLED"
+      )
+      metadata = head.fetch("Metadata")
+      digest = metadata.fetch("sha256")
+      kind = metadata.fetch("kind")
+      checksum = Base64.strict_encode64([ digest ].pack("H*")) if digest.match?(DIGEST_PATTERN)
+      retention = json_command!(
+        anchor, "s3api", "get-object-retention", *bucket_arguments(anchor),
+        "--key", protected_key, "--version-id", protected_version_id
+      ).fetch("Retention")
+      retain_until = Time.iso8601(retention.fetch("RetainUntilDate")).utc
+      unless metadata.keys.sort == %w[ kind sha256 ] && PROTECTED_OBJECT_KINDS.include?(kind) &&
+          head.fetch("VersionId") == protected_version_id && head.fetch("ChecksumSHA256") == checksum &&
+          retention.keys.sort == %w[ Mode RetainUntilDate ] && retention.fetch("Mode") == "COMPLIANCE"
+        raise Error, "Release journal anchor #{anchor.number} retained delete-intent target is invalid"
+      end
+      {
+        intent_key: exact_resource_delete_intent_key(
+          anchor, scope, protected_key, protected_version_id, digest, kind, retain_until
+        ),
+        protected_key:, protected_version_id:
+      }
+    rescue KeyError, NoMethodError, ArgumentError
+      raise Error, "Release journal anchor #{anchor.number} retained delete-intent target is invalid"
+    end
+
+    def exact_resource_delete_intent_key(anchor, scope, protected_key, protected_version_id,
+        digest, kind, retain_until)
+      source = self.class.canonical_json(
+        "anchor_set_sha256" => @anchor_set.fetch("sha256"),
+        "format_version" => 1,
+        "kind" => "exact-resource-delete-marker-intent",
+        "namespace" => scope.delete_prefix("#{anchor.prefix}/"),
+        "protected_object" => {
+          "key" => protected_key.delete_prefix("#{anchor.prefix}/"),
+          "kind" => kind,
+          "retain_until" => retain_until.utc.iso8601,
+          "sha256" => digest,
+          "version_id" => protected_version_id
+        }
+      )
+      unless protected_key.start_with?("#{scope}/") && digest.match?(DIGEST_PATTERN) &&
+          PROTECTED_OBJECT_KINDS.include?(kind) && valid_version_id?(protected_version_id)
+        raise Error, "Release journal anchor #{anchor.number} exact-resource delete intent is invalid"
+      end
+      "#{exact_resource_delete_intent_prefix(scope)}intent-#{Digest::SHA256.hexdigest(source)}"
+    end
+
+    def exact_resource_delete_intent_prefix(scope)
+      "#{scope}/#{EXACT_RESOURCE_DELETE_INTENT_NAMESPACE}/"
+    end
+
+    def create_temporary_delete_marker!(anchor, key, protected_version_id: nil)
       stdout, stderr, status = execute(
         anchor, "s3api", "delete-object", *bucket_arguments(anchor), "--key", key
       )
@@ -1031,36 +1224,46 @@ class ReleaseObjectLockAnchors
       end
       response = JSON.parse(stdout)
       marker_version_id = response.fetch("VersionId")
-      unless response.fetch("DeleteMarker") == true && marker_version_id.is_a?(String) &&
-          marker_version_id.bytesize.between?(1, 1_024) && marker_version_id != "null" &&
-          !marker_version_id.match?(/[[:cntrl:]]/)
+      inventory = exact_versions(anchor, key)
+      expected_versions = protected_version_id ? [ protected_version_id ] : []
+      unless response.fetch("DeleteMarker") == true && valid_version_id?(marker_version_id) &&
+          inventory.fetch(:versions).map { _1.fetch("VersionId") } == expected_versions &&
+          inventory.fetch(:delete_markers).one? &&
+          inventory.fetch(:delete_markers).sole.fetch("VersionId") == marker_version_id
         raise Error, "Release journal anchor #{anchor.number} exact-resource delete marker is invalid"
       end
+      marker_version_id
+    rescue JSON::ParserError, KeyError, NoMethodError, ArgumentError
+      raise Error, "Release journal anchor #{anchor.number} exact-resource delete-marker response is invalid"
+    end
 
-      marked = exact_versions(anchor, key)
-      unless marked.fetch(:versions).one? &&
-          marked.fetch(:versions).sole.fetch("VersionId") == protected_version_id &&
-          marked.fetch(:delete_markers).one? &&
-          marked.fetch(:delete_markers).sole.fetch("VersionId") == marker_version_id
-        raise Error, "Release journal anchor #{anchor.number} exact-resource delete marker is invalid"
-      end
-
-      delete_stdout, delete_stderr, deletion = execute(
+    def delete_temporary_marker!(anchor, key, marker_version_id, protected_version_id:, recovery:)
+      stdout, stderr, status = execute(
         anchor, "s3api", "delete-object", *bucket_arguments(anchor), "--key", key,
         "--version-id", marker_version_id
       )
-      unless deletion.success?
+      remaining = exact_versions(anchor, key)
+      expected_versions = protected_version_id ? [ protected_version_id ] : []
+      restored = remaining.fetch(:versions).map { _1.fetch("VersionId") } == expected_versions &&
+        remaining.fetch(:delete_markers).empty?
+      return true if recovery && !status.success? && restored
+      unless status.success?
         raise Error,
-          "Release journal anchor #{anchor.number} lacks exact-resource destructive version-delete authority: #{delete_stderr}#{delete_stdout}"
+          "Release journal anchor #{anchor.number} lacks exact-resource destructive version-delete authority: #{stderr}#{stdout}"
       end
-      restored = exact_versions(anchor, key)
-      unless restored.fetch(:versions).one? && restored.fetch(:delete_markers).empty? &&
-          restored.fetch(:versions).sole.fetch("VersionId") == protected_version_id
+      response = JSON.parse(stdout)
+      unless response.fetch("DeleteMarker") == true &&
+          response.fetch("VersionId") == marker_version_id && restored
         raise Error, "Release journal anchor #{anchor.number} exact-resource delete marker was not deleted"
       end
       true
     rescue JSON::ParserError, KeyError, NoMethodError, ArgumentError
       raise Error, "Release journal anchor #{anchor.number} exact-resource delete-marker response is invalid"
+    end
+
+    def valid_version_id?(version_id)
+      version_id.is_a?(String) && version_id.bytesize.between?(1, 1_024) &&
+        version_id != "null" && !version_id.match?(/[[:cntrl:]]/)
     end
 
     def prove_destructive_authority!(anchor, protected_key:)
@@ -1245,15 +1448,25 @@ class ReleaseObjectLockAnchors
         s3_delete_error_code(stdout, stderr, status) == "AccessDenied"
     end
 
-    def s3_delete_error_code(stdout, stderr, status)
-      return false unless status.respond_to?(:exited?) && status.exited? &&
-        !status.success? && status.exitstatus&.positive?
+    def s3_put_precondition_failed?(stdout, stderr, status)
+      error = aws_cli_error_record(stdout, stderr, status)
+      error && error.fetch(:code) == "PreconditionFailed" &&
+        error.fetch(:operation) == "PutObject"
+    end
 
-      output = "#{stdout}\n#{stderr}"
-      return false if output.match?(
-        /timeout|timed out|connection|network|no such host|tls|certificate|unknown command|unsupported|not implemented/i
-      )
-      output[/An error occurred \(([^)]+)\) when calling the DeleteObject operation:/i, 1]
+    def s3_delete_error_code(stdout, stderr, status)
+      error = aws_cli_error_record(stdout, stderr, status)
+      error.fetch(:code) if error && error.fetch(:operation) == "DeleteObject"
+    end
+
+    def aws_cli_error_record(stdout, stderr, status)
+      return unless status.respond_to?(:exited?) && status.exited? &&
+        !status.success? && status.exitstatus&.positive? && stdout.empty?
+
+      match = AWS_CLI_ERROR_RECORD.match(stderr)
+      return unless match
+
+      { code: match[1], operation: match[2], message: match[3] }
     end
 
     def read_object!(anchor, key, expected_sha256: nil, expected_kind:, required_until: nil, version: nil)

@@ -25,17 +25,19 @@ class Identity::Deprovisioning < ApplicationRecord
         candidate = Identity.find_by(issuer:, subject:)
         ensure_expected_identity! candidate, expected_identity
 
-        User::MutationFence.with(candidate&.user_id) do
-          transaction do
-            identity = Identity.lock.find_by(issuer:, subject:)
-            ensure_expected_identity! identity, expected_identity
-            tombstone = record!(issuer:, subject:)
-            if identity
-              user = identity.user
-              changed = user.send(
-                :apply_identity_provider_deactivation!, identity:, issuer:,
-                revoked_at: tombstone.deprovisioned_at
-              )
+        User::MutationFence.with_administrator_roster do
+          User::MutationFence.with(candidate&.user_id) do
+            transaction do
+              identity = Identity.lock.find_by(issuer:, subject:)
+              ensure_expected_identity! identity, expected_identity
+              tombstone = record!(issuer:, subject:)
+              if identity
+                user = identity.user
+                changed = user.send(
+                  :apply_identity_provider_deactivation!, identity:, issuer:,
+                  revoked_at: tombstone.deprovisioned_at
+                )
+              end
             end
           end
         end

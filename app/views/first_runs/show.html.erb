@@ -29,7 +29,7 @@
       <div class="flex align-center gap">
         <%= translation_button(:user_name) %>
         <label class="flex align-center gap flex-item-grow txt-large input input--actor">
-          <%= form.text_field :name, class: "input", autocomplete: "name", placeholder: "Name", autofocus: true, required: true,
+          <%= form.text_field :name, class: "input", autocomplete: "name", placeholder: "Name", autofocus: !@invalid_setup_token, required: true,
                 data: { "1p-ignore": true } %>
           <%= image_tag "person.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
         </label>
@@ -50,6 +50,23 @@
           <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
         </label>
       </div>
+
+      <label class="flex flex-column gap-half">
+        <strong>Setup token</strong>
+        <% if @invalid_setup_token %>
+          <span id="bootstrap-token-error" class="txt-small colorize--red" role="alert">
+            The setup token does not match <code>CAMPFIRE_FIRST_RUN_TOKEN</code> configured on this server.
+          </span>
+        <% end %>
+        <%= password_field_tag :bootstrap_token, nil, class: "input", autocomplete: "off", required: true,
+              autofocus: @invalid_setup_token, aria: {
+                invalid: !!@invalid_setup_token,
+                describedby: [ ("bootstrap-token-error" if @invalid_setup_token), "bootstrap-token-hint" ].compact.join(" ")
+              }, data: { "1p-ignore": true } %>
+        <span id="bootstrap-token-hint" class="txt-small colorize--gray">
+          Use <code>CAMPFIRE_FIRST_RUN_TOKEN</code> from <code>script/admin/generate-secrets</code>.
+        </span>
+      </label>
 
       <%= form.button class: "btn btn--reversed center txt-large", type: "submit" do %>
         <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>

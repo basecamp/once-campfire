@@ -19,6 +19,8 @@ class BackupExtractorTest < ActiveSupport::TestCase
       write_archive(archive) do |tar|
         tar.mkdir BACKUP_ID, 0o700
         add_file tar, "#{BACKUP_ID}/manifest.json", "{}"
+        tar.mkdir "#{BACKUP_ID}/payload", 0o700
+        tar.mkdir "#{BACKUP_ID}/payload/files", 0o700
         add_file tar, "#{BACKUP_ID}/payload/files/message.txt", "hello"
       end
 
@@ -103,6 +105,43 @@ class BackupExtractorTest < ActiveSupport::TestCase
     end
   end
 
+  test "never writes through a raced destination ancestor symlink" do
+    with_archive do |archive, destination|
+      write_archive(archive) do |tar|
+        tar.mkdir BACKUP_ID, 0o700
+        add_file tar, "#{BACKUP_ID}/manifest.json", "{}"
+        tar.mkdir "#{BACKUP_ID}/payload", 0o700
+        tar.mkdir "#{BACKUP_ID}/payload/files", 0o700
+        add_file tar, "#{BACKUP_ID}/payload/files/message.txt", "authenticated"
+      end
+      outside = destination.dirname.join("outside").tap(&:mkpath)
+      displaced = destination.dirname.join("displaced-files")
+      original = BackupExtractor.method(:create_directory)
+      raced = false
+      BackupExtractor.define_singleton_method(:create_directory) do |path, *arguments|
+        result = original.call(path, *arguments)
+        if !raced && Pathname(path).to_s.end_with?("/payload/files")
+          File.rename path, displaced
+          File.symlink outside, path
+          raced = true
+        end
+        result
+      end
+      BackupExtractor.singleton_class.send(:private, :create_directory)
+
+      error = assert_raises(RuntimeError) { extract archive, destination }
+
+      assert raced
+      assert_match(/changed concurrently|symbolic link/, error.message)
+      assert_not outside.join("message.txt").exist?
+    ensure
+      BackupExtractor.define_singleton_method(:create_directory) do |path, *arguments|
+        original.call(path, *arguments)
+      end
+      BackupExtractor.singleton_class.send(:private, :create_directory)
+    end
+  end
+
   test "extracts only the pinned authenticated bytes when the source pathname is replaced" do
     with_archive do |archive, destination|
       replacement = archive.dirname.join("replacement.tar.gz")
@@ -183,6 +222,68 @@ class BackupExtractorTest < ActiveSupport::TestCase
       end
 
       assert_equal "old-key backup", destination.join(BACKUP_ID, "manifest.json").read
+    end
+  end
+
+  test "rejects an authenticated archive that omits a parent directory entry" do
+    with_archive do |archive, destination|
+      write_archive(archive) do |tar|
+        tar.mkdir BACKUP_ID, 0o700
+        add_file tar, "#{BACKUP_ID}/manifest.json", "{}"
+        add_file tar, "#{BACKUP_ID}/payload/file.txt", "bytes"
+      end
+
+      error = assert_raises(RuntimeError) { extract archive, destination }
+
+      assert_match "omits an authenticated parent directory", error.message
+      assert_no_extracted_content destination
+    end
+  end
+
+  test "final inventory rejects a concurrent extra entry" do
+    with_archive do |archive, destination|
+      write_archive(archive) do |tar|
+        tar.mkdir BACKUP_ID, 0o700
+        add_file tar, "#{BACKUP_ID}/manifest.json", "{}"
+      end
+
+      error = assert_raises(RuntimeError) do
+        BackupExtractor.extract(
+          archive_path: archive, destination_directory: destination, backup_id: BACKUP_ID,
+          expected_installation_fingerprint: "f" * 64, expected_environment: "test",
+          authentication_key: "k" * 32, encryption_keyring: encryption_keyring,
+          fault_after: ->(step) {
+            destination.join(BACKUP_ID, "unexpected").write "concurrent" if step == "extracted"
+          }
+        )
+      end
+
+      assert_match "does not exactly match the authenticated archive", error.message
+    end
+  end
+
+  test "cleanup errors do not skip lock release or owned key scrubbing" do
+    with_archive do |archive, destination|
+      keyring = encryption_keyring
+      write_archive(archive, keyring:) do |tar|
+        tar.mkdir BACKUP_ID, 0o700
+        add_file tar, "#{BACKUP_ID}/manifest.json", "{}"
+      end
+      CampfireBackup::BackupEncryption.stubs(:keyring_from_env!).returns(keyring)
+      CampfireBackup::OwnedPaths.any_instance.stubs(:cleanup).raises(Errno::EIO)
+      CampfireBackup::OperationLock.any_instance.expects(:release).at_least_once.returns(true)
+
+      error = assert_raises(RuntimeError) do
+        BackupExtractor.extract(
+          archive_path: archive, destination_directory: destination, backup_id: BACKUP_ID,
+          expected_installation_fingerprint: "f" * 64, expected_environment: "test",
+          authentication_key: "k" * 32,
+          fault_after: ->(step) { raise "stop after claim" if step == "claimed" }
+        )
+      end
+
+      assert_match "stop after claim", error.message
+      assert_empty keyring.key_ids
     end
   end
 

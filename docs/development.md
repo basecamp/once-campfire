@@ -21,12 +21,13 @@ bin/setup --reset
 Start the development server with:
 
 ```sh
+export CAMPFIRE_FIRST_RUN_TOKEN="development-only-first-run-token"
 bin/dev
 ```
 
 You'll be able to access the app at http://localhost:3000.
 
-On first run you'll be guided through creating your admin account, and you can sign in with that account from then on.
+On first run you'll be guided through creating your admin account. Enter the `CAMPFIRE_FIRST_RUN_TOKEN` value in the setup form; it is not needed after setup completes.
 
 Note that Campfire needs Redis (for Action Cable, caching, and background jobs), so if you've restarted your machine or stopped the container, `docker start campfire-redis` will bring it back.
 

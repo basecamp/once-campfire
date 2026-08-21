@@ -188,6 +188,7 @@ GEM
     ffi (1.17.2-arm64-darwin)
     ffi (1.17.2-x86_64-darwin)
     ffi (1.17.2-x86_64-linux-gnu)
+    fiddle (1.1.8)
     geared_pagination (1.2.0)
       activesupport (>= 5.0)
       addressable (>= 2.5.0)
@@ -209,7 +210,7 @@ GEM
     jbuilder (2.14.1)
       actionview (>= 7.0.0)
       activesupport (>= 7.0.0)
-    json (2.20.0)
+    json (2.21.2)
     json-jwt (1.17.1)
       activesupport (>= 4.2)
       aes_key_wrap
@@ -486,6 +487,7 @@ DEPENDENCIES
   capybara
   debug
   faker
+  fiddle
   geared_pagination
   image_processing (>= 1.2)
   importmap-rails!

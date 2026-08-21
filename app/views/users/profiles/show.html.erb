@@ -137,7 +137,7 @@
     </menu>
   </div>
 
-  <%= render "users/profiles/transfer", user: @user unless Oidc.required? %>
+  <%= render "users/profiles/transfer", user: @user unless Oidc.enabled? %>
 
   <% if Rails.env.development? %>
     <fieldset>

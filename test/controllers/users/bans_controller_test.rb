@@ -114,6 +114,19 @@ class Users::BansControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
+  test "the last active administrator cannot be banned" do
+    User.active.where(role: :administrator).where.not(id: users(:david).id).update_all(role: :member)
+
+    assert_no_enqueued_jobs only: RemoveBannedContentJob do
+      post user_ban_url(users(:david))
+    end
+
+    assert_response :forbidden
+    assert users(:david).reload.administrator?
+    assert users(:david).active?
+    assert_empty users(:david).bans
+  end
+
   test "destroy removes ban records and sets user to active" do
     user = users(:kevin)
     user.sessions.create!(ip_address: "203.0.113.1", user_agent: "Test")

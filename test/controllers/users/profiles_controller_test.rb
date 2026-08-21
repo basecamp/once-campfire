@@ -13,6 +13,21 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "optional OIDC does not issue or render transfer links" do
+    configure_oidc(
+      "OIDC_REDIRECT_URI" => "https://www.example.com/auth/openid_connect/callback",
+      "TLS_DOMAIN" => "www.example.com"
+    )
+    https!
+
+    assert_no_difference -> { CredentialIntent.count } do
+      get user_profile_path
+    end
+
+    assert_response :success
+    assert_select "#session_transfer_url", count: 0
+  end
+
   test "update" do
     put user_profile_url, params: { user: { name: "John Doe", bio: "Acrobat" } }
 
@@ -20,6 +35,33 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "John Doe", users(:david).reload.name
     assert_equal "Acrobat", users(:david).bio
     assert_equal "david@37signals.com", users(:david).email_address
+  end
+
+  test "avatar staging is unfenced and revalidates the exact session token at commit" do
+    actor = users(:david)
+    authenticated_session = Session.find_by!(token: parsed_cookies.signed[:session_token])
+    observed_fences = []
+    original_stage = StagedUpload.method(:stage)
+    StagedUpload.define_singleton_method(:stage) do |*arguments, **options|
+      observed_fences << User::MutationFence.held?(actor.id)
+      original_stage.call(*arguments, **options).tap do
+        User::MutationFence.with(actor.id) do
+          Session.find(authenticated_session.id).regenerate_token
+        end
+      end
+    end
+
+    assert_no_difference -> { ActiveStorage::Blob.count } do
+      put user_profile_url, params: { user: {
+        name: "Must not commit", avatar: fixture_file_upload("moon.jpg", "image/jpeg")
+      } }
+    end
+
+    assert_response :forbidden
+    assert_equal [ false ], observed_fences
+    assert_not_equal "Must not commit", actor.reload.name
+  ensure
+    StagedUpload.define_singleton_method(:stage, original_stage) if original_stage
   end
 
   test "changing a password account email requires the current password" do

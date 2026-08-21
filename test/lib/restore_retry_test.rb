@@ -203,4 +203,64 @@ class RestoreRetryTest < ActiveSupport::TestCase
       assert_not destination.join(CampfireBackup::RecoveryMarkers::RESTORE_FILENAME).exist?
     end
   end
+
+  test "marker-removal and root-exposure failures relock the destination" do
+    manifest = {
+      "backup_id" => BACKUP_ID,
+      "files" => [],
+      "database" => { "path" => "test.sqlite3" }
+    }
+    BackupVerifier.stubs(:verify).returns(true)
+    CampfireBackup::Authentication.stubs(:verify_manifest!).returns(manifest)
+    BackupInstaller.stubs(:install_files)
+    BackupInstaller.stubs(:apply_runtime_ownership!)
+    BackupInstaller.stubs(:verify_installed!).returns({})
+    BackupInstaller.stubs(:verify_runtime_access!)
+    BackupInstaller.stubs(:assert_storage_inventory_current!).returns({})
+
+    %w[ marker-removed root-exposed ].each do |boundary|
+      Dir.mktmpdir("campfire-install-commit-window") do |directory|
+        root = Pathname(directory)
+        generation = root.join(BACKUP_ID).tap(&:mkpath)
+        generation.join("manifest.json").write "{}"
+        destination = root.join("storage")
+        exposed = false
+
+        begin
+          assert_raises(SimulatedCrash, boundary) do
+            BackupInstaller.install(
+              generation_path: generation, storage_directory: destination,
+              expected_installation_fingerprint: "f" * 64, expected_environment: "test",
+              authentication_key: "k" * 32,
+              runtime_uid: Process.euid, runtime_gid: Process.egid,
+              fault_after: ->(step) {
+                next unless step == boundary
+
+                if boundary == "root-exposed"
+                  exposed = (destination.stat.mode & 0o777) == 0o700
+                end
+                raise SimulatedCrash
+              }
+            )
+          end
+
+          assert_not destination.join(CampfireBackup::RecoveryMarkers::RESTORE_FILENAME).exist?, boundary
+          assert_equal(boundary == "root-exposed", exposed, boundary)
+          assert_equal 0o000, destination.stat.mode & 0o777, boundary
+        ensure
+          File.chmod 0o700, destination if destination.exist?
+        end
+      end
+    end
+  end
+
+  test "production restore rejects a non-root installer before ownership handoff" do
+    Process.stubs(:euid).returns(501)
+
+    error = assert_raises(RuntimeError) do
+      BackupInstaller.send(:runtime_ownership!, 1000, 1000, 1000, 1000, "production")
+    end
+
+    assert_match "must run as root", error.message
+  end
 end

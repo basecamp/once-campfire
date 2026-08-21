@@ -1,6 +1,26 @@
 require "test_helper"
 
 class SessionsControllerTest < ActionDispatch::IntegrationTest
+  test "allowing unauthenticated access retains the existing-cookie mutation fence" do
+    user = users(:david)
+    sign_in user
+    observed_fences = []
+    original_start = Session.method(:start!)
+    Session.define_singleton_method(:start!) do |**attributes|
+      observed_fences << User::MutationFence.held?(attributes.fetch(:user).id)
+      original_start.call(**attributes)
+    end
+
+    post session_url, params: {
+      email_address: user.email_address, password: "secret123456"
+    }
+
+    assert_redirected_to root_url
+    assert_equal [ true ], observed_fences
+  ensure
+    Session.define_singleton_method(:start!, original_start) if original_start
+  end
+
   test "session status verifies the exact authenticated page session without caching" do
     sign_in :david
     current_session = users(:david).sessions.order(:id).last
@@ -306,6 +326,19 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_url
     assert_not cookies[:session_token].present?
     assert_nil Session.find_by(id: session.id)
+  end
+
+  test "destroy deletes the session while holding its user mutation fence" do
+    user = users(:david)
+    sign_in user
+    Session.any_instance.expects(:destroy!).with do
+      User::MutationFence.held?(user.id)
+    end.returns(true)
+
+    delete session_url
+
+    assert_redirected_to root_url
+    assert_not cookies[:session_token].present?
   end
 
   test "destroy removes the push subscription for the device" do

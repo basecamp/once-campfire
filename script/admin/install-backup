@@ -3,11 +3,11 @@
 require_relative "../../config/boot"
 require "base64"
 require "digest"
-require "fileutils"
 require "json"
 require "pathname"
 require "sqlite3"
 require File.expand_path("../../lib/campfire_backup/authentication", __dir__)
+require File.expand_path("../../lib/campfire_backup/descriptor_tree", __dir__)
 require File.expand_path("../../lib/campfire_backup/installation_identity", __dir__)
 require File.expand_path("../../lib/campfire_backup/operation_lock", __dir__)
 require File.expand_path("../../lib/campfire_backup/recovery_markers", __dir__)
@@ -27,19 +27,35 @@ class BackupInstaller
       installed = false
       operation_lock = nil
       owned_paths = nil
+      destination_tree = nil
+      source_tree = nil
       storage_directory = Pathname(storage_directory).expand_path
       generation_path = Pathname(generation_path).realpath
+      source_tree = CampfireBackup::DescriptorTree.new(
+        generation_path, description: "Backup generation"
+      )
       raise "Restore destination cannot be a symbolic link" if storage_directory.symlink?
       operation_lock = CampfireBackup::OperationLock.acquire(
-        storage_directory, purpose: "restore", shared: true
+        storage_directory, purpose: "restore", shared: true, create_parent: false
       )
       storage_directory = operation_lock.directory
-      owned_paths = CampfireBackup::OwnedPaths.new(storage_directory)
+      destination_tree = CampfireBackup::DescriptorTree.new(
+        storage_directory, expected_identity: operation_lock.target_identity,
+        description: "Restore destination"
+      )
+      owned_paths = CampfireBackup::OwnedPaths.new(
+        storage_directory, descriptor_tree: destination_tree
+      )
       operation_lock.assert_current!
-      CampfireBackup::RecoveryMarkers.assert_restore_complete! storage_directory
-      owner_uid, owner_gid = runtime_ownership!(owner_uid, owner_gid, runtime_uid, runtime_gid)
-      existing_entries = storage_entries(storage_directory, operation_lock)
-      if existing_entries.any? && !image_skeleton?(storage_directory)
+      destination_tree.assert_root_current!
+      CampfireBackup::RecoveryMarkers.assert_restore_complete!(
+        storage_directory, descriptor_tree: destination_tree
+      )
+      owner_uid, owner_gid, isolate_runtime = runtime_ownership!(
+        owner_uid, owner_gid, runtime_uid, runtime_gid, expected_environment
+      )
+      existing_entries = storage_entries(storage_directory, operation_lock, destination_tree)
+      if existing_entries.any? && !image_skeleton?(storage_directory, destination_tree)
         entries = existing_entries.map { _1.basename.to_s }.sort.join(", ")
         raise "Restore destination must be empty; found #{entries}. " \
           "No files were changed. Remove and recreate this disposable destination, then retry: #{storage_directory}"
@@ -47,25 +63,26 @@ class BackupInstaller
 
       BackupVerifier.verify(
         generation_path:, expected_installation_fingerprint:, expected_environment:,
-        authentication_key:, output: false
+        authentication_key:, output: false, descriptor_tree: source_tree
       )
-      manifest = JSON.parse(generation_path.join("manifest.json").read)
-      manifest = CampfireBackup::Authentication.verify_manifest!(manifest, key: authentication_key)
+      manifest = read_authenticated_manifest!(source_tree, authentication_key)
       operation_lock.assert_current!
-      claim_restore_destination! storage_directory, operation_lock
-      existing_entries = storage_entries(storage_directory, operation_lock)
-      if existing_entries.any? && !image_skeleton?(storage_directory)
+      claim_restore_destination!(
+        storage_directory, operation_lock, destination_tree, isolate_runtime:
+      )
+      existing_entries = storage_entries(storage_directory, operation_lock, destination_tree)
+      if existing_entries.any? && !image_skeleton?(storage_directory, destination_tree)
         raise "Restore destination changed concurrently before it was claimed"
       end
       operation_lock.assert_current!
       restore_marker = CampfireBackup::RecoveryMarkers.begin_restore!(
         storage_directory, backup_id: manifest.fetch("backup_id"),
-        operation_id: operation_lock.operation_id
+        operation_id: operation_lock.operation_id, descriptor_tree: destination_tree
       )
       fault_after&.call("marked")
       operation_lock.assert_current!
-      remove_image_skeleton! storage_directory
-      existing_entries = storage_entries(storage_directory, operation_lock)
+      remove_image_skeleton! storage_directory, destination_tree
+      existing_entries = storage_entries(storage_directory, operation_lock, destination_tree)
       if existing_entries.any?
         entries = existing_entries.map { _1.basename.to_s }.sort.join(", ")
         raise "Restore destination must be empty; found #{entries}. " \
@@ -73,91 +90,172 @@ class BackupInstaller
       end
       fault_after&.call("claimed")
       operation_lock.assert_current!
-      install_files generation_path, storage_directory, manifest, owned_paths, operation_lock
+      install_files source_tree, storage_directory, manifest, owned_paths, operation_lock,
+        destination_tree, fault_after: fault_after
       fault_after&.call("installed")
       apply_runtime_ownership! storage_directory, operation_lock, owned_paths, restore_marker,
-        owner_uid, owner_gid
+        owner_uid, owner_gid, destination_tree
       fault_after&.call("owned")
       fault_after&.call("synced")
       operation_lock.assert_current!
       installed_inventory = verify_installed!(
-        storage_directory, manifest, expected_installation_fingerprint
+        storage_directory, manifest, expected_installation_fingerprint, destination_tree
       )
       verify_runtime_access!(
-        storage_directory, runtime_uid, runtime_gid, expected_inventory: installed_inventory
+        storage_directory, runtime_uid, runtime_gid, expected_inventory: installed_inventory,
+        descriptor_tree: destination_tree, isolate_runtime:
       )
       operation_lock.assert_current!
       fault_after&.call("verified")
-      assert_storage_inventory_current! storage_directory, installed_inventory
+      assert_storage_inventory_current!(
+        storage_directory, installed_inventory, descriptor_tree: destination_tree
+      )
+      operation_lock.assert_current!
+      destination_tree.assert_root_current!
 
-      installed = true
-      CampfireBackup::RecoveryMarkers.complete_restore! restore_marker
-      fault_after&.call("committed")
-
-      puts JSON.generate(
+      result = JSON.generate(
         status: "installed", backup_id: manifest.fetch("backup_id"), path: storage_directory.to_s
       )
+      commit_restore!(
+        storage_directory, operation_lock, destination_tree, restore_marker,
+        installed_inventory, owner_uid, owner_gid, isolate_runtime:, fault_after:
+      )
+      installed = true
+      fault_after&.call("committed")
+
+      begin
+        puts result
+      rescue Errno::EPIPE, IOError
+        nil
+      end
       true
     ensure
+      active_error = $!
+      cleanup_errors = []
       if owned_paths && !installed
-        incomplete = owned_paths.cleanup
-        if incomplete.any?
-          warn "Restore cleanup was incomplete. Remove and recreate this disposable destination before retrying: #{storage_directory}"
+        begin
+          incomplete = owned_paths.cleanup
+          if incomplete.any?
+            warn "Restore cleanup was incomplete. Remove and recreate this disposable destination before retrying: #{storage_directory}"
+          end
+        rescue StandardError => error
+          cleanup_errors << error
         end
       end
-      operation_lock&.release
+      [ destination_tree, source_tree ].compact.each do |tree|
+        begin
+          tree.close
+        rescue StandardError => error
+          cleanup_errors << error
+        end
+      end
+      begin
+        operation_lock&.release
+      rescue StandardError => error
+        cleanup_errors << error
+      end
+      if cleanup_errors.any?
+        cleanup_errors.each { warn "Restore cleanup error: #{_1.message}" }
+        raise cleanup_errors.first unless active_error || installed
+      end
     end
 
     private
-      def remove_image_skeleton!(storage_directory)
-        return unless image_skeleton?(storage_directory)
+      def remove_image_skeleton!(storage_directory, descriptor_tree)
+        return unless image_skeleton?(storage_directory, descriptor_tree)
 
         placeholder = storage_directory.join(".keep")
-        directories = %w[ db files ].map { storage_directory.join(_1) }.select(&:exist?)
+        unless descriptor_tree.entry_missing?(".keep")
+          identity = nil
+          descriptor_tree.open_regular_file(".keep") do |_file, stat|
+            identity = metadata_identity(stat)
+          end
+          descriptor_tree.remove(".keep", expected_identity: identity, directory: false)
+        end
+        %w[ db files ].each do |relative|
+          next if descriptor_tree.entry_missing?(relative)
 
-        FileUtils.rm_f placeholder
-        directories.each(&:rmdir)
-        flush_directory storage_directory
+          identity = nil
+          descriptor_tree.open_directory(relative) do |_directory, stat|
+            identity = metadata_identity(stat)
+          end
+          descriptor_tree.remove(relative, expected_identity: identity, directory: true)
+        end
+        flush_directory descriptor_tree.root
       end
 
-      def image_skeleton?(storage_directory)
+      def image_skeleton?(storage_directory, descriptor_tree = nil)
         allowed = [
           ".keep", "db", "files", CampfireBackup::OperationLock::SHARED_FILENAME,
           CampfireBackup::RecoveryMarkers::RESTORE_FILENAME
         ]
-        return false unless storage_directory.children.all? { allowed.include?(_1.basename.to_s) }
+        children = descriptor_tree ? descriptor_tree.children : storage_directory.children.map { _1.basename.to_s }
+        return false unless children.all? { allowed.include?(_1) }
 
         placeholder = storage_directory.join(".keep")
-        return false if placeholder.exist? && (!placeholder.file? || placeholder.symlink? || !placeholder.size.zero?)
-        directories = %w[ db files ].map { storage_directory.join(_1) }.select(&:exist?)
-        directories.all? { _1.directory? && !_1.symlink? && _1.children.empty? }
+        if descriptor_tree
+          unless descriptor_tree.entry_missing?(".keep")
+            valid = false
+            descriptor_tree.open_regular_file(".keep") { |_file, stat| valid = stat.size.zero? }
+            return false unless valid
+          end
+          %w[ db files ].all? do |relative|
+            descriptor_tree.entry_missing?(relative) ||
+              descriptor_tree.open_directory(relative) { descriptor_tree.children(relative).empty? }
+          end
+        else
+          return false if placeholder.exist? && (!placeholder.file? || placeholder.symlink? || !placeholder.size.zero?)
+          directories = %w[ db files ].map { storage_directory.join(_1) }.select(&:exist?)
+          directories.all? { _1.directory? && !_1.symlink? && _1.children.empty? }
+        end
       end
 
-      def install_files(generation_path, storage_directory, manifest, owned_paths, operation_lock)
+      def install_files(source_tree, storage_directory, manifest, owned_paths, operation_lock,
+          descriptor_tree, fault_after: nil)
         manifest.fetch("files").each do |metadata|
           operation_lock.assert_current!
           relative = Pathname(metadata.fetch("path"))
-          source = generation_path.join("payload", relative)
           destination = storage_directory.join(relative)
-          create_directory destination.dirname, storage_directory, owned_paths, operation_lock
+          create_directory destination.dirname, storage_directory, owned_paths, operation_lock,
+            descriptor_tree
           mode = relative.to_s == CampfireBackup::InstallationIdentity::FILENAME ? 0o644 : 0o600
-          copy_exclusively source, destination, mode, owned_paths
+          copy_exclusively(
+            source_tree, "payload/#{relative}", metadata, destination, mode, owned_paths,
+            descriptor_tree, storage_directory, fault_after: fault_after
+          )
         end
 
         database_metadata = manifest.fetch("database")
         database_directory = storage_directory.join("db")
-        create_directory database_directory, storage_directory, owned_paths, operation_lock
+        create_directory database_directory, storage_directory, owned_paths, operation_lock,
+          descriptor_tree
         database_path = database_directory.join(database_metadata.fetch("path"))
         temporary_database = database_directory.join(".#{database_path.basename}.restore")
-        copy_exclusively generation_path.join(database_metadata.fetch("path")), temporary_database, 0o600, owned_paths
-        File.link temporary_database, database_path
-        owned_paths.record database_path
-        File.unlink temporary_database
+        copy_exclusively(
+          source_tree, database_metadata.fetch("path"), database_metadata, temporary_database,
+          0o600, owned_paths, descriptor_tree, storage_directory, fault_after: fault_after
+        )
+        temporary_relative = temporary_database.relative_path_from(storage_directory).to_s
+        database_relative = database_path.relative_path_from(storage_directory).to_s
+        temporary_identity = nil
+        descriptor_tree.open_regular_file(temporary_relative) do |_file, stat|
+          temporary_identity = metadata_identity(stat)
+        end
+        descriptor_tree.link temporary_relative, database_relative
+        descriptor_tree.open_entry(database_relative) do |_file, stat|
+          raise "Restored database publication is not a regular file" unless stat.file? && stat.nlink == 2
+
+          owned_paths.record(database_path, stat:)
+        end
+        descriptor_tree.remove(
+          temporary_relative, expected_identity: temporary_identity, directory: false,
+          independent: false
+        )
         owned_paths.forget temporary_database
-        flush_directory database_directory
+        descriptor_tree.open_directory("db") { |directory| flush_directory(directory) }
       end
 
-      def runtime_ownership!(owner_uid, owner_gid, runtime_uid, runtime_gid)
+      def runtime_ownership!(owner_uid, owner_gid, runtime_uid, runtime_gid, environment)
         supplied_uid = !owner_uid.to_s.empty?
         supplied_gid = !owner_gid.to_s.empty?
         unless supplied_uid == supplied_gid
@@ -176,58 +274,135 @@ class BackupInstaller
         unless owner_uid == runtime_uid && owner_gid == runtime_gid
           raise "Restore ownership must match Campfire image UID #{runtime_uid} and GID #{runtime_gid}"
         end
+        if environment.to_s == "production" && !Process.euid.zero?
+          raise "Production restore must run as root so the destination can remain inaccessible to the runtime UID"
+        end
 
-        [ owner_uid, owner_gid ]
+        [ owner_uid, owner_gid, Process.euid.zero? && Process.euid != runtime_uid ]
       end
 
-      def apply_runtime_ownership!(storage_directory, operation_lock, owned_paths, restore_marker, uid, gid)
-        with_pinned_metadata_descriptor(
-          storage_directory, "Restore destination", expected_identity: operation_lock.target_identity,
-          expected_type: :directory
-        ) do |root|
+      def apply_runtime_ownership!(storage_directory, operation_lock, owned_paths, restore_marker,
+          uid, gid, descriptor_tree)
+        descriptor_tree.open_directory(".", expected_identity: operation_lock.target_identity) do |root|
           operation_lock.apply_file_ownership! uid: uid, gid: gid
           apply_descriptor_metadata!(
             restore_marker.path, "Restore-in-progress marker",
             expected_identity: restore_marker.identity, expected_type: :file,
-            uid: uid, gid: gid, mode: 0o600
+            uid: uid, gid: gid, mode: 0o600, descriptor_tree:, root: storage_directory
           )
-          owned_paths.each_current do |path, stat|
+          owned_paths.each_current do |path, stat, file|
+            relative = path.relative_path_from(storage_directory).to_s
             mode = if stat.directory?
               0o700
-            elsif path.basename.to_s == CampfireBackup::InstallationIdentity::FILENAME
+            elsif relative == CampfireBackup::InstallationIdentity::FILENAME
               0o644
             else
               0o600
             end
-            apply_descriptor_metadata!(
-              path, "Restored storage entry", expected_identity: metadata_identity(stat),
-              expected_type: stat.directory? ? :directory : :file,
-              uid: uid, gid: gid, mode: mode
-            )
+            identity = metadata_identity(stat)
+            set_descriptor_metadata! file, path, uid: uid, gid: gid, mode: mode
+            descriptor_tree.open_entry(
+              relative, expected_identity: identity
+            ) do |_current, current_stat|
+              expected_type = stat.directory? ? current_stat.directory? :
+                current_stat.file? && current_stat.nlink == 1
+              raise "Restored storage entry changed during ownership handoff: #{path}" unless expected_type
+            end
+          rescue RuntimeError
+            raise "Restored storage entry changed during ownership handoff: #{path}"
           end
 
-          # The root is handed to the runtime UID only after every reachable child
-          # has been changed and synced through its already-verified descriptor.
-          set_descriptor_metadata! root, storage_directory, uid: uid, gid: gid, mode: 0o700
-          assert_metadata_descriptor_current!(
-            root, storage_directory, "Restore destination",
-            expected_identity: operation_lock.target_identity, expected_type: :directory
-          )
+          root.fsync
+          descriptor_tree.assert_root_current!
         end
       end
 
-      def claim_restore_destination!(storage_directory, operation_lock)
-        with_pinned_metadata_descriptor(
-          storage_directory, "Restore destination", expected_identity: operation_lock.target_identity,
-          expected_type: :directory
-        ) do |root|
-          set_descriptor_metadata!(
-            root, storage_directory, uid: Process.euid, gid: Process.egid, mode: 0o700
-          )
+      def claim_restore_destination!(storage_directory, operation_lock, descriptor_tree,
+          isolate_runtime:)
+        descriptor_tree.open_directory(".", expected_identity: operation_lock.target_identity) do |root|
+          root.chmod(isolate_runtime ? 0o000 : 0o700)
+          root.chown Process.euid, Process.egid
+          root.fsync
+          stat = root.stat
+          expected_mode = isolate_runtime ? 0o000 : 0o700
+          unless stat.uid == Process.euid && stat.gid == Process.egid &&
+              (stat.mode & 0o777) == expected_mode
+            raise "Restore destination could not be isolated from the runtime UID"
+          end
+          descriptor_tree.assert_root_current!
+        rescue SystemCallError => error
+          raise "Could not isolate restore destination from the runtime UID: #{error.message}"
         end
       end
 
-      def apply_descriptor_metadata!(path, description, expected_identity:, expected_type:, uid:, gid:, mode:)
+      def commit_restore!(storage_directory, operation_lock, descriptor_tree, restore_marker,
+          installed_inventory, uid, gid, isolate_runtime:, fault_after: nil)
+        committed = false
+        root = nil
+        begin
+          descriptor_tree.open_directory(".", expected_identity: operation_lock.target_identity) do |opened_root|
+            root = opened_root
+            CampfireBackup::RecoveryMarkers.complete_restore!(
+              restore_marker, descriptor_tree:
+            )
+            fault_after&.call("marker-removed")
+            assert_storage_inventory_current!(
+              storage_directory, installed_inventory, descriptor_tree:
+            )
+            operation_lock.assert_current!
+            descriptor_tree.assert_root_current!
+
+            opened_root.chmod 0o000 unless isolate_runtime
+            opened_root.chown uid, gid
+            opened_root.fsync
+            locked = opened_root.stat
+            unless locked.uid == uid && locked.gid == gid && (locked.mode & 0o777).zero?
+              raise "Restore destination ownership commit did not remain inaccessible"
+            end
+
+            opened_root.chmod 0o700
+            fault_after&.call("root-exposed")
+            opened_root.fsync
+            published = opened_root.stat
+            unless published.uid == uid && published.gid == gid &&
+                (published.mode & 0o777) == 0o700
+              raise "Restore destination ownership commit failed"
+            end
+            descriptor_tree.assert_root_current!
+          end
+          committed = true
+        ensure
+          unless committed || !root
+            begin
+              root.chmod 0o000
+              root.fsync
+            rescue StandardError => lockdown_error
+              warn "Failed restore could not be relocked: #{lockdown_error.message}"
+            end
+          end
+        end
+        true
+      end
+
+      def apply_descriptor_metadata!(path, description, expected_identity:, expected_type:, uid:, gid:, mode:,
+          descriptor_tree: nil, root: nil)
+        if descriptor_tree
+          relative = Pathname(path).relative_path_from(Pathname(root)).to_s
+          descriptor_tree.open_entry(relative, expected_identity:) do |file, stat|
+            expected_kind = expected_type == :directory ? stat.directory? :
+              stat.file? && stat.nlink == 1
+            raise "#{description} changed during ownership handoff: #{path}" unless expected_kind
+
+            set_descriptor_metadata! file, path, uid:, gid:, mode:
+          end
+          descriptor_tree.open_entry(relative, expected_identity:) do |_file, stat|
+            expected_kind = expected_type == :directory ? stat.directory? :
+              stat.file? && stat.nlink == 1
+            raise "#{description} changed during ownership handoff: #{path}" unless expected_kind
+          end
+          return
+        end
+
         with_pinned_metadata_descriptor(
           path, description, expected_identity:, expected_type:
         ) do |file|
@@ -282,18 +457,27 @@ class BackupInstaller
         raise "#{description} changed during ownership handoff: #{path}"
       end
 
-      def verify_runtime_access!(storage_directory, uid, gid, expected_inventory:)
-        root_stat = storage_directory.lstat
-        unless root_stat.directory? && !root_stat.symlink? && root_stat.uid == uid && root_stat.gid == gid
+      def verify_runtime_access!(storage_directory, uid, gid, expected_inventory:, descriptor_tree: nil,
+          isolate_runtime: false)
+        root_stat = descriptor_tree ? descriptor_tree.pinned_root_stat : storage_directory.lstat
+        expected_root_uid = isolate_runtime ? Process.euid : uid
+        expected_root_gid = isolate_runtime ? Process.egid : gid
+        expected_root_mode = isolate_runtime ? 0o000 : 0o700
+        unless root_stat.directory? && (descriptor_tree || !storage_directory.symlink?) &&
+            root_stat.uid == expected_root_uid && root_stat.gid == expected_root_gid &&
+            (root_stat.mode & 0o777) == expected_root_mode
           raise "Restored storage ownership does not match the Campfire image runtime"
         end
-        unless ((root_stat.mode >> 6) & 0o7) == 0o7
-          raise "Restored storage is not accessible to the Campfire image runtime"
-        end
 
-        inventory = assert_storage_inventory_current!(storage_directory, expected_inventory)
+        inventory = assert_storage_inventory_current!(
+          storage_directory, expected_inventory, descriptor_tree:
+        )
         inventory.each_key do |relative|
-          stat = storage_directory.join(relative).lstat
+          stat = if descriptor_tree
+            descriptor_tree.open_entry(relative) { |_file, opened| opened }
+          else
+            storage_directory.join(relative).lstat
+          end
           unless stat.uid == uid && stat.gid == gid
             raise "Restored storage ownership does not match the Campfire image runtime"
           end
@@ -303,39 +487,105 @@ class BackupInstaller
             raise "Restored storage is not accessible to the Campfire image runtime"
           end
         end
-        assert_storage_inventory_current! storage_directory, inventory
+        assert_storage_inventory_current!(storage_directory, inventory, descriptor_tree:)
       end
 
-      def create_directory(path, root, owned_paths, operation_lock)
+      def create_directory(path, root, owned_paths, operation_lock, descriptor_tree)
         return if path == root
         operation_lock.assert_current!
-        if path.exist? || path.symlink?
-          unless owned_paths.owned?(path) && path.directory? && !path.symlink?
-            raise "Restore destination changed concurrently"
-          end
+        relative = path.relative_path_from(root).to_s
+        if owned_paths.owned?(path)
+          descriptor_tree.open_directory(relative) { nil }
           return
         end
 
-        create_directory path.dirname, root, owned_paths, operation_lock
-        Dir.mkdir path, 0o700
-        owned_paths.record path
+        create_directory path.dirname, root, owned_paths, operation_lock, descriptor_tree
+        descriptor_tree.mkdir(relative, mode: 0o700) do |directory, stat|
+          owned_paths.record(path, stat:)
+          directory.chmod 0o700
+        end
       rescue Errno::EEXIST
         raise "Restore destination changed concurrently"
+      rescue RuntimeError => error
+        raise if error.message == "Restore destination changed concurrently"
+
+        raise "Restore destination changed concurrently: #{error.message}"
       end
 
-      def copy_exclusively(source, destination, mode, owned_paths)
-        File.open(destination, File::WRONLY | File::CREAT | File::EXCL, mode) do |file|
-          owned_paths.record destination
-          File.open(source, "rb") { IO.copy_stream(_1, file) }
-          file.chmod mode
-          file.flush
-          file.fsync
+      def copy_exclusively(source_tree, source_relative, metadata, destination, mode, owned_paths,
+          descriptor_tree, root, fault_after: nil)
+        relative = destination.relative_path_from(root).to_s
+        source_tree.open_regular_file(source_relative) do |source, source_stat|
+          unless source_stat.size == metadata.fetch("bytes")
+            raise "Backup source size does not match its authenticated manifest: #{source_relative}"
+          end
+          descriptor_tree.create_file(relative, mode:) do |file, stat|
+            owned_paths.record(destination, stat:)
+            copy_authenticated_source!(source, file, metadata, source_relative)
+            fault_after&.call("source-copied:#{source_relative}")
+            verify_authenticated_source!(source, metadata, source_relative)
+            file.chmod mode
+            file.flush
+            file.fsync
+          end
         end
       end
 
-      def verify_installed!(storage_directory, manifest, expected_installation_fingerprint)
+      def copy_authenticated_source!(source, destination, metadata, description)
+        expected_bytes = metadata.fetch("bytes")
+        source.rewind
+        digest = Digest::SHA256.new
+        remaining = expected_bytes
+        while remaining.positive?
+          chunk = source.read([ remaining, 1024 * 1024 ].min)
+          if chunk.nil? || chunk.empty?
+            raise "Backup source was truncated while it was copied: #{description}"
+          end
+          write_all destination, chunk
+          digest << chunk
+          remaining -= chunk.bytesize
+        end
+        raise "Backup source grew while it was copied: #{description}" if source.read(1)
+        destination.flush
+        unless destination.stat.size == expected_bytes &&
+            digest.hexdigest == metadata.fetch("sha256")
+          raise "Backup source does not match its authenticated manifest: #{description}"
+        end
+      end
+
+      def verify_authenticated_source!(source, metadata, description)
+        source.rewind
+        digest = Digest::SHA256.new
+        remaining = metadata.fetch("bytes")
+        while remaining.positive?
+          chunk = source.read([ remaining, 1024 * 1024 ].min)
+          if chunk.nil? || chunk.empty?
+            raise "Backup source changed while it was revalidated: #{description}"
+          end
+          digest << chunk
+          remaining -= chunk.bytesize
+        end
+        if source.read(1) || digest.hexdigest != metadata.fetch("sha256")
+          raise "Backup source changed while it was revalidated: #{description}"
+        end
+      ensure
+        source.rewind if source && !source.closed?
+      end
+
+      def write_all(destination, contents)
+        offset = 0
+        while offset < contents.bytesize
+          written = destination.write(contents.byteslice(offset, contents.bytesize - offset))
+          raise "Could not copy authenticated backup bytes" unless written&.positive?
+
+          offset += written
+        end
+      end
+
+      def verify_installed!(storage_directory, manifest, expected_installation_fingerprint,
+          descriptor_tree = nil)
         expected_inventory = expected_storage_inventory(manifest)
-        before = storage_inventory(storage_directory)
+        before = storage_inventory(storage_directory, descriptor_tree:)
         unless inventory_types(before) == expected_inventory
           raise "Restored storage contains unexpected or missing entries"
         end
@@ -344,11 +594,13 @@ class BackupInstaller
         database_path = storage_directory.join("db", database_metadata.fetch("path"))
         database_relative = database_path.relative_path_from(storage_directory).to_s
         verify_metadata! database_path, database_metadata,
-          expected_identity: before.fetch(database_relative).fetch(:identity)
+          expected_identity: before.fetch(database_relative).fetch(:identity), descriptor_tree:,
+          root: storage_directory
         manifest.fetch("files").each do |metadata|
           path = storage_directory.join(metadata.fetch("path"))
           verify_metadata! path, metadata,
-            expected_identity: before.fetch(metadata.fetch("path")).fetch(:identity)
+            expected_identity: before.fetch(metadata.fetch("path")).fetch(:identity), descriptor_tree:,
+            root: storage_directory
         end
 
         CampfireBackup::RedisValidator.validate!(
@@ -358,11 +610,14 @@ class BackupInstaller
         manifest.fetch("files").each do |metadata|
           path = storage_directory.join(metadata.fetch("path"))
           verify_metadata! path, metadata,
-            expected_identity: before.fetch(metadata.fetch("path")).fetch(:identity)
+            expected_identity: before.fetch(metadata.fetch("path")).fetch(:identity), descriptor_tree:,
+            root: storage_directory
         end
-        verify_database! database_path, storage_directory, manifest,
-          expected_installation_fingerprint, expected_inventory: before
-        after = storage_inventory(storage_directory)
+        verify_database!(
+          database_path, storage_directory, manifest, expected_installation_fingerprint,
+          expected_inventory: before, descriptor_tree:
+        )
+        after = storage_inventory(storage_directory, descriptor_tree:)
         unless after == before && inventory_types(after) == expected_inventory
           raise "Restored storage changed during final validation"
         end
@@ -370,16 +625,26 @@ class BackupInstaller
       end
 
       def verify_database!(database_path, storage_directory, manifest, expected_installation_fingerprint,
-          expected_inventory:)
+          expected_inventory:, descriptor_tree: nil)
         database_relative = database_path.relative_path_from(storage_directory).to_s
         with_pinned_regular_file(
           database_path, "Restored database",
-          expected_identity: expected_inventory.fetch(database_relative).fetch(:identity)
-        ) do |database_file|
+          expected_identity: expected_inventory.fetch(database_relative).fetch(:identity),
+          descriptor_tree:, root: storage_directory
+        ) do |database_file, database_stat|
           descriptor_path = open_descriptor_path(database_file)
           database = SQLite3::Database.new(
             "file:#{descriptor_path}?immutable=1", uri: true, readonly: true
           )
+          descriptor = CampfireBackup::UpgradeRecoveryGuard.sqlite_main_file_descriptor!(database)
+          unless descriptor
+            raise "Native SQLite main-file descriptor verification is required for restore validation"
+          end
+          opened_by_sqlite = IO.for_fd(descriptor, autoclose: false).stat
+          unless metadata_identity(opened_by_sqlite) == metadata_identity(database_stat)
+            raise "SQLite opened a different restored database descriptor"
+          end
+          CampfireBackup::UpgradeRecoveryGuard.assert_sqlite_main_file_current! database
           database.results_as_hash = true
           unless database.get_first_value("PRAGMA integrity_check") == "ok"
             raise "Restored database failed integrity_check"
@@ -392,8 +657,11 @@ class BackupInstaller
             raise "Restored database schema does not match"
           end
           CampfireBackup::SchemaVerifier.verify!(descriptor_path, schema_version:)
+          CampfireBackup::UpgradeRecoveryGuard.assert_sqlite_main_file_current! database
 
-          marker = read_installation_marker!(storage_directory, expected_inventory:)
+          marker = read_installation_marker!(
+            storage_directory, expected_inventory:, descriptor_tree:
+          )
           fingerprint = CampfireBackup::InstallationIdentity.fingerprint(marker)
           unless fingerprint == expected_installation_fingerprint
             raise "Restored installation fingerprint does not match"
@@ -404,19 +672,22 @@ class BackupInstaller
               raise "Restored installation marker does not match its database"
             end
           end
-          verify_blob_files database, storage_directory, expected_inventory:
+          verify_blob_files(
+            database, storage_directory, expected_inventory:, descriptor_tree:
+          )
         ensure
           database&.close
         end
       end
 
-      def verify_blob_files(database, storage_directory, expected_inventory:)
+      def verify_blob_files(database, storage_directory, expected_inventory:, descriptor_tree: nil)
         database.execute("SELECT key, byte_size, checksum FROM active_storage_blobs").each do |blob|
           path = storage_directory.join("files", blob.fetch("key")[0, 2], blob.fetch("key")[2, 2], blob.fetch("key"))
           relative = path.relative_path_from(storage_directory).to_s
           with_pinned_regular_file(
             path, "Restored uploaded file #{blob.fetch('key')}",
-            expected_identity: expected_inventory.fetch(relative).fetch(:identity)
+            expected_identity: expected_inventory.fetch(relative).fetch(:identity),
+            descriptor_tree:, root: storage_directory
           ) do |file, stat|
             unless stat.size == blob.fetch("byte_size")
               raise "Restore is missing uploaded file #{blob.fetch('key')}"
@@ -429,8 +700,10 @@ class BackupInstaller
         end
       end
 
-      def verify_metadata!(path, metadata, expected_identity:)
-        with_pinned_regular_file(path, "Restored file", expected_identity:) do |file, stat|
+      def verify_metadata!(path, metadata, expected_identity:, descriptor_tree: nil, root: nil)
+        with_pinned_regular_file(
+          path, "Restored file", expected_identity:, descriptor_tree:, root:
+        ) do |file, stat|
           unless stat.size == metadata.fetch("bytes") &&
               digest_io(file, Digest::SHA256.new).hexdigest == metadata.fetch("sha256")
             raise "Restored file does not match the authenticated manifest: #{path}"
@@ -466,15 +739,43 @@ class BackupInstaller
         path.to_s
       end
 
-      def storage_inventory(storage_directory)
+      def storage_inventory(storage_directory, descriptor_tree: nil)
         inventory = {}
-        collect_directory_inventory storage_directory, storage_directory, inventory
+        collect_directory_inventory(
+          storage_directory, storage_directory, inventory, descriptor_tree:
+        )
         inventory.delete CampfireBackup::OperationLock::SHARED_FILENAME
         inventory.delete CampfireBackup::RecoveryMarkers::RESTORE_FILENAME
         inventory.sort.to_h
       end
 
-      def collect_directory_inventory(directory, root, inventory)
+      def collect_directory_inventory(directory, root, inventory, descriptor_tree: nil,
+          relative_directory: ".")
+        if descriptor_tree
+          descriptor_tree.open_directory(relative_directory) do
+            descriptor_tree.children(relative_directory).sort.each do |name|
+              if name.in?([ ".", ".." ]) || name.include?(File::SEPARATOR)
+                raise "Restored storage contains an unsafe entry name"
+              end
+
+              relative = relative_directory == "." ? name : "#{relative_directory}/#{name}"
+              path = root.join(relative)
+              descriptor_tree.open_entry(relative) do |_file, stat|
+                if stat.directory?
+                  inventory[relative] = inventory_metadata(stat, :directory)
+                  collect_directory_inventory path, root, inventory, descriptor_tree:,
+                    relative_directory: relative
+                elsif stat.file? && stat.nlink == 1
+                  inventory[relative] = inventory_metadata(stat, :file)
+                else
+                  raise "Restored storage contains a link or special file: #{path}"
+                end
+              end
+            end
+          end
+          return
+        end
+
         with_pinned_directory(directory) do |opened_directory|
           children = directory_children(opened_directory)
           children.sort.each do |name|
@@ -541,15 +842,23 @@ class BackupInstaller
         inventory.transform_values { _1.fetch(:type) }
       end
 
-      def assert_storage_inventory_current!(storage_directory, expected)
-        current = storage_inventory(storage_directory)
+      def assert_storage_inventory_current!(storage_directory, expected, descriptor_tree: nil)
+        current = storage_inventory(storage_directory, descriptor_tree:)
         unless current == expected
           raise "Restored storage changed during final validation"
         end
         current
       end
 
-      def with_pinned_regular_file(path, description, expected_identity: nil)
+      def with_pinned_regular_file(path, description, expected_identity: nil,
+          descriptor_tree: nil, root: nil)
+        if descriptor_tree
+          relative = Pathname(path).relative_path_from(Pathname(root)).to_s
+          return descriptor_tree.open_regular_file(relative, expected_identity:) do |file, stat|
+            yield file, stat
+          end
+        end
+
         initial = path.lstat
         unless initial.file? && !initial.symlink? && initial.nlink == 1
           raise "#{description} is not an independent regular file: #{path}"
@@ -597,32 +906,60 @@ class BackupInstaller
         file.seek position, IO::SEEK_SET if defined?(position) && position
       end
 
+      def read_authenticated_manifest!(source_tree, authentication_key)
+        source = source_tree.open_regular_file("manifest.json") do |file, stat|
+          unless stat.size.between?(1, BackupVerifier::MAX_MANIFEST_BYTES)
+            raise "Backup manifest exceeds its safe size limit"
+          end
+
+          contents = +"".b
+          while contents.bytesize < stat.size
+            chunk = file.read([ stat.size - contents.bytesize, 1024 * 1024 ].min)
+            raise "Backup manifest was truncated while it was read" if chunk.nil? || chunk.empty?
+
+            contents << chunk
+          end
+          raise "Backup manifest grew while it was read" if file.read(1)
+
+          contents
+        end
+        CampfireBackup::Authentication.verify_manifest!(
+          JSON.parse(source), key: authentication_key
+        )
+      end
+
       def open_descriptor_path(file)
         paths = [ "/proc/self/fd/#{file.fileno}", "/dev/fd/#{file.fileno}" ]
         paths.find { File.exist?(_1) } || raise("Open file descriptors cannot be addressed safely")
       end
 
-      def read_installation_marker!(storage_directory, expected_inventory:)
+      def read_installation_marker!(storage_directory, expected_inventory:, descriptor_tree: nil)
         path = storage_directory.join(CampfireBackup::InstallationIdentity::FILENAME)
         relative = path.relative_path_from(storage_directory).to_s
         with_pinned_regular_file(
           path, "Installation identity marker",
-          expected_identity: expected_inventory.fetch(relative).fetch(:identity)
+          expected_identity: expected_inventory.fetch(relative).fetch(:identity),
+          descriptor_tree:, root: storage_directory
         ) do |file|
           file.rewind
           file.read.strip.tap { CampfireBackup::InstallationIdentity.validate!(_1) }
         end
       end
 
-      def storage_entries(storage_directory, operation_lock)
-        storage_directory.children.reject do |path|
+      def storage_entries(storage_directory, operation_lock, descriptor_tree = nil)
+        entries = if descriptor_tree
+          descriptor_tree.children.map { storage_directory.join(_1) }
+        else
+          storage_directory.children
+        end
+        entries.reject do |path|
           path == operation_lock.shared_path ||
             path == storage_directory.join(CampfireBackup::RecoveryMarkers::RESTORE_FILENAME)
         end
       end
 
       def flush_directory(path)
-        File.open(path, &:fsync)
+        path.respond_to?(:fsync) ? path.fsync : File.open(path, &:fsync)
       end
   end
 end

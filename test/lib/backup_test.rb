@@ -1,6 +1,7 @@
 require "test_helper"
 require "open3"
 require "rbconfig"
+require "timeout"
 require "tmpdir"
 
 load Rails.root.join("script/admin/prepare-backup") unless defined?(Backup)
@@ -107,6 +108,131 @@ class BackupTest < ActiveSupport::TestCase
         )
       end
       assert_equal "untouched", marker.read
+    end
+  end
+
+  test "verification cannot hash and validate three different database path occupants" do
+    with_storage do |storage, backups|
+      manifest = backup_manifest(storage, backups)
+      generation = backups.join(manifest.fetch("backup_id"))
+      database_path = generation.join(manifest.dig("database", "path"))
+      hashed_database = backups.join("hashed.sqlite3")
+      sqlite_database = backups.join("sqlite.sqlite3")
+      schema_database = backups.join("schema.sqlite3")
+      FileUtils.copy_file database_path, sqlite_database
+      FileUtils.copy_file database_path, schema_database
+      [ sqlite_database, schema_database ].each_with_index do |path, index|
+        database = SQLite3::Database.new(path.to_s)
+        database.execute(
+          "UPDATE users SET password_digest = ? WHERE id = (SELECT MIN(id) FROM users)",
+          "unauthenticated-occupant-#{index}"
+        )
+        database.close
+      end
+
+      error = assert_raises(RuntimeError) do
+        BackupVerifier.verify(
+          generation_path: generation,
+          expected_installation_fingerprint: manifest.fetch("installation_fingerprint"),
+          expected_environment: "test",
+          fault_after: ->(step) {
+            case step
+            when "database-digest"
+              File.rename database_path, hashed_database
+              File.rename sqlite_database, database_path
+            when "database-sqlite"
+              File.rename database_path, sqlite_database
+              File.rename schema_database, database_path
+            end
+          }
+        )
+      end
+
+      assert_match(/changed (?:during verification|concurrently)/, error.message)
+      assert hashed_database.file?
+      assert sqlite_database.file?
+      assert database_path.file?
+    end
+  end
+
+  test "verification rejects same-inode database writes after private staging" do
+    with_storage do |storage, backups|
+      manifest = backup_manifest(storage, backups)
+      generation = backups.join(manifest.fetch("backup_id"))
+      database_path = generation.join(manifest.dig("database", "path"))
+      inode = database_path.stat.ino
+      mutated = false
+
+      error = assert_raises(RuntimeError) do
+        BackupVerifier.verify(
+          generation_path: generation,
+          expected_installation_fingerprint: manifest.fetch("installation_fingerprint"),
+          expected_environment: "test",
+          fault_after: ->(step) {
+            next unless step == "database-staged"
+
+            File.open(database_path, "r+b") do |file|
+              file.seek 100
+              byte = file.read(1)
+              file.seek 100
+              file.write((byte.getbyte(0) ^ 0x01).chr)
+              file.flush
+              file.fsync
+            end
+            mutated = true
+          }
+        )
+      end
+
+      assert mutated
+      assert_equal inode, database_path.stat.ino
+      assert_match(/checksum does not match|changed concurrently/, error.message)
+    end
+  end
+
+  test "verification rejects a FIFO generation entry without blocking" do
+    with_storage do |storage, backups|
+      manifest = backup_manifest(storage, backups)
+      generation = backups.join(manifest.fetch("backup_id"))
+      database_path = generation.join(manifest.dig("database", "path"))
+      database_path.unlink
+      File.mkfifo database_path, 0o600
+
+      error = Timeout.timeout(2) do
+        assert_raises(RuntimeError) do
+          BackupVerifier.verify(
+            generation_path: generation,
+            expected_installation_fingerprint: manifest.fetch("installation_fingerprint"),
+            expected_environment: "test"
+          )
+        end
+      end
+
+      assert_match(/wrong type|independent regular file/, error.message)
+    end
+  end
+
+  test "installation rejects a hard-linked authenticated source" do
+    with_storage do |storage, backups|
+      manifest = backup_manifest(storage, backups)
+      generation = backups.join(manifest.fetch("backup_id"))
+      marker = generation.join("payload", CampfireBackup::InstallationIdentity::FILENAME)
+      peer = backups.join("marker-peer")
+      File.link marker, peer
+
+      Dir.mktmpdir("campfire-install-source-hardlink") do |directory|
+        error = assert_raises(RuntimeError) do
+          BackupInstaller.install(
+            generation_path: generation,
+            storage_directory: Pathname(directory).join("storage"),
+            expected_installation_fingerprint: manifest.fetch("installation_fingerprint"),
+            expected_environment: "test", runtime_uid: Process.euid, runtime_gid: Process.egid
+          )
+        end
+
+        assert_match(/independent regular file|link or special file/, error.message)
+        assert_equal 2, peer.stat.nlink
+      end
     end
   end
 
@@ -234,6 +360,32 @@ class BackupTest < ActiveSupport::TestCase
       assert_equal 0o644, restored_marker.stat.mode & 0o777
       assert_equal accounts(:signal).installation_identifier, restored_marker.read.strip
       assert_not restored_storage.join(CampfireBackup::RecoveryMarkers::RESTORE_FILENAME).exist?
+    end
+  end
+
+  test "only the root installation identifier receives readable installation-marker mode" do
+    with_storage do |storage, backups|
+      nested = storage.join("files", CampfireBackup::InstallationIdentity::FILENAME)
+      nested.dirname.mkpath
+      nested.write "nested content"
+      manifest = backup_manifest(storage, backups)
+
+      Dir.mktmpdir("campfire-installation-mode") do |directory|
+        restored = Pathname(directory).join("storage")
+        capture_io do
+          BackupInstaller.install(
+            generation_path: backups.join(manifest.fetch("backup_id")),
+            storage_directory: restored,
+            expected_installation_fingerprint: manifest.fetch("installation_fingerprint"),
+            expected_environment: "test", runtime_uid: Process.euid, runtime_gid: Process.egid
+          )
+        end
+
+        assert_equal 0o644,
+          restored.join(CampfireBackup::InstallationIdentity::FILENAME).stat.mode & 0o777
+        assert_equal 0o600,
+          restored.join("files", CampfireBackup::InstallationIdentity::FILENAME).stat.mode & 0o777
+      end
     end
   end
 
@@ -727,6 +879,88 @@ class BackupTest < ActiveSupport::TestCase
         assert replaced
         assert_match "not an independent regular file", error.message
         assert_equal "authenticated history", outside.read
+      end
+    end
+  end
+
+  test "installation never writes through a raced destination ancestor symlink" do
+    with_storage do |storage, backups|
+      stored_file = storage.join("files/room/history.txt")
+      stored_file.dirname.mkpath
+      stored_file.write "authenticated history"
+      manifest = backup_manifest(storage, backups)
+      generation = backups.join(manifest.fetch("backup_id"))
+
+      Dir.mktmpdir("campfire-install-ancestor-race") do |directory|
+        root = Pathname(directory)
+        restored_storage = root.join("storage")
+        outside = root.join("outside").tap(&:mkpath)
+        displaced = root.join("displaced-room")
+        original = BackupInstaller.method(:create_directory)
+        raced = false
+        CampfireBackup::OwnedPaths.any_instance.stubs(:cleanup).returns([])
+        BackupInstaller.define_singleton_method(:create_directory) do |path, *arguments|
+          result = original.call(path, *arguments)
+          if !raced && Pathname(path).to_s.end_with?("/files/room")
+            File.rename path, displaced
+            File.symlink outside, path
+            raced = true
+          end
+          result
+        end
+        BackupInstaller.singleton_class.send(:private, :create_directory)
+
+        error = assert_raises(RuntimeError) do
+          BackupInstaller.install(
+            generation_path: generation, storage_directory: restored_storage,
+            expected_installation_fingerprint: manifest.fetch("installation_fingerprint"),
+            expected_environment: "test", runtime_uid: Process.euid, runtime_gid: Process.egid
+          )
+        end
+
+        assert raced
+        assert_match(/changed concurrently|symbolic link/, error.message)
+        assert_not outside.join("history.txt").exist?
+      ensure
+        BackupInstaller.define_singleton_method(:create_directory) do |path, *arguments|
+          original.call(path, *arguments)
+        end
+        BackupInstaller.singleton_class.send(:private, :create_directory)
+      end
+    end
+  end
+
+  test "installation rehashes a pinned source after copying authenticated bytes" do
+    with_storage do |storage, backups|
+      source_file = storage.join("files/source-copy.txt")
+      source_file.dirname.mkpath
+      source_file.write "authenticated source"
+      manifest = backup_manifest(storage, backups)
+      generation = backups.join(manifest.fetch("backup_id"))
+      copied_source = generation.join("payload/files/source-copy.txt")
+      inode = copied_source.stat.ino
+      mutated = false
+
+      Dir.mktmpdir("campfire-install-source-copy") do |directory|
+        restored = Pathname(directory).join("storage")
+        error = assert_raises(RuntimeError) do
+          BackupInstaller.install(
+            generation_path: generation, storage_directory: restored,
+            expected_installation_fingerprint: manifest.fetch("installation_fingerprint"),
+            expected_environment: "test", runtime_uid: Process.euid, runtime_gid: Process.egid,
+            fault_after: ->(step) {
+              next unless step.start_with?("source-copied:") && step.end_with?("source-copy.txt")
+
+              copied_source.binwrite("x" * copied_source.size)
+              mutated = true
+            }
+          )
+        end
+
+        assert mutated
+        assert_equal inode, copied_source.stat.ino
+        assert_match "changed while it was revalidated", error.message
+        assert restored.join(CampfireBackup::RecoveryMarkers::RESTORE_FILENAME).file?
       end
     end
   end

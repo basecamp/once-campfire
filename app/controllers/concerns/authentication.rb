@@ -8,6 +8,7 @@ module Authentication
   PASSWORD_REAUTHENTICATION_SESSION_KEY = "password_reauthentication"
 
   included do
+    around_action :with_session_mutation_fence
     before_action :require_authentication
     before_action :deny_bots
     helper_method :signed_in?
@@ -31,6 +32,27 @@ module Authentication
   end
 
   private
+    def with_session_mutation_fence
+      if request.get? || request.head?
+        yield
+      else
+        with_existing_session_mutation_fence { yield }
+      end
+    end
+
+    def with_existing_session_mutation_fence
+      user_id = session_user_id_by_cookie
+      if user_id
+        User::MutationFence.with(user_id) { yield }
+      else
+        yield
+      end
+    end
+
+    def with_administrator_roster_mutation_fence(&block)
+      User::MutationFence.with_administrator_roster(&block)
+    end
+
     # An earlier cookie copy cannot inherit proof added to this encrypted browser session later.
     def record_password_reauthentication!(user = Current.user)
       session[PASSWORD_REAUTHENTICATION_SESSION_KEY] = {
@@ -101,8 +123,10 @@ module Authentication
 
     def bot_authentication
       bot_key, = ActionController::HttpAuthentication::Token.token_and_options(request)
-      if bot_key.present? && bot = User.authenticate_bot(bot_key.strip)
+      presented_bot_key = bot_key&.strip
+      if presented_bot_key.present? && bot = User.authenticate_bot(presented_bot_key)
         Current.user = bot
+        @authenticated_bot_key = presented_bot_key.dup.freeze
         set_authenticated_by(:bot_key)
       end
     end
@@ -126,6 +150,7 @@ module Authentication
 
     def create_new_session_for(user, identity: nil, authentication_method: nil)
       previous_session = find_session_by_cookie
+      Session.prune_expired! unless Account.connection.transaction_open?
       Account.transaction do
         account = Account.lock.sole
         if account.oidc_transition_state == "rollback_prepared"
@@ -133,7 +158,7 @@ module Authentication
         end
 
         user.sessions.start!(user_agent: request.user_agent, ip_address: request.remote_ip, identity:, authentication_method:).tap do
-          previous_session&.destroy!
+          previous_session&.revoke!
         end
       end
     end
@@ -145,7 +170,7 @@ module Authentication
     end
 
     def terminate_current_session
-      Current.session&.destroy!
+      Current.session&.revoke!
       reset_session
       remove_authentication_cookie
     end
@@ -186,5 +211,9 @@ module Authentication
 
     def authenticated_by
       @authenticated_by ||= "".inquiry
+    end
+
+    def authenticated_bot_key
+      @authenticated_bot_key
     end
 end

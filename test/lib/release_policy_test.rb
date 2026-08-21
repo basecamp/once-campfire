@@ -155,7 +155,58 @@ class ReleasePolicyTest < ActiveSupport::TestCase
 
       assert_not status.success?
       assert_match "required container control is missing: verify-receipts:", stderr
-      assert_match "aggregate verify-receipts must depend on the complete native architecture matrix", stderr
+      assert_match "aggregate verify-receipts must always run after the complete native architecture matrix", stderr
+    end
+  end
+
+  test "policy requires aggregate architecture receipts to run after matrix failures" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read.sub("    if: ${{ always() }}", "    if: ${{ success() }}")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "aggregate verify-receipts must always run after the complete native architecture matrix", stderr
+    end
+  end
+
+  test "policy requires receipt reporting before an explicit validation-result failure" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      workflow.write workflow.read
+        .sub(
+          "      - name: Download amd64 evidence\n        if: ${{ always() }}\n",
+          "      - name: Download amd64 evidence\n        if: ${{ success() }}\n"
+        )
+        .sub(
+          "          VALIDATE_RESULT: ${{ needs.validate.result }}",
+          "          VALIDATE_RESULT: ${{ needs.validate.conclusion }}"
+        )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "aggregate receipts must be inspected before explicitly requiring validate success", stderr
+    end
+  end
+
+  test "policy requires aggregate inspection and attestation semantics" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/container.yml")
+      source = workflow.read
+      verifier_start = source.index("      - name: Verify exact amd64 and arm64 receipt set")
+      verifier = source[verifier_start..]
+        .gsub(
+          '.subject[0].digest == {"sha256": $digest}',
+          "any(.subject[]?; .digest.sha256 == $digest)"
+        )
+      workflow.write source[0...verifier_start] + verifier
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "aggregate SBOM and provenance must each bind one exact architecture digest", stderr
     end
   end
 
@@ -219,6 +270,124 @@ class ReleasePolicyTest < ActiveSupport::TestCase
       assert_not status.success?
       assert_match "required release evidence control is missing: recovery_receipts:", stderr
       assert_match 'required release evidence control is missing: --source-digest "$RELEASE_SHA"', stderr
+    end
+  end
+
+  test "policy requires retained image inspection and digest-bound BuildKit attestations" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      workflow.write workflow.read
+        .sub(
+          '--arg inspection_sha256 "$(sha256sum "$evidence_directory/image-inspect.json"',
+          '--arg inspection_sha256 "$(sha256sum "$evidence_directory/container-validation.json"'
+        )
+        .gsub(
+          '.subject[0].digest == {"sha256": $digest}',
+          "any(.subject[]?; .digest.sha256 == $digest)"
+        )
+      validation = root.join("script/ci/validate-container-image")
+      validation.write validation.read.gsub(
+        '.subject[0].digest == {"sha256": $digest}',
+        "any(.subject[]?; .digest.sha256 == $digest)"
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "image inspection hash must bind the retained image-inspect.json", stderr
+      assert_match "SBOM and BuildKit provenance must each bind one exact architecture digest", stderr
+      assert_match "missing evidence check: .subject[0].digest", stderr
+    end
+  end
+
+  test "policy confines the GHCR overwrite probe to a disposable alias" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      workflow.write workflow.read.sub(
+        'probe_reference="${canonical_image}:release-mutability-control-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${OPERATION_NONCE:0:16}"',
+        'probe_reference="${canonical_image}:${RELEASE_TAG}"'
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "non-destructive GHCR immutability gate is missing", stderr
+      assert_match "GHCR mutability probes may target only a disposable operation-bound alias", stderr
+    end
+  end
+
+  test "policy forbids release-driver conflict probes against production aliases" do
+    with_repository_policy_fixture do |root|
+      release = root.join("bin/release")
+      release.write release.read.sub(
+        '"imagetools", "create", "--tag", control_reference,',
+        '"imagetools", "create", "--tag", alias_references.first,'
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "production registry aliases may never be conflict-probe targets", stderr
+    end
+  end
+
+  test "policy pins every GitHub CLI invocation to github.com" do
+    with_repository_policy_fixture do |root|
+      workflow = root.join(".github/workflows/publish-image.yml")
+      workflow.write workflow.read.sub("  GH_HOST: github.com\n", "  GH_HOST: attacker.example\n")
+      release = root.join("bin/release")
+      release.write release.read.sub(
+        'GITHUB_CLI_ENVIRONMENT = { "GH_HOST" => "github.com" }.freeze',
+        'GITHUB_CLI_ENVIRONMENT = { "GH_HOST" => "attacker.example" }.freeze'
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "required release evidence control is missing: GH_HOST: github.com", stderr
+      assert_match "every GitHub CLI invocation must pin GH_HOST to github.com", stderr
+    end
+  end
+
+  test "policy requires post-lock publication paths to use the monitored mutation runner" do
+    mutations = [
+      [
+        'run! "git", "push", RELEASE_REMOTE, "refs/tags/#{TAG}", runner: live_mutation_runner',
+        'run! "git", "push", RELEASE_REMOTE, "refs/tags/#{TAG}"',
+        "monitored live-owner mutation control is missing"
+      ],
+      [
+        "journal_anchors.monitor_with! live_mutation_runner",
+        "journal_anchors.identity",
+        "monitored live-owner mutation control is missing"
+      ]
+    ]
+
+    mutations.each do |expected, replacement, message|
+      with_repository_policy_fixture do |root|
+        release = root.join("bin/release")
+        release.write release.read.sub(expected, replacement)
+
+        _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+        assert_not status.success?, expected
+        assert_match message, stderr
+      end
+    end
+  end
+
+  test "policy rejects subject-less registry attestation summaries" do
+    with_repository_policy_fixture do |root|
+      validation = root.join("script/ci/validate-container-image")
+      validation.write validation.read.sub(
+        'docker buildx imagetools inspect "$attestation_image" --raw > "$registry_manifest"',
+        'docker buildx imagetools inspect "$attestation_image" --format \'{{json .SBOM}}\' > "$registry_manifest"'
+      )
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match "subject-less registry attestation summaries are forbidden", stderr
     end
   end
 
@@ -609,8 +778,8 @@ class ReleasePolicyTest < ActiveSupport::TestCase
     with_repository_policy_fixture do |root|
       release = root.join("bin/release")
       release.write release.read.sub(
-        "signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:\n",
-        "signer_fingerprint: TAG_SIGNER_FINGERPRINT\n"
+        "signer_fingerprint: TAG_SIGNER_FINGERPRINT, reconciling:,\n",
+        "signer_fingerprint: TAG_SIGNER_FINGERPRINT,\n"
       )
 
       _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
@@ -634,6 +803,18 @@ class ReleasePolicyTest < ActiveSupport::TestCase
         assert_not status.success?
         assert_match "durable release transition control is missing: #{control}", stderr
       end
+    end
+  end
+
+  test "policy requires narrowly scoped unversioned Object Lock delete authority in docs" do
+    with_repository_policy_fixture do |root|
+      guide = root.join("docs/releasing.md")
+      guide.write guide.read.sub("        \"s3:DeleteObject\",\n", "")
+
+      _stdout, stderr, status = Open3.capture3(SCRIPT.to_s, root.to_s)
+
+      assert_not status.success?
+      assert_match 'required release evidence guidance is missing: "s3:DeleteObject",', stderr
     end
   end
 

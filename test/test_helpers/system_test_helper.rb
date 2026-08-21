@@ -22,6 +22,7 @@ module SystemTestHelper
   def send_message(message)
     fill_in_rich_text_area "message_body", with: message
     click_on "send"
+    assert_message_text message
   end
 
   def within_message(message, &block)

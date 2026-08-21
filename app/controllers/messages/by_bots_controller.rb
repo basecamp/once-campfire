@@ -1,14 +1,19 @@
 class Messages::ByBotsController < MessagesController
   allow_bot_access only: :create
+  before_action :require_bot_key_authentication, only: :create
 
   def create
     super
     return if performed?
 
-    head :created, location: message_url(@message)
+    head :created, location: room_at_message_url(@room, @message)
   end
 
   private
+    def require_bot_key_authentication
+      head :forbidden unless authenticated_by.bot_key?
+    end
+
     def message_params
       if params[:attachment]
         params.permit(:attachment).merge(origin: Message::ORIGIN_BOT_API)

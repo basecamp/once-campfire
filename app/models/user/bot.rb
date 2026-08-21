@@ -8,18 +8,27 @@ module User::Bot
   end
 
   module ClassMethods
-    def create_bot!(attributes, actor:)
+    def create_bot!(attributes, actor:, current_session: nil)
       attributes = attributes.to_h.symbolize_keys
       bot_token = generate_bot_token
       webhook_url = attributes.delete(:webhook_url)
       avatar = attributes.delete(:avatar)
+      current_session_id = current_session&.id
+      current_session_token = current_session&.token&.dup
 
       StagedUpload.with(avatar) do |blob|
-        transaction do
-          lock_administrator! actor
-          User.create!(**attributes, bot_token: bot_token, role: :bot).tap do |user|
-            StagedUpload.attach! user.avatar, blob if blob
-            user.create_webhook!(url: webhook_url) if webhook_url.present?
+        User::MutationFence.with(actor.id) do
+          if current_session
+            Session.authenticate_exact!(
+              id: current_session_id, token: current_session_token, user_id: actor.id
+            )
+          end
+          transaction do
+            lock_administrator! actor
+            User.create!(**attributes, bot_token: bot_token, role: :bot).tap do |user|
+              StagedUpload.attach! user.avatar, blob if blob
+              user.create_webhook!(url: webhook_url) if webhook_url.present?
+            end
           end
         end
       end
@@ -35,17 +44,25 @@ module User::Bot
     end
   end
 
-  def update_bot!(attributes, actor:)
+  def update_bot!(attributes, actor:, current_session: nil)
     attributes = attributes.to_h.symbolize_keys
+    webhook_url_supplied = attributes.key?(:webhook_url)
     webhook_url = attributes.delete(:webhook_url)
     avatar_upload = attributes.delete(:avatar)
+    current_session_id = current_session&.id
+    current_session_token = current_session&.token&.dup
 
     StagedUpload.with(avatar_upload) do |blob|
-      User::MutationFence.with(id) do
+      User::MutationFence.with([ actor.id, id ]) do
+        if current_session
+          Session.authenticate_exact!(
+            id: current_session_id, token: current_session_token, user_id: actor.id
+          )
+        end
         transaction do
           self.class.lock_administrator! actor
           bot = self.class.active_bots.lock.find(id)
-          bot.send :update_webhook_url!, webhook_url
+          bot.send :update_webhook_url!, webhook_url if webhook_url_supplied
           bot.update!(attributes)
           StagedUpload.attach! bot.avatar, blob if blob
         end
@@ -71,7 +88,15 @@ module User::Bot
 
 
   def webhook_url
-    webhook&.url
+    defined?(@webhook_url) ? @webhook_url : webhook&.url
+  end
+
+  def webhook_url=(url)
+    @webhook_url = url
+  end
+
+  def reload(...)
+    super.tap { remove_instance_variable(:@webhook_url) if defined?(@webhook_url) }
   end
 
   def deliver_webhook_later(message)

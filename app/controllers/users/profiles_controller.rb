@@ -4,6 +4,7 @@ class Users::ProfilesController < ApplicationController
 
   before_action :set_user
   before_action :limit_password_verification_attempts, only: :update, if: :password_reauthentication_requested?
+  skip_around_action :with_session_mutation_fence, only: :update
 
   def show
     @direct_memberships, @shared_memberships =

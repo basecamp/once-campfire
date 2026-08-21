@@ -1,6 +1,8 @@
 class MessagesController < ApplicationController
   include ActiveStorage::SetCurrent, RoomScoped
 
+  skip_around_action :with_session_mutation_fence, only: :create
+
   rescue_from ActiveRecord::RecordNotFound, with: -> { head :not_found }
   before_action :set_room, except: :create
   before_action :set_message, only: %i[ show edit update destroy ]
@@ -20,7 +22,9 @@ class MessagesController < ApplicationController
 
   def create
     set_room
-    @message = @room.messages.create_with_attachment!(message_params)
+    @message = @room.messages.create_with_attachment!(
+      message_params, authenticated_session: Current.session, authenticated_bot_key:
+    )
   rescue Message::ClientMessageIdConflict
     head :conflict
   rescue ActiveRecord::RecordNotFound
@@ -49,6 +53,11 @@ class MessagesController < ApplicationController
   def update
     @message.update_with_broadcast!(message_update_params, actor: Current.user)
     redirect_to room_message_url(@room, @message)
+  rescue ActiveRecord::RecordInvalid => error
+    raise unless error.record.is_a?(Message)
+
+    @message = error.record
+    render :edit, status: :unprocessable_entity
   end
 
   def destroy

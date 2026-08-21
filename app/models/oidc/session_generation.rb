@@ -10,7 +10,9 @@ class Oidc::SessionGeneration
       generation = synchronized_generation
       return generation if generation && !stale_sessions(generation).exists?
 
-      synchronize!
+      generation ||= synchronize!
+      retire_other_generations! generation
+      generation
     rescue ActiveRecord::ActiveRecordError => error
       raise Oidc::PolicyUnavailable.new(Oidc::POLICY_UNAVAILABLE_MESSAGE), cause: error
     end
@@ -74,18 +76,18 @@ class Oidc::SessionGeneration
             updated_at: Time.current
           )
         end
-        retire_other_generations! generation
         generation
       end
 
       def retire_other_generations!(generation)
         ids = stale_sessions(generation).order(:id).limit(retirement_batch_size).ids
-        Session.where(id: ids).order(:id).destroy_all
+        Session.revoke_all! Session.where(id: ids)
       end
 
       def stale_sessions(generation)
-        Session.where(authentication_method: "oidc")
+        stale = Session.where(authentication_method: "oidc")
           .where.not(oidc_session_generation: generation)
+        Oidc.enabled? ? stale.or(Session.where(authentication_method: "transfer")) : stale
       end
 
       def retirement_batch_size

@@ -6,6 +6,7 @@ git_source(:github) { |repo| "https://github.com/#{repo}.git" }
 gem "rails", github: "rails/rails", branch: "main"
 gem "ostruct"
 gem "benchmark"
+gem "fiddle"
 
 # Drivers
 gem "sqlite3"

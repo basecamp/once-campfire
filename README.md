@@ -26,7 +26,14 @@ file serving, and SSL. You can use our pre-built image at
 ### Deploying with ONCE
 
 The easiest way to self-host Campfire is with [ONCE](https://github.com/basecamp/once).
-It will guide you through the initial set up and then keep your instance up to date automatically.
+It will guide you through the initial setup. Do not enable ONCE automatic updates
+or treat ONCE volume backups as Campfire recovery backups for this image. ONCE
+currently starts an updated container before stopping the old container, while
+Campfire deliberately holds an exclusive storage lock for the whole runtime;
+the replacement therefore fails closed. ONCE's paused live-volume copy also
+does not satisfy Campfire's quiesced SQLite and Redis backup contract. Use the
+[guarded update and backup procedures](docs/self-hosting.md#upgrading) until
+ONCE has explicit integration for these contracts.
 
 If you don't already have `once` installed, run this on the machine you want to run Campfire on:
 
@@ -36,7 +43,7 @@ curl https://get.once.com | sh
 
 `once` will launch as soon as the install is finished. 
 
-Choose Campfire from the list of applications, follow the instructions, and ONCE will take care of the rest.
+Choose Campfire from the list of applications and follow the initial deployment instructions.
 
 If you prefer the command line to the dashboard, you can deploy directly:
 

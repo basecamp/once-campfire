@@ -1,4 +1,5 @@
 require "test_helper"
+require "pty"
 require "rbconfig"
 require "tmpdir"
 require "yaml"
@@ -36,11 +37,11 @@ class ReleaseTest < ActiveSupport::TestCase
       @journal = deep_copy(journal)
     end
 
-    def run_mutation!(*command, env: {})
+    def run_mutation!(*command, env: {}, interactive: false)
       return @mutation_status if @mutation_status
       raise "No invocation lock configured" unless @invocation_lock
 
-      @invocation_lock.run_mutation!(*command, env:)
+      @invocation_lock.run_mutation!(*command, env:, interactive:)
     end
 
     private
@@ -165,6 +166,28 @@ class ReleaseTest < ActiveSupport::TestCase
         repository: EXPECTED_REPOSITORY, tag: "v1.2.3", target_commitish: "a" * 40
       )
     end
+  end
+
+  test "every GitHub CLI command overrides an ambient host with github.com" do
+    assert_equal GITHUB_CLI_ENVIRONMENT,
+      command_environment([ "gh", "api", "user" ], "GH_HOST" => "attacker.example")
+    assert_equal({ "GH_HOST" => "attacker.example" },
+      command_environment([ "git", "status" ], "GH_HOST" => "attacker.example"))
+
+    observed_environment = nil
+    runner = lambda do |*command, env:|
+      observed_environment = env
+      assert_equal [ "gh", "release", "edit" ], command
+      stub(success?: true)
+    end
+    mutate!(
+      "gh", "release", "edit", env: { "GH_HOST" => "attacker.example" }, runner:
+    )
+    assert_equal GITHUB_CLI_ENVIRONMENT, observed_environment
+
+    source = Rails.root.join("bin/release").read
+    assert_no_match(/Open3\.(?:capture3|popen3)\([^\n]*["']gh["']/, source)
+    assert_no_match(/system\([^\n]*["']gh["']/, source)
   end
 
   test "phase zero is a complete authenticated journal before later phases" do
@@ -301,6 +324,7 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_equal "public", states.fetch("github_public")
     assert_equal "v1.2.2", states.fetch("github_latest")
     publication_command = commands.sole.first
+    assert_equal GITHUB_CLI_ENVIRONMENT, commands.sole.last
     assert_includes publication_command, "--latest=false"
     assert_not_includes publication_command, "--latest"
 
@@ -757,6 +781,8 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_includes owner_guard, "stat -Lc '%d:%i'"
     assert_includes holder_command, "/proc/$$/fd/9"
     assert_includes holder_command, "printf '%s %s %s"
+    assert_includes holder_command, Shellwords.escape("PROBE #{'a' * 32}")
+    assert_includes Rails.root.join("bin/release").read, '"BatchMode=yes"'
   end
 
   test "phase-zero publication preserves absent or complete canonical state at every shell boundary" do
@@ -955,6 +981,7 @@ class ReleaseTest < ActiveSupport::TestCase
       first = ReleaseInvocationLock.acquire(
         invocation_id: first_id, command: local_lock_holder_command(path, first_id)
       )
+      assert first.assert_held!
 
       contender = Thread.new do
         ReleaseInvocationLock.acquire(
@@ -973,6 +1000,126 @@ class ReleaseTest < ActiveSupport::TestCase
     ensure
       first&.release if first&.instance_variable_get(:@wait_thread)
     end
+  end
+
+  test "manual notes editor reads from the foreground pseudo-terminal" do
+    mutation = <<~'RUBY'
+      STDOUT.sync = true
+      puts "EDITOR_READY"
+      notes = STDIN.gets&.chomp
+      abort "editor did not receive notes" unless notes == "reviewed release notes"
+      puts "EDITOR_ACCEPTED"
+    RUBY
+
+    transcript, status = run_interactive_mutation_in_pty(
+      mutation, ready: "EDITOR_READY", input: "reviewed release notes\n"
+    )
+
+    assert status.success?, transcript
+    assert_includes transcript, "EDITOR_ACCEPTED"
+    assert_includes transcript, "MUTATION_COMPLETE"
+  end
+
+  test "active live-owner probe rejects a holder exit without trusting waiter thread liveness" do
+    Dir.mktmpdir("release-live-owner-probe") do |directory|
+      live_lock = acquire_test_live_lock(directory)
+      holder_pid = live_lock.instance_variable_get(:@wait_thread).pid
+      Process.kill "KILL", -holder_pid
+
+      assert_raises(ReleaseLiveLockLost) { live_lock.assert_held! }
+      assert live_lock.instance_variable_get(:@wait_thread).join(5)
+    ensure
+      release_test_live_lock live_lock
+    end
+  end
+
+  test "failed acquisition terminates and reaps a stopped holder group" do
+    Dir.mktmpdir("release-stopped-holder") do |directory|
+      process_path = File.join(directory, "holder")
+      source = <<~'RUBY'
+        File.write ARGV.fetch(0), "#{Process.pid} #{Process.getpgrp}\n"
+        Process.kill "STOP", Process.pid
+        sleep 10
+      RUBY
+      popen3 = lambda do |*command, **options|
+        streams = Open3.popen3(*command, **options)
+        Timeout.timeout(5) { sleep 0.01 until File.size?(process_path) }
+        streams
+      end
+
+      assert_raises(ReleaseStateError) do
+        ReleaseInvocationLock.acquire(
+          invocation_id: "1" * 32,
+          command: [ RbConfig.ruby, "-e", source, process_path ],
+          popen3:,
+          acquisition_timeout: 0.1, mutation_termination_timeout: 0.1,
+          mutation_kill_timeout: 2
+        )
+      end
+      holder_pid, holder_group = File.read(process_path).split.map(&:to_i)
+
+      assert_equal holder_pid, holder_group
+      assert_process_group_gone holder_group
+    ensure
+      kill_test_process_group holder_group
+    end
+  end
+
+  test "signed tag pinentry descendant reads from the foreground pseudo-terminal" do
+    mutation = <<~'RUBY'
+      require "rbconfig"
+      pinentry = <<~'PINENTRY'
+        terminal = File.open("/dev/tty", "r+")
+        terminal.sync = true
+        terminal.puts "PINENTRY_READY"
+        passphrase = terminal.gets&.chomp
+        abort "pinentry did not receive passphrase" unless passphrase == "signing passphrase"
+        terminal.puts "PINENTRY_ACCEPTED"
+      PINENTRY
+      exit system(RbConfig.ruby, "-e", pinentry)
+    RUBY
+
+    transcript, status = run_interactive_mutation_in_pty(
+      mutation, ready: "PINENTRY_READY", input: "signing passphrase\n"
+    )
+
+    assert status.success?, transcript
+    assert_includes transcript, "PINENTRY_ACCEPTED"
+    assert_includes transcript, "MUTATION_COMPLETE"
+  end
+
+  test "stopped interactive child resumes without stranding the foreground pseudo-terminal" do
+    mutation = <<~'RUBY'
+      STDOUT.sync = true
+      puts "CHILD_STOPPING"
+      Process.kill "TSTP", Process.pid
+      puts "CHILD_RESUMED"
+    RUBY
+
+    transcript, status = run_interactive_mutation_in_pty(
+      mutation, ready: "CHILD_STOPPING", input: nil
+    )
+
+    assert status.success?, transcript
+    assert_includes transcript, "CHILD_RESUMED"
+    assert_includes transcript, "MUTATION_COMPLETE"
+  end
+
+  test "interactive child terminal mode changes are restored" do
+    mutation = <<~'RUBY'
+      require "io/console"
+      STDOUT.sync = true
+      puts "MODE_CHANGE_READY"
+      terminal = File.open("/dev/tty", "r+")
+      terminal.raw!
+    RUBY
+
+    transcript, status = run_interactive_mutation_in_pty(
+      mutation, ready: "MODE_CHANGE_READY", input: nil
+    )
+
+    assert status.success?, transcript
+    assert_includes transcript, "MUTATION_COMPLETE"
   end
 
   test "concurrent complete and rollback reconcilers cannot both mutate a channel" do
@@ -1521,7 +1668,7 @@ class ReleaseTest < ActiveSupport::TestCase
   test "post-workflow freshness permits the authenticated ancestor during reconciliation" do
     sha = "c" * 40
     remote_main = "d" * 40
-    stubs(:run!).with("git", "fetch", "origin", "main", "--tags")
+    stubs(:run!).with("git", "fetch", "origin", "main", "--tags", runner: nil)
     stubs(:capture!).with("git", "rev-parse", "origin/main").returns(remote_main)
     stubs(:capture!).with("git", "tag", "--list", "v*").returns("")
     stubs(:capture!).with(
@@ -1602,6 +1749,57 @@ class ReleaseTest < ActiveSupport::TestCase
       source.index('GIT_SHA = capture!("git", "rev-parse", "HEAD")')
     assert_operator source.rindex("authenticate_reconcile_action!("), :<,
       source.index('start_release_phase! release_lock, journal, "tag"')
+    release_main = source[source.index("if $PROGRAM_NAME == __FILE__")..]
+    assert_equal 2, release_main.scan("rollback_guard: live_rollback_guard").length
+  end
+
+  test "fresh public GitHub state rejects rollback before authority persistence" do
+    journal = phase_zero_journal.merge("lock_id" => "a" * 64)
+    lock = FakeLock.new(journal)
+    public_release = { "isDraft" => false, "isPrerelease" => false }
+    stubs(:github_release).with(EXPECTED_REPOSITORY, "v1.2.3").returns(public_release)
+    guard = -> {
+      validate_live_reconcile_rollback!(
+        journal: lock.journal, repository: EXPECTED_REPOSITORY, tag: "v1.2.3"
+      )
+    }
+
+    error = assert_raises(ReleaseStateError) do
+      authenticate_reconcile_action!(
+        lock:, journal: lock.journal, action: "rollback", rollback_guard: guard
+      )
+    end
+
+    assert_match(/Public GitHub release|public GitHub release/, error.message)
+    assert_nil lock.journal["reconcile_action"]
+    assert_equal 0, lock.journal.fetch("journal_revision")
+  end
+
+  test "pre-promotion abandonment re-fetches GitHub state before becoming terminal" do
+    journal = phase_zero_journal.merge("lock_id" => "a" * 64)
+    lock = FakeLock.new(journal)
+    draft_release = { "isDraft" => true, "isPrerelease" => false }
+    public_release = { "isDraft" => false, "isPrerelease" => false }
+    stubs(:github_release).with(EXPECTED_REPOSITORY, "v1.2.3")
+      .returns(draft_release, public_release)
+    guard = -> {
+      validate_live_reconcile_rollback!(
+        journal: lock.journal, repository: EXPECTED_REPOSITORY, tag: "v1.2.3"
+      )
+    }
+
+    authenticate_reconcile_action!(
+      lock:, journal: lock.journal, action: "rollback", rollback_guard: guard
+    )
+    assert_raises(ReleaseStateError) do
+      abandon_pre_promotion_reconciliation!(
+        lock:, journal: lock.journal, action: "rollback", rollback_guard: guard
+      )
+    end
+
+    assert_equal "started", lock.journal.dig("phases", "abandonment", "status")
+    assert_not_equal "abandoned", lock.journal.fetch("status")
+    assert_not_includes ReleaseLock::TERMINAL_STATUSES, lock.journal.fetch("status")
   end
 
   test "pre-promotion rollback is durable and terminal across every interruption boundary" do
@@ -1715,12 +1913,17 @@ class ReleaseTest < ActiveSupport::TestCase
       JSON.generate("attempt" => 2, "status" => "completed", "conclusion" => "success")
     ]
     stubs(:capture!).returns(*responses)
-    expects(:run!).with("gh", "run", "rerun", "123", "--repo", "basecamp/once-campfire")
+    mutation_runner = Object.new
+    expects(:run!).with(
+      "gh", "run", "rerun", "123", "--repo", "basecamp/once-campfire",
+      runner: mutation_runner
+    )
     stubs(:sleep)
 
     assert_equal 123, wait_for_workflow!(
       repository: "basecamp/once-campfire", event: "workflow_dispatch",
-      sha: "c" * 40, branch: "main", release_tag: "v1.2.3", operation_nonce:
+      sha: "c" * 40, branch: "main", release_tag: "v1.2.3", operation_nonce:,
+      mutation_runner:
     )
   end
 
@@ -1913,13 +2116,43 @@ class ReleaseTest < ActiveSupport::TestCase
     end
   end
 
+  test "workflow evidence independently validates retained inspection SBOM and provenance semantics" do
+    mutations = {
+      "image-inspect-amd64.json" => ->(document) { document.fetch(0)["Architecture"] = "s390x" },
+      "sbom-amd64.spdx.json" => ->(document) {
+        document.fetch("subject").fetch(0)["digest"] = { "sha256" => "0" * 64 }
+      },
+      "buildkit-provenance-amd64.json" => ->(document) {
+        document.dig("predicate", "buildDefinition", "internalParameters", "buildConfig")
+          .fetch("llbDefinition").fetch(0).dig("op", "platform")["Architecture"] = "s390x"
+      }
+    }
+
+    mutations.each do |name, mutate|
+      Dir.mktmpdir("release-evidence-semantics") do |directory|
+        attributes = write_valid_release_evidence(directory)
+        path = File.join(directory, name)
+        document = JSON.parse(File.binread(path))
+        mutate.call document
+        File.binwrite path, JSON.pretty_generate(document) << "\n"
+        rebind_architecture_evidence_file! directory, "amd64", name
+
+        assert_raises(ReleaseStateError, name) do
+          validate_release_evidence!(**attributes)
+        end
+      end
+    end
+  end
+
   test "retained provenance verification binds the exact bundle subject and signer context" do
     Dir.mktmpdir("release-provenance-verification") do |directory|
       attributes = write_valid_release_evidence(directory)
       command = nil
-      runner = lambda do |*arguments|
+      environment = nil
+      runner = lambda do |*arguments, env:|
         command = arguments
-        valid_attestation_runner(*arguments)
+        environment = env
+        valid_attestation_runner(*arguments, env:)
       end
 
       assert verify_retained_provenance_bundle!(
@@ -1938,6 +2171,7 @@ class ReleaseTest < ActiveSupport::TestCase
       assert_includes command, "--deny-self-hosted-runners"
       assert_not_includes command, "--no-public-good"
       assert_includes command, "oci://#{attributes.fetch(:image)}@sha256:#{'c' * 64}"
+      assert_equal GITHUB_CLI_ENVIRONMENT, environment
     end
   end
 
@@ -1952,12 +2186,12 @@ class ReleaseTest < ActiveSupport::TestCase
       refresh_release_evidence_file_hash! directory, "index-provenance-verification.json"
       failed = Object.new
       failed.define_singleton_method(:success?) { false }
-      attributes[:attestation_runner] = lambda do |*command|
+      attributes[:attestation_runner] = lambda do |*command, env:|
         retained = command.fetch(command.index("--bundle") + 1)
         if retained == bundle
           [ "", "signature verification failed", failed ]
         else
-          valid_attestation_runner(*command)
+          valid_attestation_runner(*command, env:)
         end
       end
 
@@ -2001,7 +2235,7 @@ class ReleaseTest < ActiveSupport::TestCase
       canonical_promotion = {
         "authority" => "bin/release",
         "required_release_driver_evidence" => [
-          "live no-overwrite registry probe bound to immutable aliases",
+          "repository no-overwrite evidence from an operation-bound disposable alias",
           "dual Object Lock anchor receipts for the authenticated journal head"
         ],
         "workflow_scope" => "attempt-scoped staging only"
@@ -2295,7 +2529,7 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_equal reference, lock.journal.dig("mutation_in_flight", "target", "reference")
   end
 
-  test "live immutable-tag probe retains rejection and digest-preservation evidence before aliases" do
+  test "live immutable-tag probe targets only its operation-bound disposable alias" do
     seed = "sha256:#{'a' * 64}"
     conflict = "sha256:#{'b' * 64}"
     repository = "registry.example/campfire"
@@ -2306,38 +2540,40 @@ class ReleaseTest < ActiveSupport::TestCase
       "#{repository}@#{seed}" => seed,
       "#{repository}@#{conflict}" => conflict
     }
+    mutation_targets = []
     success = stub(success?: true)
     rejected = stub(exited?: true, success?: false, exitstatus: 1)
     lock.define_singleton_method(:run_mutation!) do |*command, env: {}|
       reference = command.fetch(command.index("--tag") + 1)
+      mutation_targets << reference
       states[reference] = states.fetch(command.last)
       success
     end
-    lock.define_singleton_method(:capture_mutation!) do |*command, stdin_data: nil|
+    lock.define_singleton_method(:capture_mutation!) do |*command, stdin_data: nil, env: {}, unsetenv_others: false|
+      mutation_targets << command.fetch(command.index("--tag") + 1)
       [ "", "denied: tag is immutable", rejected ]
     end
 
     evidence = prove_registry_tag_immutability!(
       lock:, journal:, registry: "registry.example", repository:,
-      seed_digest: seed, conflict_digest: conflict,
+      alias_digest: seed, seed_digest: seed, conflict_digest: conflict,
       seed_source: "#{repository}@#{seed}", conflict_source: "#{repository}@#{conflict}",
-      policy_references: references, read: ->(reference) { states[reference] },
+      alias_references: references, read: ->(reference) { states[reference] },
       media_type: ->(_reference) { "application/vnd.oci.image.index.v1+json" },
-      fault_prefix: "test_probe"
+      fault_prefix: "test_probe", source_evidence_sha256: "e" * 64
     )
 
     assert_equal "verified", evidence.fetch("status")
-    assert_equal conflict, states.fetch(evidence.fetch("control_reference"))
-    references.each { assert_equal seed, states.fetch(_1) }
-    evidence.fetch("rejections").each_value do |rejection|
-      assert_equal "server_immutable_tag_rejection", rejection.fetch("classification")
-      assert_equal 1, rejection.fetch("exit_status")
-      assert_match(/\A[0-9a-f]{64}\z/, rejection.fetch("output_sha256"))
-    end
+    assert_equal seed, states.fetch(evidence.fetch("control_reference"))
+    assert_equal [ evidence.fetch("control_reference") ], mutation_targets.uniq
+    assert references.none? { states.key?(_1) }
+    assert_equal false, evidence.fetch("exact_alias_conflict_probes")
+    assert_equal "repository_disposable_alias", evidence.fetch("policy_scope")
+    assert_equal "server_immutable_tag_rejection", evidence.dig("proof", "kind")
     assert registry_immutability_probe_evidence!(lock.journal, "registry.example")
   end
 
-  test "registry accepting the conflicting live probe aborts before alias authorization" do
+  test "registry accepting the disposable conflict aborts without targeting production aliases" do
     seed = "sha256:#{'a' * 64}"
     conflict = "sha256:#{'b' * 64}"
     repository = "registry.example/campfire"
@@ -2348,14 +2584,17 @@ class ReleaseTest < ActiveSupport::TestCase
       "#{repository}@#{seed}" => seed,
       "#{repository}@#{conflict}" => conflict
     }
+    mutation_targets = []
     success = stub(exited?: true, success?: true, exitstatus: 0)
     lock.define_singleton_method(:run_mutation!) do |*command, env: {}|
       reference = command.fetch(command.index("--tag") + 1)
+      mutation_targets << reference
       states[reference] = states.fetch(command.last)
       success
     end
-    lock.define_singleton_method(:capture_mutation!) do |*command, stdin_data: nil|
+    lock.define_singleton_method(:capture_mutation!) do |*command, stdin_data: nil, env: {}, unsetenv_others: false|
       reference = command.fetch(command.index("--tag") + 1)
+      mutation_targets << reference
       states[reference] = states.fetch(command.last)
       [ "", "", success ]
     end
@@ -2363,15 +2602,57 @@ class ReleaseTest < ActiveSupport::TestCase
     assert_raises(ReleaseMutationUnsettled) do
       prove_registry_tag_immutability!(
         lock:, journal:, registry: "registry.example", repository:,
-        seed_digest: seed, conflict_digest: conflict,
+        alias_digest: seed, seed_digest: seed, conflict_digest: conflict,
         seed_source: "#{repository}@#{seed}", conflict_source: "#{repository}@#{conflict}",
-        policy_references: references, read: ->(reference) { states[reference] },
+        alias_references: references, read: ->(reference) { states[reference] },
         media_type: ->(_reference) { "application/vnd.oci.image.index.v1+json" },
-        fault_prefix: "test_probe"
+        fault_prefix: "test_probe", source_evidence_sha256: "e" * 64
       )
     end
     assert_nil lock.journal["immutable_alias_evidence"]
-    assert_equal conflict, states.fetch(references.sole)
+    assert_equal [ "#{repository}:release-mutability-control-#{'f' * 64}" ], mutation_targets.uniq
+    assert_not states.key?(references.sole)
+  end
+
+  test "protected workflow policy evidence is consumed without another registry write" do
+    seed = "sha256:#{'a' * 64}"
+    conflict = "sha256:#{'b' * 64}"
+    alias_digest = "sha256:#{'c' * 64}"
+    repository = "ghcr.io/basecamp/once-campfire"
+    references = [ "#{repository}:v1.2.3", "#{repository}:1.2.3" ]
+    control_reference = "#{repository}:release-mutability-control-123-2-#{'9' * 16}"
+    states = {
+      "#{repository}@#{seed}" => seed,
+      "#{repository}@#{conflict}" => conflict,
+      control_reference => seed
+    }
+    lock = FakeLock.new(base_journal.merge("lock_id" => "f" * 64))
+    lock.define_singleton_method(:run_mutation!) { |*| flunk "workflow evidence must not be re-probed" }
+    lock.define_singleton_method(:capture_mutation!) { |*| flunk "workflow evidence must not be re-probed" }
+
+    evidence = prove_registry_tag_immutability!(
+      lock:, journal: lock.journal, registry: "ghcr.io", repository:, alias_digest:,
+      seed_digest: seed, conflict_digest: conflict,
+      seed_source: "#{repository}@#{seed}", conflict_source: "#{repository}@#{conflict}",
+      alias_references: references, read: ->(reference) { states[reference] },
+      media_type: ->(_reference) { "application/vnd.oci.image.index.v1+json" },
+      fault_prefix: "ghcr_probe", source_evidence_sha256: "e" * 64, control_reference:,
+      protected_workflow_gate: true
+    )
+
+    assert_equal "protected_workflow_disposable_alias_gate", evidence.dig("proof", "kind")
+    assert references.none? { states.key?(_1) }
+  end
+
+  test "release source forbids conflict probes against production alias references" do
+    source = Rails.root.join("bin/release").read
+    probe = source[/def prove_registry_tag_immutability!.*?(?=\ndef create_registry_alias_with_policy!)/m]
+
+    assert probe
+    assert_equal 2, probe.scan('"imagetools", "create", "--tag", control_reference').length
+    assert_not_includes probe, '"imagetools", "create", "--tag", reference'
+    assert_not_includes probe, "policy_references"
+    assert_includes probe, '"exact_alias_conflict_probes" => false'
   end
 
   test "registry immutability proof rejects auth network and unsupported failures" do
@@ -2476,12 +2757,13 @@ class ReleaseTest < ActiveSupport::TestCase
       File.write source, "release bytes"
       digest = Digest::SHA256.file(source).hexdigest
       commands = []
-      stubs(:capture!).with do |*arguments|
+      expected_runner = Object.new
+      stubs(:capture!).with do |*arguments, runner:|
         commands << arguments.last
-        true
+        runner.equal?(expected_runner)
       end.returns("#{digest}  campfire.zip")
 
-      upload_immutable source, "campfire-1.2.3.zip", "c" * 40
+      upload_immutable(source, "campfire-1.2.3.zip", "c" * 40, runner: expected_runner)
 
       assert_equal EXPORT_DEPLOY_HOSTS.length, commands.length
       commands.each do |command|
@@ -2500,14 +2782,15 @@ class ReleaseTest < ActiveSupport::TestCase
       File.binwrite source, "release bytes"
       digest = Digest::SHA256.file(source).hexdigest
       command = nil
+      expected_runner = Object.new
       SecureRandom.stubs(:hex).with(16).returns("1" * 32)
-      stubs(:stream_file_to_remote!).with do |path, host, candidate|
+      stubs(:stream_file_to_remote!).with do |path, host, candidate, runner:|
         command = candidate
-        path == source && host == "static.example"
+        path == source && host == "static.example" && runner.equal?(expected_runner)
       end.returns("#{digest}  staged")
 
       temporary, actual_digest = upload_remote_temporary!(
-        source, "static.example", "/releases/.campfire.zip.revision"
+        source, "static.example", "/releases/.campfire.zip.revision", runner: expected_runner
       )
 
       assert_equal "/releases/.campfire.zip.revision.#{'1' * 32}.tmp", temporary
@@ -2550,9 +2833,10 @@ class ReleaseTest < ActiveSupport::TestCase
       File.binwrite source, "release bytes"
       digest = Digest::SHA256.file(source).hexdigest
       commands = []
-      stubs(:capture!).with do |*arguments|
+      expected_runner = Object.new
+      stubs(:capture!).with do |*arguments, runner:|
         commands << arguments.last
-        true
+        runner.equal?(expected_runner)
       end.returns(
         "ABSENT", "#{digest}  campfire-1.2.3.zip",
         "ABSENT", "#{digest}  campfire-1.2.3.zip"
@@ -2562,7 +2846,7 @@ class ReleaseTest < ActiveSupport::TestCase
         [ "/releases/.second.random.tmp", digest ]
       )
 
-      upload_immutable source, "campfire-1.2.3.zip", "c" * 40
+      upload_immutable(source, "campfire-1.2.3.zip", "c" * 40, runner: expected_runner)
 
       publication_commands = commands.reject { _1.include?("echo ABSENT") }
       assert_equal EXPORT_DEPLOY_HOSTS.length, publication_commands.length
@@ -2593,12 +2877,16 @@ class ReleaseTest < ActiveSupport::TestCase
       end
       stubs(:upload_remote_temporary!).returns(*staged)
       commands = []
-      stubs(:run!).with do |*arguments|
+      expected_runner = Object.new
+      stubs(:run!).with do |*arguments, runner:|
         commands << arguments.last
-        true
+        runner.equal?(expected_runner)
       end.returns(true)
 
-      assert_equal "campfire-1.2.3", stage_static_release!(archive, checksum, "1.2.3", "c" * 40)
+      assert_equal "campfire-1.2.3",
+        stage_static_release!(
+          archive, checksum, "1.2.3", "c" * 40, runner: expected_runner
+        )
 
       assert_equal EXPORT_DEPLOY_HOSTS.length, commands.length
       commands.each do |command|
@@ -2657,14 +2945,15 @@ class ReleaseTest < ActiveSupport::TestCase
     status = stub(success?: true)
     commands = []
     key = history_key
-    ReleaseLock.stubs(:capture_remote).with do |command|
+    invocation_lock = Object.new
+    ReleaseLock.stubs(:capture_remote).with do |command, mutation_runner:|
       commands << command
-      true
+      mutation_runner.equal?(invocation_lock)
     end.returns([ "", "", status ])
 
     assert_nothing_raised do
       ReleaseLock.cleanup_journal_staging!(
-        "/releases/.campfire-release.lock", state, key, "b" * 32,
+        "/releases/.campfire-release.lock", state, key, "b" * 32, invocation_lock,
         stages: [ stage ]
       )
     end
@@ -2693,14 +2982,15 @@ class ReleaseTest < ActiveSupport::TestCase
     }
     status = stub(success?: true)
     commands = []
-    ReleaseLock.stubs(:capture_remote).with do |command|
+    invocation_lock = Object.new
+    ReleaseLock.stubs(:capture_remote).with do |command, mutation_runner:|
       commands << command
-      true
+      mutation_runner.equal?(invocation_lock)
     end.returns([ "", "", status ])
 
     ReleaseLock.send(
       :remove_pending_stage!,
-      File.join("/releases", name), observed, "b" * 32
+      File.join("/releases", name), observed, "b" * 32, invocation_lock
     )
     assert_includes commands.sole, stage_name
     assert_includes commands.sole, partial_artifact.fetch(:name)
@@ -2716,6 +3006,82 @@ class ReleaseTest < ActiveSupport::TestCase
   end
 
   private
+    def run_interactive_mutation_in_pty(mutation, ready:, input:)
+      release_path = Rails.root.join("bin/release").to_s
+      driver = <<~RUBY
+        require "io/console"
+        require "rbconfig"
+        load #{release_path.dump}
+
+        terminal = File.open("/dev/tty", "r+")
+        expected_echo = terminal.echo?
+        terminal.close
+        invocation_id = "1" * 32
+        holder = [
+          RbConfig.ruby, "-e",
+          'puts "READY \#{ARGV.fetch(0)}"; STDOUT.flush; ' \
+            'while (request = STDIN.gets); abort unless request.chomp == "PROBE \#{ARGV.fetch(0)}"; ' \
+            'puts "HELD \#{ARGV.fetch(0)}"; STDOUT.flush; end', invocation_id
+        ]
+        lock = ReleaseInvocationLock.acquire(invocation_id: invocation_id, command: holder)
+        begin
+          runner = ReleaseMutationFence::Runner.new(lock, -> { })
+          run!(
+            RbConfig.ruby, "-e", #{mutation.dump}, runner:, interactive: true
+          )
+          terminal = ReleaseInvocationLock::TerminalForeground.current
+          abort "terminal foreground was not restored" unless terminal
+          terminal.restore!
+          terminal = File.open("/dev/tty", "r+")
+          abort "terminal console mode was not restored" unless terminal.echo? == expected_echo
+          terminal.close
+          lock.release
+          lock = nil
+          puts "MUTATION_COMPLETE"
+        ensure
+          lock&.release
+        end
+      RUBY
+      transcript = +""
+      child_status = nil
+
+      PTY.spawn(RbConfig.ruby, "-e", driver) do |reader, writer, pid|
+        begin
+          Timeout.timeout(10) do
+            read_pty_until reader, transcript, ready
+            if input
+              writer.write input
+              writer.flush
+            end
+            read_pty_until reader, transcript, "MUTATION_COMPLETE"
+            _child, child_status = Process.waitpid2(pid)
+          end
+        ensure
+          unless child_status
+            _child, child_status = Process.waitpid2(pid, Process::WNOHANG)
+            unless child_status
+              Process.kill "KILL", pid
+              _child, child_status = Process.waitpid2(pid)
+            end
+          end
+        end
+      rescue Errno::ECHILD, Errno::ESRCH
+        nil
+      end
+
+      [ transcript, child_status ]
+    end
+
+    def read_pty_until(reader, transcript, marker)
+      until transcript.include?(marker)
+        next unless IO.select([ reader ], nil, nil, 0.1)
+
+        transcript << reader.readpartial(4096)
+      end
+    rescue Errno::EIO, EOFError
+      raise "PTY closed before #{marker.inspect}: #{transcript}"
+    end
+
     def acquire_test_live_lock(directory, mutation_popen3: Open3.method(:popen3))
       invocation_id = "1" * 32
       ReleaseInvocationLock.acquire(
@@ -2914,7 +3280,11 @@ class ReleaseTest < ActiveSupport::TestCase
         if file.flock(File::LOCK_EX | File::LOCK_NB)
           puts "READY #{invocation_id}"
           STDOUT.flush
-          STDIN.read
+          while request = STDIN.gets
+            abort unless request.chomp == "PROBE #{invocation_id}"
+            puts "HELD #{invocation_id}"
+            STDOUT.flush
+          end
         else
           puts "BUSY"
           STDOUT.flush
@@ -2957,9 +3327,6 @@ class ReleaseTest < ActiveSupport::TestCase
       run_attempt = 2
       operation_nonce = "9" * 64
       json_files = %w[
-        container-validation-amd64.json container-validation-arm64.json
-        sbom-amd64.spdx.json sbom-arm64.spdx.json
-        buildkit-provenance-amd64.json buildkit-provenance-arm64.json
         parent-provenance-verification-amd64.json parent-provenance-verification-arm64.json
         runnable-provenance-verification-amd64.json runnable-provenance-verification-arm64.json
         index-provenance-verification.json
@@ -2979,7 +3346,7 @@ class ReleaseTest < ActiveSupport::TestCase
         "authority" => "bin/release",
         "workflow_scope" => "attempt-scoped staging only",
         "required_release_driver_evidence" => [
-          "live no-overwrite registry probe bound to immutable aliases",
+          "repository no-overwrite evidence from an operation-bound disposable alias",
           "dual Object Lock anchor receipts for the authenticated journal head"
         ]
       }
@@ -3002,6 +3369,104 @@ class ReleaseTest < ActiveSupport::TestCase
       end
 
       RELEASE_EVIDENCE_ARCHITECTURES.each_with_index do |architecture, index|
+        target_config_digest = "sha256:#{(index + 7).to_s(16) * 64}"
+        image_inspection = [ {
+          "Id" => target_config_digest,
+          "Os" => "linux",
+          "Architecture" => architecture,
+          "Config" => {
+            "Labels" => {
+              "org.opencontainers.image.revision" => sha,
+              "com.basecamp.campfire.build-identity" => build_identities.fetch(architecture)
+            }
+          }
+        } ]
+        inspection_name = "image-inspect-#{architecture}.json"
+        File.binwrite(
+          File.join(directory, inspection_name), JSON.pretty_generate(image_inspection) << "\n"
+        )
+
+        sbom = {
+          "predicateType" => "https://spdx.dev/Document",
+          "subject" => [ {
+            "name" => image,
+            "digest" => { "sha256" => children.fetch(architecture).delete_prefix("sha256:") }
+          } ],
+          "predicate" => {
+            "SPDXID" => "SPDXRef-DOCUMENT", "spdxVersion" => "SPDX-2.3",
+            "packages" => [ { "name" => "campfire" } ]
+          }
+        }
+        sbom_name = "sbom-#{architecture}.spdx.json"
+        File.binwrite File.join(directory, sbom_name), JSON.pretty_generate(sbom) << "\n"
+
+        provenance = {
+          "predicateType" => "https://slsa.dev/provenance/v1",
+          "subject" => [ {
+            "name" => image,
+            "digest" => { "sha256" => children.fetch(architecture).delete_prefix("sha256:") }
+          } ],
+          "predicate" => {
+            "buildDefinition" => {
+              "buildType" =>
+                "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md",
+              "resolvedDependencies" => [
+                { "uri" => "git+https://github.com/#{repository}@#{sha}" },
+                { "uri" => "docker-image://ruby" }
+              ],
+              "internalParameters" => {
+                "buildConfig" => {
+                  "llbDefinition" => [ {
+                    "op" => { "platform" => { "OS" => "linux", "Architecture" => architecture } }
+                  } ]
+                }
+              }
+            }
+          }
+        }
+        provenance_name = "buildkit-provenance-#{architecture}.json"
+        File.binwrite(
+          File.join(directory, provenance_name), JSON.pretty_generate(provenance) << "\n"
+        )
+
+        checks = %w[
+          asset_precompile_transport boot_health entrypoint_and_labels immutable_runtime_paths
+          mutable_runtime_directories non_root_user platform_config procps provenance
+          runtime_transport_neutrality sbom transport_contract
+        ].to_h { [ _1, "passed" ] }.merge(
+          "graceful_exit_code" => 0, "request_limit" => "HTTP/1.1 413"
+        )
+        validation = {
+          "format_version" => 1,
+          "kind" => "campfire-container-validation",
+          "platform" => "linux/#{architecture}",
+          "architecture" => architecture,
+          "image" => "#{image}@#{children.fetch(architecture)}",
+          "source_revision" => sha,
+          "build_identity" => build_identities.fetch(architecture),
+          "app_version" => tag.delete_prefix("v"),
+          "runnable_digest" => children.fetch(architecture),
+          "config_digest" => target_config_digest,
+          "validated_manifest_digest" => children.fetch(architecture),
+          "runtime_binding" => "registry-manifest-digest",
+          "transport_mode" => "external-https-loopback-probe",
+          "image_inspection_sha256" => Digest::SHA256.file(
+            File.join(directory, inspection_name)
+          ).hexdigest,
+          "sbom_sha256" => Digest::SHA256.file(File.join(directory, sbom_name)).hexdigest,
+          "buildkit_provenance_sha256" => Digest::SHA256.file(
+            File.join(directory, provenance_name)
+          ).hexdigest,
+          "oci_archive_sha256" => nil,
+          "runtime_archive_sha256" => nil,
+          "request_limit_probe_bytes" => 106_954_753,
+          "checks" => checks
+        }
+        validation_name = "container-validation-#{architecture}.json"
+        File.binwrite(
+          File.join(directory, validation_name), JSON.pretty_generate(validation) << "\n"
+        )
+
         upgrade_receipt = {
           "format_version" => 2,
           "kind" => "campfire-upgrade-recovery",
@@ -3038,7 +3503,7 @@ class ReleaseTest < ActiveSupport::TestCase
           "target_reference" => "#{image}@#{children.fetch(architecture)}",
           "target_digest" => children.fetch(architecture),
           "target_manifest_digest" => children.fetch(architecture),
-          "target_config_digest" => "sha256:#{(index + 7).to_s(16) * 64}",
+          "target_config_digest" => target_config_digest,
           "runtime_binding" => "registry-manifest-digest",
           "transport_mode" => "external-https-loopback-probe",
           "container_validation_sha256" => Digest::SHA256.file(
@@ -3061,7 +3526,7 @@ class ReleaseTest < ActiveSupport::TestCase
           "run_attempt" => run_attempt.to_s,
           "parent_digest" => build_indexes.fetch(architecture),
           "image_inspection_sha256" => Digest::SHA256.file(
-            File.join(directory, "container-validation-#{architecture}.json")
+            File.join(directory, inspection_name)
           ).hexdigest,
           "buildkit" => {
             "sbom_sha256" => Digest::SHA256.file(File.join(directory, "sbom-#{architecture}.spdx.json")).hexdigest,
@@ -3139,7 +3604,9 @@ class ReleaseTest < ActiveSupport::TestCase
       }
     end
 
-    def valid_attestation_runner(*command)
+    def valid_attestation_runner(*command, env: {})
+      raise "GitHub CLI host was not pinned" unless env == GITHUB_CLI_ENVIRONMENT
+
       reference = command.find { _1.start_with?("oci://") }
       image, digest = reference.delete_prefix("oci://").split("@", 2)
       result = [ {
@@ -3157,6 +3624,35 @@ class ReleaseTest < ActiveSupport::TestCase
       status = Object.new
       status.define_singleton_method(:success?) { true }
       [ JSON.generate(result), "", status ]
+    end
+
+    def rebind_architecture_evidence_file!(directory, architecture, name)
+      digest = Digest::SHA256.file(File.join(directory, name)).hexdigest
+      validation_name = "container-validation-#{architecture}.json"
+      validation_path = File.join(directory, validation_name)
+      validation = JSON.parse(File.binread(validation_path))
+      recovery_name = "recovery-#{architecture}.json"
+      recovery_path = File.join(directory, recovery_name)
+      recovery = JSON.parse(File.binread(recovery_path))
+      case name
+      when "image-inspect-#{architecture}.json"
+        validation["image_inspection_sha256"] = digest
+        recovery["image_inspection_sha256"] = digest
+      when "sbom-#{architecture}.spdx.json"
+        validation["sbom_sha256"] = digest
+        recovery.fetch("buildkit")["sbom_sha256"] = digest
+      when "buildkit-provenance-#{architecture}.json"
+        validation["buildkit_provenance_sha256"] = digest
+        recovery.fetch("buildkit")["provenance_sha256"] = digest
+      else
+        raise "unsupported architecture evidence file #{name}"
+      end
+      File.binwrite validation_path, JSON.pretty_generate(validation) << "\n"
+      recovery["container_validation_sha256"] = Digest::SHA256.file(validation_path).hexdigest
+      File.binwrite recovery_path, JSON.pretty_generate(recovery) << "\n"
+      [ name, validation_name, recovery_name ].each do |changed|
+        refresh_release_evidence_file_hash! directory, changed
+      end
     end
 
     def refresh_release_evidence_file_hash!(directory, name)
@@ -3191,26 +3687,26 @@ class ReleaseTest < ActiveSupport::TestCase
       repository = "#{registry}/campfire"
       conflict = "sha256:#{'b' * 64}"
       {
-        "format_version" => 2,
+        "format_version" => 3,
         "status" => "verified",
         "registry" => registry,
         "repository" => repository,
         "control_reference" => "#{repository}:release-mutability-control-#{'f' * 64}",
-        "policy_references" => references.sort,
+        "alias_references" => references.sort,
+        "alias_digest" => digest,
         "media_type" => "application/vnd.oci.image.index.v1+json",
         "seed_digest" => digest,
         "conflict_digest" => conflict,
+        "policy_scope" => "repository_disposable_alias",
+        "exact_alias_conflict_probes" => false,
+        "source_evidence_sha256" => "d" * 64,
         "prepared_at" => "2026-08-02T12:00:00Z",
-        "control_seed_observed_digest" => digest,
-        "control_overwrite_observed_digest" => conflict,
-        "policy_observed_digests" => references.sort.to_h { [ _1, digest ] },
-        "rejections" => references.sort.to_h do |reference|
-          [ reference, {
-            "classification" => "server_immutable_tag_rejection",
-            "exit_status" => 1,
-            "output_sha256" => "e" * 64
-          } ]
-        end,
+        "control_observed_digest" => digest,
+        "proof" => {
+          "kind" => "server_immutable_tag_rejection",
+          "exit_status" => 1,
+          "output_sha256" => "e" * 64
+        },
         "verified_at" => "2026-08-02T12:01:00Z"
       }
     end

@@ -28,4 +28,22 @@ class CredentialIntentTest < ActiveSupport::TestCase
     assert_not_equal raw, intent.token_digest
     assert_no_match(/#{Regexp.escape(raw)}/, intent.attributes.to_json)
   end
+
+  test "transfer issuance exchange validation and consumption are disabled when OIDC is enabled" do
+    user = users(:david)
+    grant = CredentialIntent.issue_transfer_grant!(user, expires_in: 1.hour)
+    browser_intent = CredentialIntent.exchange_transfer!(
+      CredentialIntent.issue_transfer_grant!(user, expires_in: 1.hour)
+    )
+    configure_oidc
+
+    assert_no_difference -> { CredentialIntent.count } do
+      assert_raises(CredentialIntent::Invalid) { user.transfer_id }
+    end
+    assert_raises(CredentialIntent::Invalid) { CredentialIntent.exchange_transfer!(grant) }
+    assert_not CredentialIntent.valid_transfer?(browser_intent)
+    assert_raises(CredentialIntent::Invalid) do
+      CredentialIntent.consume_transfer!(browser_intent) { flunk "OIDC transfer intent was consumed" }
+    end
+  end
 end

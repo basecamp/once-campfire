@@ -26,6 +26,22 @@ class SessionTest < ActiveSupport::TestCase
     assert_not session.valid_for_authentication?
   end
 
+  test "enabling OIDC invalidates existing transfer sessions" do
+    configure_oidc("OIDC_MODE" => "disabled")
+    session = users(:david).sessions.start!(
+      user_agent: "Transferred browser", ip_address: "192.0.2.10", authentication_method: "transfer"
+    )
+    subscription = push_subscriptions(:david_chrome)
+    subscription.update!(session:)
+    configure_oidc
+
+    assert_not session.valid_for_authentication?
+    assert_not Session.exists?(session.id)
+    assert_not Push::Subscription.exists?(subscription.id)
+    assert_not_includes Session.authenticatable, session
+    assert_not users(:david).sessions.build(authentication_method: "transfer").valid?
+  end
+
   test "required mode preserves local sessions until activation" do
     configure_oidc("OIDC_MODE" => "required")
     session = users(:jz).sessions.start!(user_agent: "Browser", ip_address: "192.0.2.1")

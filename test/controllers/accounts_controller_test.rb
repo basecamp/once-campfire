@@ -51,6 +51,33 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     assert_equal accounts(:signal).name, "Different"
   end
 
+  test "logo staging is unfenced and revalidates the exact session token at commit" do
+    actor = users(:david)
+    authenticated_session = Session.find_by!(token: parsed_cookies.signed[:session_token])
+    observed_fences = []
+    original_stage = StagedUpload.method(:stage)
+    StagedUpload.define_singleton_method(:stage) do |*arguments, **options|
+      observed_fences << User::MutationFence.held?(actor.id)
+      original_stage.call(*arguments, **options).tap do
+        User::MutationFence.with(actor.id) do
+          Session.find(authenticated_session.id).regenerate_token
+        end
+      end
+    end
+
+    assert_no_difference -> { ActiveStorage::Blob.count } do
+      put account_url, params: { account: {
+        name: "Must not commit", logo: fixture_file_upload("moon.jpg", "image/jpeg")
+      } }
+    end
+
+    assert_response :forbidden
+    assert_equal [ false ], observed_fences
+    assert_not_equal "Must not commit", accounts(:signal).reload.name
+  ensure
+    StagedUpload.define_singleton_method(:stage, original_stage) if original_stage
+  end
+
   test "non-admins cannot update" do
     sign_in :kevin
     assert users(:kevin).member?

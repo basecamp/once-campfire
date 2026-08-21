@@ -20,6 +20,26 @@ class Message::AttachmentTest < ActiveSupport::TestCase
     end
   end
 
+  class FenceObservingIO < StringIO
+    def initialize(content, user_id:, on_read: nil)
+      super(content)
+      @user_id = user_id
+      @on_read = on_read
+      @fence_held_during_read = false
+    end
+
+    def read(*)
+      @fence_held_during_read ||= User::MutationFence.held?(@user_id)
+      @on_read&.call
+      @on_read = nil
+      super
+    end
+
+    def fence_held_during_read?
+      @fence_held_during_read
+    end
+  end
+
   test "creating a message creates image thumbnail" do
     message = create_attachment_message("moon.jpg", "image/jpeg")
     assert message.attachment.representation(:thumb).image.present?
@@ -45,6 +65,17 @@ class Message::AttachmentTest < ActiveSupport::TestCase
     end
   end
 
+  test "message attachments do not enqueue automatic Active Storage analysis" do
+    Message.any_instance.stubs(:process_attachment)
+
+    assert_no_enqueued_jobs only: ActiveStorage::AnalyzeJob do
+      message = create_attachment_message("moon.jpg", "image/jpeg")
+      assert_not message.attachment.blob.analyzed?
+    end
+  ensure
+    Message.any_instance.unstub(:process_attachment)
+  end
+
   test "retrying one client message id converges on the committed attachment" do
     first = create_attachment_message("moon.jpg", "image/jpeg")
 
@@ -52,6 +83,50 @@ class Message::AttachmentTest < ActiveSupport::TestCase
       retry_message = create_attachment_message("earth.png", "image/png")
       assert_equal first, retry_message
       assert_equal "moon.jpg", retry_message.attachment.filename.to_s
+    end
+  end
+
+  test "an idempotent retry revalidates the exact session before effects" do
+    room = rooms(:hq)
+    creator = users(:david)
+    existing = room.messages.create_with_attachment!(
+      creator:, body: "Committed", client_message_id: "credential-bound-retry"
+    )
+    presented_session = Session.find(sessions(:david_safari).id)
+    User::MutationFence.with(creator.id) do
+      Session.find(presented_session.id).regenerate_token
+    end
+    Message.any_instance.expects(:perform_reliable_effects).never
+
+    assert_raises(User::AuthorizationError) do
+      room.messages.create_with_attachment!(
+        creator:, body: "Retry", client_message_id: existing.client_message_id,
+        authenticated_session: presented_session
+      )
+    end
+  end
+
+  test "a uniqueness-race retry revalidates the exact session before effects" do
+    room = rooms(:designers)
+    room_messages = room.messages
+    creator = users(:david)
+    existing = messages(:second)
+    presented_session = Session.find(sessions(:david_safari).id)
+    ActiveRecord::AssociationRelation.any_instance.expects(:find_by)
+      .with({ client_message_id: existing.client_message_id }).twice.returns(nil, existing)
+    ActiveRecord::AssociationRelation.any_instance.stubs(:create!)
+      .raises(ActiveRecord::RecordNotUnique)
+    credential_checks = sequence("exact credential checks")
+    Session.expects(:authenticate_exact!).in_sequence(credential_checks).returns(presented_session)
+    Session.expects(:authenticate_exact!).in_sequence(credential_checks)
+      .raises(User::AuthorizationError, "authenticated session was revoked")
+    Message.any_instance.expects(:perform_reliable_effects).never
+
+    assert_raises(User::AuthorizationError) do
+      room_messages.create_with_attachment!(
+        creator:, body: "Retry", client_message_id: existing.client_message_id,
+        authenticated_session: presented_session
+      )
     end
   end
 
@@ -123,6 +198,63 @@ class Message::AttachmentTest < ActiveSupport::TestCase
 
     assert_equal creator.id, upload.owner_id_seen_during_upload
     assert_equal creator.id, message.attachment.blob.metadata.fetch(StagedUpload::OWNER_METADATA_KEY)
+  end
+
+  test "source uploads are read outside the creator mutation fence" do
+    creator = users(:david)
+    upload = FenceObservingIO.new("source bytes", user_id: creator.id)
+
+    rooms(:hq).messages.create_with_attachment!(
+      creator:, client_message_id: "unfenced-source-upload",
+      attachment: { io: upload, filename: "attachment.txt", content_type: "text/plain" },
+      authenticated_session: sessions(:david_safari)
+    )
+
+    assert_not upload.fence_held_during_read?
+  end
+
+  test "a rotated authenticated session token cannot commit after source staging" do
+    creator = users(:david)
+    authenticated_session = Session.find(sessions(:david_safari).id)
+    old_token = authenticated_session.token
+    upload = FenceObservingIO.new(
+      "source bytes", user_id: creator.id, on_read: -> {
+        User::MutationFence.with(creator.id) do
+          Session.find(authenticated_session.id).regenerate_token
+        end
+      }
+    )
+
+    assert_raises(User::AuthorizationError) do
+      rooms(:hq).messages.create_with_attachment!(
+        creator:, client_message_id: "revoked-source-upload",
+        attachment: { io: upload, filename: "attachment.txt", content_type: "text/plain" },
+        authenticated_session:
+      )
+    end
+
+    assert_not Message.exists?(creator:, client_message_id: "revoked-source-upload")
+    assert_not_equal old_token, Session.find(authenticated_session.id).token
+  end
+
+  test "a rotated bot key cannot commit after source staging" do
+    creator = users(:bender)
+    old_key = creator.bot_key
+    upload = FenceObservingIO.new(
+      "source bytes", user_id: creator.id,
+      on_read: -> { User.find(creator.id).reset_bot_key!(actor: users(:david)) }
+    )
+
+    assert_raises(User::AuthorizationError) do
+      rooms(:watercooler).messages.create_with_attachment!(
+        creator:, client_message_id: "rotated-bot-upload",
+        attachment: { io: upload, filename: "attachment.txt", content_type: "text/plain" },
+        authenticated_bot_key: old_key
+      )
+    end
+
+    assert_not Message.exists?(creator:, client_message_id: "rotated-bot-upload")
+    assert_not_equal old_key, creator.reload.bot_key
   end
 
   test "a ban that commits first prevents source staging" do

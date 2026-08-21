@@ -15,43 +15,45 @@ class Oidc::SessionsController < ApplicationController
 
     provider_session_attributes = Identity.provider_session_attributes(auth)
     new_session = Identity.with_authentication_fence(auth) do |identity_authentication|
-      Oidc::SessionGeneration.current!
-      authenticate = proc do
-        account = Account.lock.sole
-        if account.oidc_transition_state == "rollback_prepared"
-          raise Identity::AuthenticationError, "rollback_prepared"
-        end
-
-        existing_session = find_session_by_cookie(lock: true)
-        if flow && existing_session&.id != flow.initiating_session_id
-          raise Identity::AuthenticationError, "initiating_session_changed"
-        end
-        linking_session = if linking_session_id
-          unless existing_session&.id == linking_session_id
-            raise Identity::AuthenticationError, "invalid_linking_intent"
+      with_existing_session_mutation_fence do
+        Oidc::SessionGeneration.current!
+        authenticate = proc do
+          account = Account.lock.sole
+          if account.oidc_transition_state == "rollback_prepared"
+            raise Identity::AuthenticationError, "rollback_prepared"
           end
-          existing_session
-        end
-        identity = identity_authentication.complete!(
-          linking_user: linking_session&.user,
-          linking_authorization: (linking_authorization if linking_session)
-        )
-        if existing_session && !linking_session && existing_session.user_id != identity.user_id
-          raise Identity::AuthenticationError, "account_switch_requires_logout"
-        end
 
-        new_session = identity.user.sessions.start!(
-          user_agent: request.user_agent,
-          ip_address: request.remote_ip,
-          identity:,
-          **provider_session_attributes
-        )
-        Oidc::Activation.record_successful_authentication!(account:)
-        (linking_session || existing_session)&.push_subscriptions&.update_all(session_id: new_session.id)
-        (linking_session || existing_session)&.destroy!
-        new_session
+          existing_session = find_session_by_cookie(lock: true)
+          if flow && existing_session&.id != flow.initiating_session_id
+            raise Identity::AuthenticationError, "initiating_session_changed"
+          end
+          linking_session = if linking_session_id
+            unless existing_session&.id == linking_session_id
+              raise Identity::AuthenticationError, "invalid_linking_intent"
+            end
+            existing_session
+          end
+          identity = identity_authentication.complete!(
+            linking_user: linking_session&.user,
+            linking_authorization: (linking_authorization if linking_session)
+          )
+          if existing_session && !linking_session && existing_session.user_id != identity.user_id
+            raise Identity::AuthenticationError, "account_switch_requires_logout"
+          end
+
+          new_session = identity.user.sessions.start!(
+            user_agent: request.user_agent,
+            ip_address: request.remote_ip,
+            identity:,
+            **provider_session_attributes
+          )
+          Oidc::Activation.record_successful_authentication!(account:)
+          (linking_session || existing_session)&.push_subscriptions&.update_all(session_id: new_session.id)
+          (linking_session || existing_session)&.revoke!
+          new_session
+        end
+        flow ? flow.finalize!(&authenticate) : Account.transaction(&authenticate)
       end
-      flow ? flow.finalize!(&authenticate) : Account.transaction(&authenticate)
     end
 
     reset_session

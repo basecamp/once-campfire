@@ -3,6 +3,7 @@ require "application_system_test_case"
 class UnreadRoomsTest < ApplicationSystemTestCase
   setup do
     sign_in "jz@37signals.com"
+    wait_for_cable_connection
   end
 
   test "sending messages between two users" do

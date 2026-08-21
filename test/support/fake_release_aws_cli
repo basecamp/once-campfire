@@ -27,6 +27,14 @@ def output(value)
   STDOUT.write("\n")
 end
 
+def kill_after_mutation!(state, boundary)
+  return unless state["kill_after_mutation"] == boundary
+
+  state.delete("kill_after_mutation")
+  File.binwrite(STATE_PATH, JSON.pretty_generate(state) << "\n")
+  exit 86
+end
+
 if ARGV == [ "--version" ]
   puts "aws-cli/2.31.0 Python/3.13.0 Darwin/25.0 exe/x86_64"
   exit 0
@@ -124,8 +132,6 @@ when "put-object"
     retain_until = (Time.now.utc + duration).iso8601
   end
   entries = (bucket["objects"] ||= {})[key] ||= []
-  fail!(state, "fake precondition failed") if if_none_match == "*" && entries.any?
-
   sequence = bucket["version_sequence"] = bucket.fetch("version_sequence", 0) + 1
   entry = {
     "version_id" => "version-#{sequence}",
@@ -135,6 +141,16 @@ when "put-object"
     "mode" => bucket.fetch("force_retention_mode", requested_mode),
     "retain_until" => retain_until
   }
+  precondition_error = bucket.fetch(
+    "conditional_put_error",
+    "An error occurred (PreconditionFailed) when calling the PutObject operation: " \
+      "At least one of the pre-conditions you specified did not hold"
+  )
+  fail!(state, precondition_error) if if_none_match == "*" && entries.any?
+  if if_none_match == "*" && entries.empty? && bucket.delete("race_conditional_put")
+    entries << entry
+    fail!(state, bucket.fetch("race_conditional_put_error", precondition_error))
+  end
   entries << entry
   output("VersionId" => entry.fetch("version_id"), "ChecksumSHA256" => checksum)
 when "head-object", "get-object"
@@ -183,6 +199,12 @@ when "delete-object"
 
     if marker
       markers.delete(marker)
+      boundary = if key.include?("/.exact-resource-delete-marker-intents/")
+        "intent_marker_deleted"
+      else
+        "protected_marker_deleted"
+      end
+      kill_after_mutation!(state, boundary)
       output("DeleteMarker" => true, "VersionId" => version_id)
     else
       retained = entry["retain_until"] && Time.iso8601(entry.fetch("retain_until")) > Time.now.utc
@@ -197,11 +219,20 @@ when "delete-object"
       output("VersionId" => version_id)
     end
   else
+    if bucket["deny_delete_object"] == true
+      fail!(state, "An error occurred (AccessDenied) when calling the DeleteObject operation: denied by IAM")
+    end
     sequence = bucket["version_sequence"] = bucket.fetch("version_sequence", 0) + 1
     marker = {
       "Key" => key, "VersionId" => "version-#{sequence}", "IsLatest" => true
     }
     markers << marker
+    boundary = if key.include?("/.exact-resource-delete-marker-intents/")
+      "intent_marker_created"
+    else
+      "protected_marker_created"
+    end
+    kill_after_mutation!(state, boundary)
     output("DeleteMarker" => true, "VersionId" => marker.fetch("VersionId"))
   end
 else

@@ -21,6 +21,7 @@ class CredentialIntent < ApplicationRecord
     end
 
     def issue_transfer_grant!(user, expires_in:)
+      ensure_transfer_available!
       issue!(
         purpose: "transfer_grant", user:, expires_in:,
         credential_digest: transfer_credential_digest(user)
@@ -28,6 +29,7 @@ class CredentialIntent < ApplicationRecord
     end
 
     def exchange_transfer!(token)
+      ensure_transfer_available!
       consume_record!(token, purpose: "transfer_grant") do |grant|
         user = User.active.find(grant.user_id)
         unless secure_compare(grant.credential_digest, transfer_credential_digest(user))
@@ -50,6 +52,7 @@ class CredentialIntent < ApplicationRecord
     end
 
     def consume_transfer!(token)
+      ensure_transfer_available!
       consume_record!(token, purpose: "transfer") do |intent|
         user = User.active.find(intent.user_id)
         unless secure_compare(intent.credential_digest, transfer_credential_digest(user))
@@ -67,6 +70,8 @@ class CredentialIntent < ApplicationRecord
     end
 
     def valid_transfer?(token)
+      return false if Oidc.enabled?
+
       intent = active_record_for(token, purpose: "transfer")
       return false unless intent
 
@@ -122,6 +127,10 @@ class CredentialIntent < ApplicationRecord
         Digest::SHA256.hexdigest(
           [ user.id, user.authorization_generation, user.password_digest ].join("\0")
         )
+      end
+
+      def ensure_transfer_available!
+        raise Invalid, "session transfer is unavailable while single sign-on is enabled" if Oidc.enabled?
       end
 
       def secure_compare(left, right)

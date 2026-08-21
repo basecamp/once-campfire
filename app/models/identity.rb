@@ -42,8 +42,6 @@ class Identity < ApplicationRecord
       User::MutationFence.with_identity_subject(
         issuer: authentication.issuer, subject: authentication.subject
       ) { yield authentication }
-    rescue User::MutationFence::Unavailable
-      raise AuthenticationError, "identity_policy_unavailable"
     rescue KeyError, TypeError, ArgumentError
       raise AuthenticationError, "invalid_claims"
     end

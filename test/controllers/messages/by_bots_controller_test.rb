@@ -1,6 +1,6 @@
 require "test_helper"
 
-class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
+class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   setup do
     @room = rooms(:watercooler)
   end
@@ -11,6 +11,19 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
       assert_equal "Hello Bot World!", Message.last.plain_text_body
       assert_equal Message::ORIGIN_BOT_API, Message.last.origin
     end
+
+    assert_response :created
+    assert_equal room_at_message_url(@room, Message.last), response.headers["Location"]
+  end
+
+  test "create rejects an ordinary browser session" do
+    sign_in :jz
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room), params: +"Browser-originated bot message"
+    end
+
+    assert_response :forbidden
   end
 
   test "create with UTF-8 content" do
@@ -43,6 +56,29 @@ class Messages::ByBotsControlleTest < ActionDispatch::IntegrationTest
         params: { attachment: fixture_file_upload("moon.jpg", "image/jpeg") }, headers: bot_headers
       assert Message.last.attachment.present?
     end
+  end
+
+  test "an old bot key cannot commit an upload after key reset" do
+    bot = users(:bender)
+    actor = users(:david)
+    old_key = bot.bot_key
+    original_stage = StagedUpload.method(:stage)
+    StagedUpload.define_singleton_method(:stage) do |*arguments, **options|
+      original_stage.call(*arguments, **options).tap do
+        User.find(bot.id).reset_bot_key!(actor:)
+      end
+    end
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room),
+        params: { attachment: fixture_file_upload("moon.jpg", "image/jpeg") },
+        headers: { "Authorization" => "Bearer #{old_key}" }
+    end
+
+    assert_response :forbidden
+    assert_not_equal old_key, bot.reload.bot_key
+  ensure
+    StagedUpload.define_singleton_method(:stage, original_stage) if original_stage
   end
 
   test "create does not trigger a webhook to the sending bot if it mentions itself" do

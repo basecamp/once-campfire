@@ -31,6 +31,14 @@ class User::BotTest < ActiveSupport::TestCase
     assert User.authenticate_bot(bot.bot_key)
   end
 
+  test "reload clears a submitted virtual webhook URL" do
+    bot = users(:bender)
+    persisted_url = bot.webhook.url
+    bot.webhook_url = "https://example.com:8443/rejected"
+
+    assert_equal persisted_url, bot.reload.webhook_url
+  end
+
   test "deliver message by webhook" do
     WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 200)
 

@@ -412,20 +412,23 @@ class BanCleanupIntentTest < ActiveSupport::TestCase
     travel_back
   end
 
-  test "source staging that starts first remains fenced through attachment commit" do
+  test "source staging does not block a ban and cannot commit afterward" do
     staged = Queue.new
     release_upload = Queue.new
     baseline_blob_id = ActiveStorage::Blob.maximum(:id).to_i
+    client_message_id = SecureRandom.hex(8)
     upload = UploadBarrierIO.new(
-      "fenced source", minimum_blob_id: baseline_blob_id, staged:, release: release_upload
+      "unfenced source", minimum_blob_id: baseline_blob_id, staged:, release: release_upload
     )
     creation = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
         User.find(@user.id).messages.create_with_attachment!(
-          room: rooms(:hq), client_message_id: SecureRandom.hex(8),
-          attachment: { io: upload, filename: "fenced.txt", content_type: "text/plain" }
+          room: rooms(:hq), client_message_id:,
+          attachment: { io: upload, filename: "unfenced.txt", content_type: "text/plain" }
         )
       end
+    rescue StandardError => error
+      error
     end
     blob_id = wait_for_barrier(staged, creation)
     blob = ActiveStorage::Blob.find(blob_id)
@@ -436,36 +439,35 @@ class BanCleanupIntentTest < ActiveSupport::TestCase
       end
     end
 
-    sleep 0.05
-    assert_predicate ban, :alive?
+    assert ban.join(2), "ban waited for a source upload"
+    assert @user.reload.banned?
     release_upload << true
-    message = creation.value
-    ban.value
+    assert_instance_of User::AuthorizationError, creation.value
 
-    assert message.persisted?
-    intent = @user.reload.ban_cleanup_intents.sole
-    assert perform_intent(intent)
+    assert_not Message.exists?(creator_id: @user.id, client_message_id:)
     assert_not ActiveStorage::Blob.exists?(blob.id)
     assert_not blob.service.exist?(blob.key)
+    intent = @user.reload.ban_cleanup_intents.sole
+    assert perform_intent(intent)
   ensure
     release_upload << true if creation&.alive?
     creation&.join(2)
     ban&.join(2)
   end
 
-  test "late derivative processing that starts first is included in the final purge snapshot" do
+  test "image processing does not block a ban or publish a late derivative" do
     message = create_unprocessed_image_message
     source = message.attachment.blob
-    entered_lock = Queue.new
+    entered_processing = Queue.new
     release_processing = Queue.new
-    original_lock = message.method(:with_attachment_processing_lock)
+    original_processing = message.method(:with_attachment_for_processing)
     test_case = self
-    message.define_singleton_method(:with_attachment_processing_lock) do |&operation|
-      original_lock.call do |attachment, uploads|
-        entered_lock << true
+    message.define_singleton_method(:with_attachment_for_processing) do |&operation|
+      original_processing.call do |attachment|
+        entered_processing << true
         release_processing.pop
         test_case.assert_not ActiveRecord::Base.connection.transaction_open?
-        operation.call attachment, uploads
+        operation.call attachment
       end
     end
 
@@ -473,30 +475,64 @@ class BanCleanupIntentTest < ActiveSupport::TestCase
       ActiveRecord::Base.connection_pool.with_connection do
         message.processed_attachment_representation(:thumb)
       end
+    rescue StandardError => error
+      error
     end
-    wait_for_barrier entered_lock, processing
+    wait_for_barrier entered_processing, processing
     ban = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
         User.find(@user.id).ban_by! actor: users(:david)
       end
     end
 
-    sleep 0.05
-    assert_predicate ban, :alive?
+    assert ban.join(2), "ban waited for image processing"
     release_processing << true
-    processing.value
-    ban.value
+    assert_instance_of ActiveStorage::FileNotFoundError, processing.value
 
-    derivatives = source.reload.variant_records.includes(:image_blob).filter_map(&:image_blob)
-    assert_not_empty derivatives
+    assert_empty source.reload.variant_records
     intent = @user.reload.ban_cleanup_intents.sole
     assert perform_intent(intent)
-    [ source, *derivatives ].each do |blob|
-      assert_not ActiveStorage::Blob.exists?(blob.id)
-      assert_not blob.service.exist?(blob.key)
-    end
+    assert_not ActiveStorage::Blob.exists?(source.id)
+    assert_not source.service.exist?(source.key)
   ensure
     release_processing << true if processing&.alive?
+    processing&.join(2)
+    ban&.join(2)
+  end
+
+  test "attachment analysis does not block a ban or publish late metadata" do
+    message = create_unprocessed_image_message
+    source = message.attachment.blob
+    assert_not source.analyzed?
+    entered_analysis = Queue.new
+    release_analysis = Queue.new
+    message.define_singleton_method(:extract_attachment_metadata) do |_blob|
+      entered_analysis << User::MutationFence.held?(creator_id)
+      release_analysis.pop
+      { analyzed: true, width: 123 }
+    end
+
+    processing = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection { message.process_attachment }
+    end
+    assert_not wait_for_barrier(entered_analysis, processing)
+    ban = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do
+        User.find(@user.id).ban_by! actor: users(:david)
+      end
+    end
+
+    assert ban.join(2), "ban waited for attachment analysis"
+    release_analysis << true
+    processing.value
+
+    assert_not source.reload.analyzed?
+    assert_nil source.metadata["width"]
+    intent = @user.reload.ban_cleanup_intents.sole
+    assert perform_intent(intent)
+    assert_not ActiveStorage::Blob.exists?(source.id)
+  ensure
+    release_analysis << true if processing&.alive?
     processing&.join(2)
     ban&.join(2)
   end
@@ -515,17 +551,17 @@ class BanCleanupIntentTest < ActiveSupport::TestCase
     assert_not ActiveStorage::Blob.exists?(source.id)
   end
 
-  test "late preview processing is fenced before ban takes its recursive snapshot" do
+  test "preview processing does not block a ban or publish a late preview" do
     message = create_unprocessed_video_message
     source = message.attachment.blob
-    entered_fence = Queue.new
+    entered_processing = Queue.new
     release_processing = Queue.new
-    original_lock = message.method(:with_attachment_processing_lock)
-    message.define_singleton_method(:with_attachment_processing_lock) do |&operation|
-      original_lock.call do |attachment, registration|
-        entered_fence << true
+    original_processing = message.method(:with_attachment_for_processing)
+    message.define_singleton_method(:with_attachment_for_processing) do |&operation|
+      original_processing.call do |attachment|
+        entered_processing << true
         release_processing.pop
-        operation.call attachment, registration
+        operation.call attachment
       end
     end
 
@@ -533,28 +569,25 @@ class BanCleanupIntentTest < ActiveSupport::TestCase
       ActiveRecord::Base.connection_pool.with_connection do
         message.processed_attachment_preview(format: :webp)
       end
+    rescue StandardError => error
+      error
     end
-    wait_for_barrier entered_fence, processing
+    wait_for_barrier entered_processing, processing
     ban = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
         User.find(@user.id).ban_by! actor: users(:david)
       end
     end
 
-    sleep 0.05
-    assert_predicate ban, :alive?
+    assert ban.join(2), "ban waited for preview processing"
     release_processing << true
-    processing.value
-    ban.value
+    assert_instance_of ActiveStorage::FileNotFoundError, processing.value
 
-    preview_blob = source.reload.preview_image.blob
-    assert preview_blob
+    assert_not source.reload.preview_image.attached?
     intent = @user.reload.ban_cleanup_intents.sole
     assert perform_intent(intent)
     assert_not ActiveStorage::Blob.exists?(source.id)
-    assert_not ActiveStorage::Blob.exists?(preview_blob.id)
     assert_not source.service.exist?(source.key)
-    assert_not preview_blob.service.exist?(preview_blob.key)
   ensure
     release_processing << true if processing&.alive?
     processing&.join(2)

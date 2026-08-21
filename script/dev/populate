@@ -60,7 +60,13 @@ if gets.chomp == "y"
   `RAILS_ENV=development ./bin/rails db:reset`
 
   puts "\nCreating first run (so you can login as king@example.com/secret123456)"
-  FirstRun.create! name: "King of The Hill", email_address: "king@example.com", password: "secret123456"
+  token = FirstRun.configured_token || SecureRandom.urlsafe_base64(32).tap do |generated|
+    ENV[FirstRun::TOKEN_ENVIRONMENT_VARIABLE] = generated
+  end
+  FirstRun.create!(
+    { name: "King of The Hill", email_address: "king@example.com", password: "secret123456" },
+    token:
+  )
 
   user_count    = options[:user_count]
   room_count    = options[:room_count] || 100

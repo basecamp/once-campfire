@@ -395,4 +395,147 @@ class OperationLockTest < ActiveSupport::TestCase
       assert_equal "concurrent", unknown.read
     end
   end
+
+  test "descriptor creation rejects a canonical name replaced inside its callback" do
+    Dir.mktmpdir("campfire-descriptor-create") do |directory|
+      root = Pathname(directory)
+      tree = CampfireBackup::DescriptorTree.new(root)
+      displaced = root.join("displaced")
+
+      error = assert_raises(RuntimeError) do
+        tree.create_file("created", mode: 0o600) do |file|
+          file.write "owned"
+          File.rename root.join("created"), displaced
+          root.join("created").write "replacement"
+        end
+      end
+
+      assert_match "changed during creation", error.message
+      assert_equal "owned", displaced.read
+      assert_equal "replacement", root.join("created").read
+    ensure
+      tree&.close
+    end
+  end
+
+  test "descriptor removal quarantines and preserves a raced replacement" do
+    Dir.mktmpdir("campfire-descriptor-remove") do |directory|
+      root = Pathname(directory)
+      target = root.join("owned").tap { _1.write "owned" }
+      opened = target.stat
+      tree = CampfireBackup::DescriptorTree.new(root)
+      original_rename = File.method(:rename)
+      raced = false
+      File.define_singleton_method(:rename) do |source, destination|
+        if !raced && source.to_s == "owned"
+          original_rename.call(source, "displaced")
+          File.write(source, "replacement")
+          raced = true
+        end
+        original_rename.call(source, destination)
+      end
+
+      error = assert_raises(RuntimeError) do
+        tree.remove(
+          "owned", expected_identity: [ opened.dev, opened.ino, opened.ftype ], directory: false
+        )
+      end
+
+      assert raced
+      assert_match "was preserved", error.message
+      assert_equal "owned", root.join("displaced").read
+      quarantine = root.children.find { _1.basename.to_s.start_with?(".campfire-quarantine-") }
+      assert_equal "replacement", quarantine.join("entry").read
+    ensure
+      if original_rename
+        File.define_singleton_method(:rename) do |source, destination|
+          original_rename.call(source, destination)
+        end
+      end
+      tree&.close
+    end
+  end
+
+  test "owned paths reject a hard link before metadata mutation" do
+    Dir.mktmpdir("campfire-owned-hardlink") do |directory|
+      root = Pathname(directory)
+      target = root.join("owned").tap { _1.write "owned" }
+      tree = CampfireBackup::DescriptorTree.new(root)
+      paths = CampfireBackup::OwnedPaths.new(root, descriptor_tree: tree)
+      paths.record target
+      File.link target, root.join("peer")
+      yielded = false
+
+      error = assert_raises(RuntimeError) do
+        paths.each_current { yielded = true }
+      end
+
+      assert_not yielded
+      assert_match "not safe for metadata mutation", error.message
+      assert_equal 2, target.stat.nlink
+    ensure
+      tree&.close
+    end
+  end
+
+  test "owned cleanup continues after a per-entry system call failure" do
+    Dir.mktmpdir("campfire-owned-cleanup-error") do |directory|
+      root = Pathname(directory)
+      first = root.join("first").tap { _1.write "first" }
+      second = root.join("second").tap { _1.write "second" }
+      tree = CampfireBackup::DescriptorTree.new(root)
+      paths = CampfireBackup::OwnedPaths.new(root, descriptor_tree: tree)
+      paths.record first
+      paths.record second
+      original_remove = tree.method(:remove)
+      tree.define_singleton_method(:remove) do |relative, **options|
+        raise Errno::EIO, relative if relative == "first"
+
+        original_remove.call(relative, **options)
+      end
+
+      assert_equal [ first ], paths.cleanup
+      assert first.file?
+      assert_not second.exist?
+    ensure
+      tree&.close
+    end
+  end
+
+  test "canonical target aliases share one stable lock domain" do
+    Dir.mktmpdir("campfire-operation-canonical-alias") do |directory|
+      root = Pathname(directory)
+      physical = root.join("physical/nested").tap(&:mkpath)
+      target = physical.join("target").tap(&:mkpath)
+      root.join("alias").make_symlink(root.join("physical"))
+      alias_target = root.join("alias/nested/target")
+      lock = CampfireBackup::OperationLock.acquire(target, purpose: "physical")
+
+      error = assert_raises(RuntimeError) do
+        CampfireBackup::OperationLock.acquire(alias_target, purpose: "alias")
+      end
+
+      assert_match "in use by another process", error.message
+    ensure
+      lock&.release
+    end
+  end
+
+  test "filesystem capacity is queried through the inherited pinned root descriptor" do
+    Dir.mktmpdir("campfire-pinned-capacity") do |directory|
+      tree = CampfireBackup::DescriptorTree.new(directory)
+      CampfireBackup::Subprocess.expects(:capture2).with do |*arguments, **options|
+        spawn_options = options.fetch(:spawn_options)
+        arguments.include?(tree.root.fileno.to_s) &&
+          spawn_options.fetch(tree.root.fileno) == tree.root.fileno
+      end.returns([
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test 200 100 100 50% /\n",
+        stub(success?: true)
+      ])
+
+      assert_equal 100 * 1024, tree.available_bytes
+    ensure
+      tree&.close
+    end
+  end
 end

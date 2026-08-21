@@ -177,15 +177,24 @@ jobs:
           EVIDENCE_DIRECTORY="$RUNNER_TEMP/container-evidence-$ARCHITECTURE"
           mkdir -p "$EVIDENCE_DIRECTORY"
           validation="$EVIDENCE_DIRECTORY/container-validation.json"
+          image_inspection="$EVIDENCE_DIRECTORY/image-inspect.json"
+          sbom="$EVIDENCE_DIRECTORY/sbom.spdx.json"
+          buildkit_provenance="$EVIDENCE_DIRECTORY/buildkit-provenance.json"
           recovery="$EVIDENCE_DIRECTORY/recovery-receipt.json"
           run_receipt="$EVIDENCE_DIRECTORY/run.json"
           upgrade_receipt="$EVIDENCE_DIRECTORY/upgrade-recovery.json"
           receipt_status=incomplete
           if [[ -f "$validation" && ! -L "$validation" && -s "$validation" &&
+                -f "$image_inspection" && ! -L "$image_inspection" && -s "$image_inspection" &&
+                -f "$sbom" && ! -L "$sbom" && -s "$sbom" &&
+                -f "$buildkit_provenance" && ! -L "$buildkit_provenance" && -s "$buildkit_provenance" &&
                 -f "$recovery" && ! -L "$recovery" && -s "$recovery" &&
                 -f "$run_receipt" && ! -L "$run_receipt" && -s "$run_receipt" &&
                 -f "$upgrade_receipt" && ! -L "$upgrade_receipt" && -s "$upgrade_receipt" ]]; then
             validation_sha256=$(sha256sum "$validation" | cut -d' ' -f1)
+            image_inspection_sha256=$(sha256sum "$image_inspection" | cut -d' ' -f1)
+            sbom_sha256=$(sha256sum "$sbom" | cut -d' ' -f1)
+            buildkit_provenance_sha256=$(sha256sum "$buildkit_provenance" | cut -d' ' -f1)
             recovery_sha256=$(sha256sum "$recovery" | cut -d' ' -f1)
             run_receipt_sha256=$(sha256sum "$run_receipt" | cut -d' ' -f1)
             upgrade_receipt_sha256=$(sha256sum "$upgrade_receipt" | cut -d' ' -f1)
@@ -227,6 +236,42 @@ jobs:
                   (.checks.request_limit | test("^HTTP/1\\.[01] 413$")) and
                   .checks.graceful_exit_code == 0
                 ' "$validation" >/dev/null &&
+              [[ "$(jq -r '.image_inspection_sha256' "$validation")" == "$image_inspection_sha256" ]] &&
+              [[ "$(jq -r '.sbom_sha256' "$validation")" == "$sbom_sha256" ]] &&
+              [[ "$(jq -r '.buildkit_provenance_sha256' "$validation")" == "$buildkit_provenance_sha256" ]] &&
+              jq -e \
+                --arg architecture "$ARCHITECTURE" \
+                --arg config_digest "$config_digest" \
+                --arg source_revision "$SOURCE_REVISION" \
+                --arg build_identity "$TARGET_BUILD_IDENTITY" '
+                  length == 1 and .[0].Os == "linux" and .[0].Architecture == $architecture and
+                  .[0].Id == $config_digest and
+                  .[0].Config.Labels["org.opencontainers.image.revision"] == $source_revision and
+                  .[0].Config.Labels["com.basecamp.campfire.build-identity"] == $build_identity
+                ' "$image_inspection" >/dev/null &&
+              jq -e --arg digest "${runnable_digest#sha256:}" '
+                  .predicateType == "https://spdx.dev/Document" and
+                  (.subject | type) == "array" and (.subject | length) == 1 and
+                  .subject[0].digest == {"sha256": $digest} and
+                  .predicate.SPDXID == "SPDXRef-DOCUMENT" and
+                  (.predicate.spdxVersion | startswith("SPDX-")) and
+                  (.predicate.packages | length) > 0
+                ' "$sbom" >/dev/null &&
+              jq -e \
+                --arg digest "${runnable_digest#sha256:}" \
+                --arg architecture "$ARCHITECTURE" \
+                --arg source_revision "$SOURCE_REVISION" '
+                  .predicateType == "https://slsa.dev/provenance/v1" and
+                  (.subject | type) == "array" and (.subject | length) == 1 and
+                  .subject[0].digest == {"sha256": $digest} and
+                  .predicate.buildDefinition.buildType ==
+                    "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
+                  (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
+                  (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
+                  any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
+                    .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
+                  (.predicate | tostring | contains($source_revision))
+                ' "$buildkit_provenance" >/dev/null &&
               jq -e \
                 --arg architecture "$ARCHITECTURE" \
                 --arg platform "$CONTAINER_PLATFORM" \
@@ -383,23 +428,27 @@ jobs:
   verify-receipts:
     name: Verify exact architecture receipts
     needs: validate
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions: {}
     steps:
       - name: Download amd64 evidence
+        if: ${{ always() }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: container-evidence-amd64-${{ github.run_attempt }}
           path: ${{ runner.temp }}/container-receipts/amd64
 
       - name: Download arm64 evidence
+        if: ${{ always() }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: container-evidence-arm64-${{ github.run_attempt }}
           path: ${{ runner.temp }}/container-receipts/arm64
 
       - name: Verify exact amd64 and arm64 receipt set
+        if: ${{ always() }}
         env:
           SOURCE_REVISION: ${{ github.sha }}
         shell: bash
@@ -415,13 +464,20 @@ jobs:
             directory="$receipt_root/$architecture"
             receipt="$directory/receipt.json"
             validation="$directory/container-validation.json"
+            image_inspection="$directory/image-inspect.json"
+            sbom="$directory/sbom.spdx.json"
+            buildkit_provenance="$directory/buildkit-provenance.json"
             recovery="$directory/recovery-receipt.json"
             run_receipt="$directory/run.json"
             upgrade_receipt="$directory/upgrade-recovery.json"
-            for source in "$receipt" "$validation" "$recovery" "$run_receipt" "$upgrade_receipt"; do
+            for source in "$receipt" "$validation" "$image_inspection" "$sbom" \
+                "$buildkit_provenance" "$recovery" "$run_receipt" "$upgrade_receipt"; do
               [[ -f "$source" && ! -L "$source" && -s "$source" ]]
             done
             validation_sha256=$(sha256sum "$validation" | cut -d' ' -f1)
+            image_inspection_sha256=$(sha256sum "$image_inspection" | cut -d' ' -f1)
+            sbom_sha256=$(sha256sum "$sbom" | cut -d' ' -f1)
+            buildkit_provenance_sha256=$(sha256sum "$buildkit_provenance" | cut -d' ' -f1)
             recovery_sha256=$(sha256sum "$recovery" | cut -d' ' -f1)
             run_receipt_sha256=$(sha256sum "$run_receipt" | cut -d' ' -f1)
             upgrade_receipt_sha256=$(sha256sum "$upgrade_receipt" | cut -d' ' -f1)
@@ -467,7 +523,10 @@ jobs:
               --arg source_revision "$SOURCE_REVISION" \
               --arg build_identity "$build_identity" \
               --arg runnable_digest "$runnable_digest" \
-              --arg config_digest "$config_digest" '
+              --arg config_digest "$config_digest" \
+              --arg image_inspection_sha256 "$image_inspection_sha256" \
+              --arg sbom_sha256 "$sbom_sha256" \
+              --arg provenance_sha256 "$buildkit_provenance_sha256" '
                 (keys | sort) == [
                   "app_version", "architecture", "build_identity", "buildkit_provenance_sha256",
                   "checks", "config_digest", "format_version", "image", "image_inspection_sha256",
@@ -480,6 +539,9 @@ jobs:
                 .source_revision == $source_revision and .build_identity == $build_identity and
                 .runnable_digest == $runnable_digest and .validated_manifest_digest == $runnable_digest and
                 .config_digest == $config_digest and
+                .image_inspection_sha256 == $image_inspection_sha256 and
+                .sbom_sha256 == $sbom_sha256 and
+                .buildkit_provenance_sha256 == $provenance_sha256 and
                 .transport_mode == "external-https-loopback-probe" and
                 (.checks | keys | sort) == [
                   "asset_precompile_transport", "boot_health", "entrypoint_and_labels", "graceful_exit_code",
@@ -488,6 +550,39 @@ jobs:
                   "runtime_transport_neutrality", "sbom", "transport_contract"
                 ] and .checks.graceful_exit_code == 0
               ' "$validation" >/dev/null
+            jq -e \
+              --arg architecture "$architecture" \
+              --arg config_digest "$config_digest" \
+              --arg source_revision "$SOURCE_REVISION" \
+              --arg build_identity "$build_identity" '
+                length == 1 and .[0].Os == "linux" and .[0].Architecture == $architecture and
+                .[0].Id == $config_digest and
+                .[0].Config.Labels["org.opencontainers.image.revision"] == $source_revision and
+                .[0].Config.Labels["com.basecamp.campfire.build-identity"] == $build_identity
+              ' "$image_inspection" >/dev/null
+            jq -e --arg digest "${runnable_digest#sha256:}" '
+                .predicateType == "https://spdx.dev/Document" and
+                (.subject | type) == "array" and (.subject | length) == 1 and
+                .subject[0].digest == {"sha256": $digest} and
+                .predicate.SPDXID == "SPDXRef-DOCUMENT" and
+                (.predicate.spdxVersion | startswith("SPDX-")) and
+                (.predicate.packages | length) > 0
+              ' "$sbom" >/dev/null
+            jq -e \
+              --arg digest "${runnable_digest#sha256:}" \
+              --arg architecture "$architecture" \
+              --arg source_revision "$SOURCE_REVISION" '
+                .predicateType == "https://slsa.dev/provenance/v1" and
+                (.subject | type) == "array" and (.subject | length) == 1 and
+                .subject[0].digest == {"sha256": $digest} and
+                .predicate.buildDefinition.buildType ==
+                  "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
+                (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
+                (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
+                any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
+                  .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
+                (.predicate | tostring | contains($source_revision))
+              ' "$buildkit_provenance" >/dev/null
             jq -e \
               --arg architecture "$architecture" \
               --arg platform "$platform" \
@@ -617,6 +712,18 @@ jobs:
                 status: "passed"
               }
             ' > "$RUNNER_TEMP/container-architecture-receipt.json"
+
+      - name: Require successful validation matrix
+        if: ${{ always() }}
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$VALIDATE_RESULT" != success ]]; then
+            echo "::error title=Container validation matrix failed::validate result was $VALIDATE_RESULT" >&2
+            exit 1
+          fi
 
       - name: Upload architecture receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

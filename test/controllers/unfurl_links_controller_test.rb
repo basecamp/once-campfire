@@ -21,6 +21,19 @@ class UnfurlLinksControllerTest < ActionDispatch::IntegrationTest
     assert_equal "desc..", json_response["description"]
   end
 
+  test "create does not hold the session mutation fence during network work" do
+    observed_fence = nil
+    Opengraph::Metadata.stubs(:from_url).with do |_url|
+      observed_fence = User::MutationFence.held?(users(:david).id)
+      true
+    end.returns(stub(valid?: false))
+
+    post unfurl_link_url, params: { url: "https://www.example.com" }
+
+    assert_response :no_content
+    assert_not observed_fence
+  end
+
   test "create with missing opengraph meta tags" do
     WebMock.stub_request(:get, "https://www.example.com/").to_return(status: 200, body: "<html><head></head></html>", headers: {})
 

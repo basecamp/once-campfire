@@ -1,5 +1,7 @@
 class User < ApplicationRecord
   class AuthorizationError < StandardError; end
+  class LastAdministratorError < AuthorizationError; end
+  class AdministratorRecoveryRequired < AuthorizationError; end
 
   include Avatar, Bannable, Bot, Mentionable, Role, Transferable
 
@@ -33,6 +35,7 @@ class User < ApplicationRecord
   normalizes :email_address, with: ->(email_address) { EmailAddress.normalize(email_address) }
 
   before_save :normalize_email_identity
+  after_update :mark_identities_locally_recoverable, if: :saved_change_to_password_digest?
   after_create :grant_membership_to_open_rooms
   validate :preserve_required_recovery_binding, on: :update
 
@@ -100,10 +103,12 @@ class User < ApplicationRecord
   end
 
   def deactivate_by!(actor:)
-    MutationFence.with(id) do
-      self.class.transaction do
-        self.class.lock_administrator! actor
-        self.class.lock_active!(id).send :deactivate!
+    MutationFence.with_administrator_roster do
+      MutationFence.with([ actor.id, id ]) do
+        self.class.transaction do
+          self.class.lock_administrator! actor
+          self.class.lock_active!(id).send :deactivate!
+        end
       end
     end
     disconnect_remote_connections reason: Session::REVOKED_REASON
@@ -117,10 +122,18 @@ class User < ApplicationRecord
   end
 
   def update_role_by!(attributes, actor:)
-    MutationFence.with(id) do
-      self.class.transaction do
-        self.class.lock_administrator! actor
-        self.class.lock_active!(id).update!(attributes)
+    MutationFence.with_administrator_roster do
+      MutationFence.with([ actor.id, id ]) do
+        self.class.transaction do
+          self.class.lock_administrator! actor
+          user = self.class.lock_active!(id)
+          if attributes[:role].to_s == "administrator"
+            user.send :ensure_administrator_recovery!
+          else
+            user.send :ensure_other_active_administrator!
+          end
+          user.update!(attributes)
+        end
       end
     end
     reload
@@ -138,6 +151,10 @@ class User < ApplicationRecord
       self.normalized_email_address = normalized_email_address
     end
 
+    def mark_identities_locally_recoverable
+      identities.where(provisioned: true).update_all(provisioned: false, updated_at: Time.current)
+    end
+
     def deactivate!
       with_lock do
         apply_deactivation!
@@ -145,6 +162,7 @@ class User < ApplicationRecord
     end
 
     def apply_deactivation!
+      ensure_other_active_administrator!
       update! status: :deactivated, email_address: deactived_email_address
       remove_deprovisioned_access!
     end
@@ -153,7 +171,7 @@ class User < ApplicationRecord
       memberships.without_direct_rooms.delete_all
       push_subscriptions.delete_all
       searches.delete_all
-      sessions.delete_all
+      Session.revoke_all! sessions
     end
 
     def apply_identity_provider_deactivation!(identity:, issuer:, revoked_at:)
@@ -165,7 +183,10 @@ class User < ApplicationRecord
       )
       current_identity.update!(provider_revoked_at: revoked_at) unless current_identity.provider_revoked_at?
       if user.send(:required_recovery_binding?)
-        current_identity.sessions.destroy_all
+        Session.revoke_all! current_identity.sessions
+        false
+      elsif user.send(:last_active_administrator?)
+        Session.revoke_all! current_identity.sessions
         false
       elsif user.active?
         user.send :apply_deactivation!
@@ -202,5 +223,28 @@ class User < ApplicationRecord
       return unless will_save_change_to_email_address? || will_save_change_to_role? || will_save_change_to_status?
 
       errors.add :base, "the required-mode recovery administrator must be rotated before this account changes"
+    end
+
+    def ensure_other_active_administrator!
+      return unless last_active_administrator?
+
+      raise LastAdministratorError, "at least one active administrator is required"
+    end
+
+    def ensure_administrator_recovery!
+      return if administrator?
+      return unless identities.where(provisioned: true).exists?
+
+      raise AdministratorRecoveryRequired,
+        "JIT-provisioned users must establish a local recovery password before becoming administrators"
+    end
+
+    def last_active_administrator?
+      return false unless active? && administrator?
+      unless MutationFence.administrator_roster_held?
+        raise AuthorizationError, "administrator roster mutation fence is not held"
+      end
+
+      !self.class.active.where(role: :administrator).where.not(id:).exists?
     end
 end

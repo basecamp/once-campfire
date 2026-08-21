@@ -15,11 +15,20 @@
         <div class="composer--edit composer--rich-text">
           <%= form_with model: @message, url: room_message_path(@room, @message), id: dom_id(@message, :form), data: {
                 controller: "form", action: "trix-file-accept->form#preventAttachment keydown.esc->form#cancel keydown.ctrl+enter->form#submit:prevent keydown.meta+enter->form#submit:prevent" } do |form| %>
+            <% if @message.errors.any? %>
+              <p id="<%= dom_id(@message, :edit_errors) %>" class="txt-small colorize--red" role="alert">
+                <%= @message.errors.full_messages.to_sentence %>
+              </p>
+            <% end %>
+
             <div class="full-width input input--actor min-width fill-white">
               <%= form.rich_text_area :body,
                     rows: 1,
                     class: "input",
-                    aria: { multiline: "true", label: "Edit message" },
+                    aria: {
+                      multiline: "true", label: "Edit message", invalid: @message.errors.any?,
+                      describedby: (@message.errors.any? ? dom_id(@message, :edit_errors) : nil)
+                    },
                     autofocus: true,
                     data: {
                       controller: "rich-autocomplete",

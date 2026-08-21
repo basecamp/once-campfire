@@ -93,6 +93,23 @@ class Scim::V2::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_revocation_broadcast channel
   end
 
+  test "PATCH cannot deactivate the last active administrator" do
+    User.active.where(role: :administrator).update_all(role: :member)
+    users(:jz).update!(role: :administrator)
+
+    patch_scim_user @identity, {
+      schemas: [ Scim::PATCH_OPERATION_SCHEMA ],
+      Operations: [ { op: "Replace", path: "active", value: false } ]
+    }
+
+    assert_response :success
+    assert_equal false, scim_body.fetch("active")
+    assert users(:jz).reload.active?
+    assert users(:jz).administrator?
+    assert_predicate @identity.reload, :provider_revoked_at?
+    assert Identity::Deprovisioning.blocked?(issuer: @identity.issuer, subject: @identity.subject)
+  end
+
   test "PATCH supports an active false value object and is idempotent" do
     payload = {
       schemas: [ Scim::PATCH_OPERATION_SCHEMA ],

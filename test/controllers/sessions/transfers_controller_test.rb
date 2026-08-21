@@ -19,9 +19,8 @@ class Sessions::TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "transfer", Session.find_by!(token: parsed_cookies.signed[:session_token]).authentication_method
   end
 
-  test "update is disabled when OIDC is required" do
-    configure_oidc("OIDC_MODE" => "required")
-    Oidc::Activation.stubs(:ready?).returns(true)
+  test "update is disabled whenever OIDC is enabled" do
+    configure_oidc
     host! Oidc.configuration.redirect_host
     https!
 
@@ -31,16 +30,27 @@ class Sessions::TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_nil parsed_cookies.signed[:session_token]
   end
 
-  test "show explains that transfer is disabled when OIDC is required" do
-    configure_oidc("OIDC_MODE" => "required")
-    Oidc::Activation.stubs(:ready?).returns(true)
+  test "show explains that transfer is disabled whenever OIDC is enabled" do
+    configure_oidc
     host! Oidc.configuration.redirect_host
     https!
 
     get session_transfer_path
 
     assert_redirected_to new_session_url
-    assert_equal "Session transfer is unavailable while single sign-on is required.", flash[:alert]
+    assert_equal "Session transfer is unavailable while single sign-on is enabled.", flash[:alert]
+  end
+
+  test "a transfer grant cannot be exchanged after OIDC is enabled" do
+    grant = users(:david).transfer_id
+    configure_oidc
+    host! Oidc.configuration.redirect_host
+    https!
+
+    post session_transfer_intent_path, params: { token: grant }
+
+    assert_response :forbidden
+    assert CredentialIntent.where(user: users(:david), purpose: "transfer_grant").exists?
   end
 
   test "a transfer grant is exchanged once and redirects without the credential" do

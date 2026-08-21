@@ -87,6 +87,24 @@ class Oidc::SessionGenerationTest < ActiveSupport::TestCase
     writer&.join(2)
   end
 
+  test "generation retirement acquires user fences after releasing the account transaction" do
+    session = federated_session("outside-account-retirement")
+    observed_transactions = []
+    original_revoke_all = Session.method(:revoke_all!)
+    Session.define_singleton_method(:revoke_all!) do |relation = all, limit: nil|
+      observed_transactions << Account.connection.transaction_open?
+      original_revoke_all.call(relation, limit:)
+    end
+
+    configure_oidc("OIDC_CLIENT_SECRET" => "outside-account-retirement-secret")
+    Oidc::SessionGeneration.current!
+
+    assert_equal [ false ], observed_transactions
+    assert_not Session.exists?(session.id)
+  ensure
+    Session.define_singleton_method(:revoke_all!, original_revoke_all) if original_revoke_all
+  end
+
   private
     def federated_session(sid)
       users(:jz).sessions.start!(

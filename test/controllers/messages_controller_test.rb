@@ -68,6 +68,52 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "create stages message input outside the request session fence" do
+    creator = users(:david)
+    observed_fences = []
+    original_stage = StagedUpload.method(:stage)
+    StagedUpload.define_singleton_method(:stage) do |*arguments, **options|
+      observed_fences << User::MutationFence.held?(creator.id)
+      original_stage.call(*arguments, **options)
+    end
+
+    post room_messages_url(@room, format: :turbo_stream), params: {
+      message: { body: "Unfenced staging", client_message_id: "unfenced-controller-stage" }
+    }
+
+    assert_response :success
+    assert_equal [ false ], observed_fences
+  ensure
+    StagedUpload.define_singleton_method(:stage, original_stage) if original_stage
+  end
+
+  test "create returns service unavailable when the mutation fence is unavailable" do
+    User::MutationFence.stubs(:with).raises(User::MutationFence::Unavailable, "unavailable")
+
+    assert_no_difference -> { Message.count } do
+      post room_messages_url(@room, format: :turbo_stream), params: {
+        message: { body: "Must not commit", client_message_id: "fence-unavailable" }
+      }
+    end
+
+    assert_response :service_unavailable
+  end
+
+  test "create preserves OIDC policy failures from exact session validation" do
+    Session.stubs(:authenticate_exact!).raises(
+      Oidc::PolicyUnavailable, Oidc::POLICY_UNAVAILABLE_MESSAGE
+    )
+
+    assert_no_difference -> { Message.count } do
+      post room_messages_url(@room, format: :turbo_stream), params: {
+        message: { body: "Must not commit", client_message_id: "policy-unavailable" }
+      }
+    end
+
+    assert_response :service_unavailable
+    assert_equal Oidc::POLICY_UNAVAILABLE_MESSAGE, response.body
+  end
+
   test "creating a message does not broadcast unread room to non-members" do
     outsider = users(:jz)
     assert_not @room.users.include?(outsider), "need someone outside the room for this test to mean anything"
@@ -228,6 +274,20 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to room_message_url(@room, message)
     assert_equal "Updated body", message.reload.plain_text_body
+  end
+
+  test "update keeps the editor open with an error when the message is blank" do
+    message = @room.messages.where(creator: users(:david)).first
+    original_body = message.plain_text_body
+    Turbo::StreamsChannel.expects(:broadcast_replace_to).never
+
+    put room_message_url(@room, message), params: { message: { body: "" } }
+
+    assert_response :unprocessable_entity
+    assert_select "turbo-frame##{dom_id(message, :edit)}"
+    assert_select "[role='alert']", text: /message must include text or an attachment/i
+    assert_select "trix-editor[aria-invalid='true'][aria-describedby='#{dom_id(message, :edit_errors)}']"
+    assert_equal original_body, message.reload.plain_text_body
   end
 
   test "update rejects attachment replacement parameters without mutating the message" do

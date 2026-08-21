@@ -18,21 +18,16 @@ module RestrictedHTTP
     # Teredo (2001::/32) are deprecated transition mechanisms with no legitimate
     # fetch target, so they are blocked outright. ULA (fc00::/7, incl. the AWS
     # IMDSv6 address fd00:ec2::254), link-local, and loopback are covered by the
-    # predicates in #disallowed_ipv6?.
+    # predicates in #disallowed_ipv6?. The RFC 8215 local-use NAT64 prefix is
+    # site-specific and not globally reachable, so it is never a valid fetch target.
     DISALLOWED_IPV6 = %w[
-      ::/128 100::/64 2001::/32 2001:2::/48 2001:db8::/32 2002::/16
+      ::/128 64:ff9b:1::/48 100::/64 2001::/32 2001:2::/48 2001:db8::/32 2002::/16
       fec0::/10 ff00::/8
     ].map { |cidr| IPAddr.new(cidr) }.freeze
 
-    # NAT64 prefixes: the well-known prefix (RFC 6052/6146) and the local-use
-    # prefix (RFC 8215). An address here embeds an IPv4 target in its low 32
-    # bits; we extract it and re-check against the IPv4 rules so NAT64 to a
-    # public address still resolves while NAT64 to an internal address is
-    # blocked.
-    NAT64_PREFIXES = [
-      IPAddr.new("64:ff9b::/96"),
-      IPAddr.new("64:ff9b:1::/48")
-    ].freeze
+    # The well-known NAT64 prefix has a fixed /96 embedding. Re-check its IPv4
+    # target so public DNS64 remains usable while translations to internal IPs fail.
+    WELL_KNOWN_NAT64_PREFIX = IPAddr.new("64:ff9b::/96")
 
     def resolve(hostname)
       Resolv.getaddress(hostname).tap do |ip|
@@ -49,7 +44,7 @@ module RestrictedHTTP
         true
       elsif ipaddr.ipv4?
         disallowed_ipv4?(ipaddr)
-      elsif NAT64_PREFIXES.any? { |prefix| prefix.include?(ipaddr) }
+      elsif WELL_KNOWN_NAT64_PREFIX.include?(ipaddr)
         disallowed_ipv4?(embedded_ipv4(ipaddr))
       else
         disallowed_ipv6?(ipaddr)

@@ -6,6 +6,9 @@ module ApplicationCable
     MAXIMUM_SUBSCRIPTIONS_PER_CONNECTION = Integer(
       ENV.fetch("ACTION_CABLE_MAXIMUM_SUBSCRIPTIONS_PER_CONNECTION", 100).to_s, 10
     )
+    # Cable carries only subscription and presence/typing commands, not message uploads. Rails does
+    # not expose websocket-driver's transport max_length, so this applies after frame aggregation.
+    MAXIMUM_COMMAND_BYTES = 64.kilobytes
     unless MAXIMUM_SUBSCRIPTIONS_PER_CONNECTION.between?(1, 1_000)
       raise ArgumentError,
         "ACTION_CABLE_MAXIMUM_SUBSCRIPTIONS_PER_CONNECTION must be between 1 and 1000"
@@ -62,6 +65,14 @@ module ApplicationCable
       @session_expiration_monitor&.cancel
     end
 
+    def on_message(websocket_message)
+      if websocket_message.is_a?(String) && websocket_message.bytesize > MAXIMUM_COMMAND_BYTES
+        close reason: "Command too large", reconnect: false
+      else
+        super
+      end
+    end
+
     def transmit(cable_message)
       if application_message?(cable_message) && current_session_id && !@closing_invalid_session
         case current_session_status
@@ -95,7 +106,7 @@ module ApplicationCable
 
       def expire_session
         @session_expiration_monitor&.cancel
-        Session.find_by(id: current_session_id)&.destroy!
+        Session.find_by(id: current_session_id)&.revoke!
       ensure
         close reason: "Session expired", reconnect: false
       end
