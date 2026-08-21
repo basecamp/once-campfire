@@ -1,71 +1,29 @@
-require "ipaddr"
-require "resolv"
+require "surfguard"
 
 module RestrictedHTTP
   class Violation < StandardError; end
 
+  # The address policy lives in the surfguard gem so this app, Basecamp, HEY and
+  # Fizzy classify "internal" the same way instead of each keeping a copy that
+  # drifts. The callers here hand a bare hostname in and pin the address that
+  # comes back, so this stays a hostname-in, address-out shim.
   module PrivateNetworkGuard
     extend self
 
-    # IPv4 special-use ranges (RFC 5735/6890) not already covered by the
-    # private?/loopback?/link_local? predicates in #disallowed_ipv4?.
-    DISALLOWED_IPV4 = %w[
-      0.0.0.0/8 100.64.0.0/10 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24
-      198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4
-    ].map { |cidr| IPAddr.new(cidr) }.freeze
-
-    # IPv6 special-use ranges not caught by the predicates. 6to4 (2002::/16) and
-    # Teredo (2001::/32) are deprecated transition mechanisms with no legitimate
-    # fetch target, so they are blocked outright. ULA (fc00::/7, incl. the AWS
-    # IMDSv6 address fd00:ec2::254), link-local, and loopback are covered by the
-    # predicates in #disallowed_ipv6?. The RFC 8215 local-use NAT64 prefix is
-    # site-specific and not globally reachable, so it is never a valid fetch target.
-    DISALLOWED_IPV6 = %w[
-      ::/128 64:ff9b:1::/48 100::/64 2001::/32 2001:2::/48 2001:db8::/32 2002::/16
-      fec0::/10 ff00::/8
-    ].map { |cidr| IPAddr.new(cidr) }.freeze
-
-    # The well-known NAT64 prefix has a fixed /96 embedding. Re-check its IPv4
-    # target so public DNS64 remains usable while translations to internal IPs fail.
-    WELL_KNOWN_NAT64_PREFIX = IPAddr.new("64:ff9b::/96")
-
+    # A hostname that resolves to nothing (NXDOMAIN, timeout, empty answer)
+    # raises Surfguard::Unresolvable, which we let propagate as a lookup failure
+    # -- the same way the old Resolv.getaddress guard raised Resolv::ResolvError,
+    # and the callers here already treat it as a fetch failure. The Violation is
+    # reserved for a host that resolves to a blocked address (an empty list back
+    # from resolve_public_ips), so a transient DNS miss is never misreported as
+    # an SSRF attempt.
     def resolve(hostname)
-      Resolv.getaddress(hostname).tap do |ip|
-        raise Violation.new("Attempt to access private IP via #{hostname}") if ip && private_ip?(ip)
-      end
+      Surfguard.resolve_public_ips(hostname).first or
+        raise Violation.new("Attempt to access private IP via #{hostname}")
     end
 
     def private_ip?(ip)
-      ipaddr = IPAddr.new(ip)
-
-      # DNS never legitimately returns these embedded forms, so block them all
-      # regardless of the address they wrap.
-      if ipaddr.ipv4_mapped? || ipaddr.ipv4_compat?
-        true
-      elsif ipaddr.ipv4?
-        disallowed_ipv4?(ipaddr)
-      elsif WELL_KNOWN_NAT64_PREFIX.include?(ipaddr)
-        disallowed_ipv4?(embedded_ipv4(ipaddr))
-      else
-        disallowed_ipv6?(ipaddr)
-      end
-    rescue IPAddr::InvalidAddressError
-      true
+      Surfguard.blocked_address?(ip)
     end
-
-    private
-      def disallowed_ipv4?(ipaddr)
-        ipaddr.private? || ipaddr.loopback? || ipaddr.link_local? ||
-          DISALLOWED_IPV4.any? { |range| range.include?(ipaddr) }
-      end
-
-      def disallowed_ipv6?(ipaddr)
-        ipaddr.private? || ipaddr.loopback? || ipaddr.link_local? ||
-          DISALLOWED_IPV6.any? { |range| range.include?(ipaddr) }
-      end
-
-      def embedded_ipv4(ipaddr)
-        IPAddr.new([ ipaddr.to_i & 0xffffffff ].pack("N").unpack("C4").join("."))
-      end
   end
 end

@@ -1,5 +1,6 @@
 class Messages::BoostsController < ApplicationController
   before_action :set_message
+  before_action :set_boost, only: :destroy
 
   def index
   end
@@ -8,14 +9,16 @@ class Messages::BoostsController < ApplicationController
   end
 
   def create
-    @boost = Boost.create_by!(message: @message, actor: Current.user, attributes: boost_params)
+    @boost = Boost.create_by!(
+      message: @message, actor: Current.user, attributes: boost_params, authenticated_bot_key:
+    )
 
     broadcast_create
     redirect_to message_boosts_url(@message)
   end
 
   def destroy
-    @boost = Boost.destroy_by!(id: params[:id], actor: Current.user)
+    @boost = Boost.destroy_by!(id: @boost.id, actor: Current.user, authenticated_bot_key:)
 
     broadcast_remove
   end
@@ -23,6 +26,10 @@ class Messages::BoostsController < ApplicationController
   private
     def set_message
       @message = Current.user.reachable_messages.find(params[:message_id])
+    end
+
+    def set_boost
+      @boost = @message.boosts.find_by!(id: params[:id], booster: Current.user)
     end
 
     def boost_params

@@ -1,4 +1,10 @@
 GIT
+  remote: https://github.com/basecamp/surfguard.git
+  revision: 910be917fd0ab782c5ea939698d44f26694a501d
+  specs:
+    surfguard (0.1.0)
+
+GIT
   remote: https://github.com/hotwired/turbo-rails.git
   revision: 30cd8fcc6f82c1ad4edd1ed6069ba878f21f02b3
   specs:
@@ -145,7 +151,7 @@ GEM
     benchmark (0.5.0)
     bigdecimal (3.3.1)
     bindata (3.0.0)
-    brakeman (8.0.5)
+    brakeman (8.0.6)
       racc
     builder (3.3.0)
     bundler-audit (0.9.3)
@@ -230,7 +236,7 @@ GEM
     loofah (2.25.2)
       crass (~> 1.0.2)
       nokogiri (>= 1.12.0)
-    mail (2.9.0)
+    mail (2.9.1)
       logger
       mini_mime (>= 0.1.1)
       net-imap
@@ -422,10 +428,10 @@ GEM
       rack-protection (= 4.2.1)
       rack-session (>= 2.0.0, < 3)
       tilt (~> 2.0)
-    sqlite3 (2.9.5-aarch64-linux-gnu)
-    sqlite3 (2.9.5-arm64-darwin)
-    sqlite3 (2.9.5-x86_64-darwin)
-    sqlite3 (2.9.5-x86_64-linux-gnu)
+    sqlite3 (2.9.6-aarch64-linux-gnu)
+    sqlite3 (2.9.6-arm64-darwin)
+    sqlite3 (2.9.6-x86_64-darwin)
+    sqlite3 (2.9.6-x86_64-linux-gnu)
     stimulus-rails (1.3.4)
       railties (>= 6.0.0)
     stringio (3.1.8)
@@ -512,6 +518,7 @@ DEPENDENCIES
   sentry-ruby
   sqlite3
   stimulus-rails
+  surfguard!
   thruster (= 0.1.23)
   turbo-rails!
   web-push

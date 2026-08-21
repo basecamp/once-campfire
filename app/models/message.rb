@@ -85,22 +85,30 @@ class Message < ApplicationRecord
     recipients.where.not(id: creator_id)
   end
 
-  def update_with_broadcast!(attributes, actor:)
-    effect = transaction do
-      message = self.class.lock.find(id)
-      message.send :authorize_actor!, actor
-      message.update!(attributes)
-      message.send :create_effect!, "broadcast_update", "broadcast_update:#{SecureRandom.uuid}"
+  def update_with_broadcast!(attributes, actor:, authenticated_bot_key: nil)
+    authenticated_bot_key = authenticated_bot_key&.dup
+    User::MutationFence.with(actor.id) do
+      effect = transaction do
+        message = self.class.lock.find(id)
+        locked_actor = message.send :authorize_actor!, actor
+        User.verify_bot_key! locked_actor, authenticated_bot_key if authenticated_bot_key
+        message.update!(attributes)
+        message.send :create_effect!, "broadcast_update", "broadcast_update:#{SecureRandom.uuid}"
+      end
+      effect.perform_safely
+      reload
     end
-    effect.perform_safely
-    reload
   end
 
-  def destroy_with_broadcast!(actor:)
-    transaction do
-      message = self.class.lock.find(id)
-      message.send :authorize_actor!, actor
-      message.destroy!
+  def destroy_with_broadcast!(actor:, authenticated_bot_key: nil)
+    authenticated_bot_key = authenticated_bot_key&.dup
+    User::MutationFence.with(actor.id) do
+      transaction do
+        message = self.class.lock.find(id)
+        locked_actor = message.send :authorize_actor!, actor
+        User.verify_bot_key! locked_actor, authenticated_bot_key if authenticated_bot_key
+        message.destroy!
+      end
     end
     self
   end

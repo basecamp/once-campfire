@@ -51,17 +51,26 @@ class MessagesController < ApplicationController
   end
 
   def update
-    @message.update_with_broadcast!(message_update_params, actor: Current.user)
-    redirect_to room_message_url(@room, @message)
+    @message.update_with_broadcast!(
+      message_update_params, actor: Current.user, authenticated_bot_key:
+    )
+
+    respond_to do |format|
+      format.html { redirect_to room_message_url(@room, @message) }
+      format.json { render :show }
+    end
   rescue ActiveRecord::RecordInvalid => error
     raise unless error.record.is_a?(Message)
 
     @message = error.record
-    render :edit, status: :unprocessable_entity
+    respond_to do |format|
+      format.html { render :edit, status: :unprocessable_entity }
+      format.json { head :unprocessable_content }
+    end
   end
 
   def destroy
-    @message.destroy_with_broadcast! actor: Current.user
+    @message.destroy_with_broadcast! actor: Current.user, authenticated_bot_key:
   end
 
   private

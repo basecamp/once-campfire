@@ -1,6 +1,19 @@
 class Messages::ByBotsController < MessagesController
-  allow_bot_access only: :create
-  before_action :require_bot_key_authentication, only: :create
+  include RawRequestBody
+
+  allow_bot_access only: %i[ index create update destroy ]
+  skip_before_action :set_room, :set_message
+
+  before_action :require_bot_key_authentication
+  before_action :set_room
+  before_action :set_message, only: %i[ update destroy ]
+  before_action :ensure_can_administer, only: %i[ update destroy ]
+  before_action :ensure_body_or_attachment_present, only: :create
+
+  def index
+    @messages = find_paged_messages
+    set_pagination_headers
+  end
 
   def create
     super
@@ -9,28 +22,57 @@ class Messages::ByBotsController < MessagesController
     head :created, location: room_at_message_url(@room, @message)
   end
 
+  def destroy
+    super
+    head :no_content
+  end
+
   private
-    def require_bot_key_authentication
-      head :forbidden unless authenticated_by.bot_key?
+    def set_room
+      @room = Current.user.rooms.find_by(id: params[:room_id])
+
+      head :not_found unless @room
+    end
+
+    def ensure_body_or_attachment_present
+      if params[:attachment].blank? && raw_message_body.blank?
+        head :unprocessable_content
+      end
+    end
+
+    def set_pagination_headers
+      headers["X-Total-Count"] = @room.messages.count.to_s
+
+      if next_page = next_page_params
+        headers["Link"] = %(<#{room_bot_messages_url(@room, **next_page)}>; rel="next")
+      end
+    end
+
+    def next_page_params
+      if @messages.any?
+        if params[:after].present?
+          { after: @messages.last.id } if @room.messages.after(@messages.last).exists?
+        else
+          { before: @messages.first.id } if @room.messages.before(@messages.first).exists?
+        end
+      end
     end
 
     def message_params
       if params[:attachment]
         params.permit(:attachment).merge(origin: Message::ORIGIN_BOT_API)
       else
-        reading(request.body) { |body| { body:, origin: Message::ORIGIN_BOT_API } }
+        { body: raw_message_body, origin: Message::ORIGIN_BOT_API }
       end
     end
 
-    def reading(io)
-      io.rewind
-      ContentLimits.verify! request.content_length.to_i,
+    def message_update_params
+      { body: raw_message_body }
+    end
+
+    def raw_message_body
+      @raw_message_body ||= raw_request_body(
         maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
-      body = ContentLimits.read(
-        io, maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
       )
-      yield body.force_encoding("UTF-8")
-    ensure
-      io.rewind
     end
 end

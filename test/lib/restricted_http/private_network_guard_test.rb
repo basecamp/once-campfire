@@ -74,11 +74,29 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
     assert_private_ip "64:ff9b::a00:5"       # NAT64 -> 10.0.0.5
   end
 
-  test "private_ip? blocks the complete local-use NAT64 prefix (RFC8215)" do
-    assert_private_ip "64:ff9b:1::a00:1"
-    assert_private_ip "64:ff9b:1::808:808"
+  # The local-use block is refused whole rather than decoded. A Pref64 inside it
+  # can be any length from /32 to /96 and the position is not recoverable from
+  # the address alone (RFC 6052 §2.2), so reading the low 32 bits reads the
+  # wrong octets -- 64:ff9b:1::808:808 only looks like 8.8.8.8 under a /96
+  # reading. The block is never globally routed, so nothing legitimate is lost.
+  test "private_ip? returns true for the whole local-use NAT64 block (RFC8215)" do
+    assert_private_ip "64:ff9b:1::a00:1"    # reads as 10.0.0.1 under a /96
+    assert_private_ip "64:ff9b:1::808:808"  # reads as 8.8.8.8 under a /96
     assert_private_ip "64:ff9b:1:a00:0:100:808:808"
+    assert_private_ip "64:ff9b:1:ffff::1"
     assert_private_ip "64:ff9b:1:ffff:ffff:ffff:ffff:ffff"
+  end
+
+  # SIIT is the third way an IPv4 address rides inside an IPv6 one and the only
+  # one Ruby has no predicate for: ipv4_mapped?, ipv4_compat?, private?,
+  # loopback? and link_local? are all false here. Note the extra group --
+  # ::ffff:0:0:0/96 is not the IPv4-mapped ::ffff:0:0/96, and they do not
+  # overlap -- so this reached the metadata endpoint unrecognised.
+  test "private_ip? returns true for SIIT IPv4-translated addresses (RFC2765)" do
+    assert_private_ip "::ffff:0:169.254.169.254"
+    assert_private_ip "::ffff:0:a9fe:a9fe"        # the same address, hex spelling
+    assert_private_ip "::ffff:0:127.0.0.1"
+    assert_private_ip "::ffff:0:192.168.0.1"
   end
 
   test "private_ip? returns false for NAT64 addresses embedding a public IPv4" do
@@ -113,15 +131,22 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
   end
 
   test "resolve raises Violation for private hostname" do
-    Resolv.stubs(:getaddress).returns("192.168.1.1")
+    Resolv.stubs(:getaddresses).returns([ "192.168.1.1" ])
     assert_raises RestrictedHTTP::Violation do
       RestrictedHTTP::PrivateNetworkGuard.resolve("private.example.com")
     end
   end
 
   test "resolve returns IP for public hostname" do
-    Resolv.stubs(:getaddress).returns("93.184.216.34")
+    Resolv.stubs(:getaddresses).returns([ "93.184.216.34" ])
     assert_equal "93.184.216.34", RestrictedHTTP::PrivateNetworkGuard.resolve("example.com")
+  end
+
+  test "resolve raises Unresolvable, not Violation, when the host resolves to nothing" do
+    Resolv.stubs(:getaddresses).returns([])
+    assert_raises Surfguard::Unresolvable do
+      RestrictedHTTP::PrivateNetworkGuard.resolve("nxdomain.example.com")
+    end
   end
 
   private

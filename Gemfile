@@ -44,6 +44,7 @@ gem "rails_autolink"
 gem "geared_pagination"
 gem "jbuilder"
 gem "net-http-persistent"
+gem "surfguard", github: "basecamp/surfguard" # The SSRF address policy behind RestrictedHTTP
 gem "kredis"
 gem "platform_agent"
 gem "thruster", "= 0.1.23"

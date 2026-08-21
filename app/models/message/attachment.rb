@@ -105,12 +105,7 @@ module Message::Attachment
             )
           end
           locked_creator = User.lock_active! creator
-          if authenticated_bot_key
-            expected_key = locked_creator.bot_key if locked_creator.bot?
-            valid = expected_key && expected_key.bytesize == authenticated_bot_key.bytesize &&
-              ActiveSupport::SecurityUtils.secure_compare(expected_key, authenticated_bot_key)
-            raise User::AuthorizationError, "authenticated bot credential was revoked" unless valid
-          end
+          User.verify_bot_key! locked_creator, authenticated_bot_key if authenticated_bot_key
           yield locked_creator
         end
       end

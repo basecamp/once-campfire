@@ -61,6 +61,75 @@ class ContentFiltersTest < ActionView::TestCase
     assert_equal "Hello World", filtered.to_html
   end
 
+  test "message with a link using an unsafe URI scheme" do
+    message = Message.create! room: rooms(:pets), body: '<div><a href="javascript:alert(1)">x</a></div>', client_message_id: "0015", creator: users(:jason)
+
+    filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
+    assert_no_match /javascript:/, filtered.to_html
+    assert_match /<a>x<\/a>/, filtered.to_html
+  end
+
+  test "message with an event handler attribute on an allowed tag" do
+    message = Message.create! room: rooms(:pets), body: '<div><a href="/x" onmouseover="alert(1)">x</a> <span onclick="alert(2)">y</span></div>', client_message_id: "0015", creator: users(:jason)
+
+    filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
+    assert_no_match /onmouseover/, filtered.to_html
+    assert_no_match /onclick/, filtered.to_html
+    assert_match /<a href="\/x">x<\/a>/, filtered.to_html
+    assert_match /<span>y<\/span>/, filtered.to_html
+  end
+
+  test "message with a data URI link" do
+    message = Message.create! room: rooms(:pets), body: '<div><a href="data:text/html,pwned">x</a></div>', client_message_id: "0015", creator: users(:jason)
+
+    filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
+    assert_no_match /data:/, filtered.to_html
+    assert_match /<a>x<\/a>/, filtered.to_html
+  end
+
+  test "message with a safe link and formatting is preserved" do
+    body = '<div><a href="https://example.com">example</a> <strong>bold</strong> <code>code</code><ul><li>one</li><li>two</li></ul></div>'
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
+
+    filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
+    assert_match /<a href="https:\/\/example\.com">example<\/a>/, filtered.to_html
+    assert_match /<strong>bold<\/strong>/, filtered.to_html
+    assert_match /<code>code<\/code>/, filtered.to_html
+    assert_match /<ul>\s*<li>one<\/li>\s*<li>two<\/li>\s*<\/ul>/, filtered.to_html
+  end
+
+  test "SanitizeAttributes uses an isolated sanitizer rather than the shared ActionText instance" do
+    filter = ContentFilters::SanitizeAttributes.new(ActionText::Content.new("<div>x</div>"))
+
+    isolated = filter.send(:sanitizer)
+    assert_not_same ActionText::ContentHelper.sanitizer, isolated,
+      "must not reuse the process-wide ActionText sanitizer, whose permit scrubber is mutated per call"
+    assert_not_same isolated, filter.send(:sanitizer),
+      "each call must build a fresh sanitizer so concurrent requests never share scrubber state"
+    assert_kind_of ActionText::ContentHelper.sanitizer.class, isolated
+  end
+
+  test "SanitizeAttributes neutralizes unsafe input and preserves benign content on its isolated sanitizer" do
+    body = <<~HTML.squish
+      <div><a href="javascript:alert(1)" onclick="x()">link</a>
+      <a href="data:text/html,pwned">data</a>
+      <span class="cf-twitter-avatar" onmouseover="y()">avatar</span>
+      <img src="https://evil.example/x.svg"> Hey #{mention_attachment_for(:david)}</div>
+    HTML
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
+
+    filtered = ContentFilters::SanitizeAttributes.apply(message.body.body).to_html
+
+    assert_no_match /javascript:/, filtered
+    assert_no_match /data:text\/html/, filtered
+    assert_no_match /onclick/, filtered
+    assert_no_match /onmouseover/, filtered
+    assert_no_match /evil\.example/, filtered
+    assert_match /<span class="cf-twitter-avatar">avatar<\/span>/, filtered
+    assert_match />link</, filtered
+    assert_match /<action-text-attachment sgid="#{users(:david).attachable_sgid}"/, filtered
+  end
+
   test "message with a mention attachment" do
     message = Message.create! room: rooms(:pets), body: "<div>Hey #{mention_attachment_for(:david)}</div>", creator: users(:jason)
 

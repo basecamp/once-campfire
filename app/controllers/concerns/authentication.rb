@@ -205,6 +205,10 @@ module Authentication
       head :forbidden if authenticated_by.bot_key?
     end
 
+    def require_bot_key_authentication
+      head :forbidden unless authenticated_by.bot_key?
+    end
+
     def set_authenticated_by(method)
       @authenticated_by = method.to_s.inquiry
     end

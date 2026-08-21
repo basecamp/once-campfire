@@ -39,6 +39,15 @@ module User::Bot
       active_bots.find_by(id: bot_id, bot_token: bot_token)
     end
 
+    def verify_bot_key!(bot, bot_key)
+      expected_key = bot.bot_key if bot.bot?
+      valid = expected_key && bot_key && expected_key.bytesize == bot_key.bytesize &&
+        ActiveSupport::SecurityUtils.secure_compare(expected_key, bot_key)
+      raise User::AuthorizationError, "authenticated bot credential was revoked" unless valid
+
+      bot
+    end
+
     def generate_bot_token
       SecureRandom.alphanumeric(12)
     end
