@@ -222,7 +222,7 @@ GEM
       logger
     mini_mime (1.1.5)
     minitest (5.26.2)
-    mocha (2.7.1)
+    mocha (3.1.0)
       ruby2_keywords (>= 0.0.5)
     mono_logger (1.1.2)
     multi_json (1.17.0)
