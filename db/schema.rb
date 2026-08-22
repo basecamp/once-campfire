@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
+ActiveRecord::Schema[8.2].define(version: 2026_08_16_124500) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -79,6 +79,17 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
     t.index ["message_id"], name: "index_boosts_on_message_id"
   end
 
+  create_table "bot_action_selections", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.integer "message_id", null: false
+    t.datetime "updated_at", null: false
+    t.integer "user_id", null: false
+    t.json "values", default: [], null: false
+    t.index ["message_id", "user_id"], name: "index_bot_action_selections_on_message_id_and_user_id", unique: true
+    t.index ["message_id"], name: "index_bot_action_selections_on_message_id"
+    t.index ["user_id"], name: "index_bot_action_selections_on_user_id"
+  end
+
   create_table "memberships", force: :cascade do |t|
     t.datetime "connected_at"
     t.integer "connections", default: 0, null: false
@@ -95,6 +106,8 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
   end
 
   create_table "messages", force: :cascade do |t|
+    t.string "bot_action_selection_mode", default: "none", null: false
+    t.json "bot_actions", default: [], null: false
     t.string "client_message_id", null: false
     t.datetime "created_at", null: false
     t.integer "creator_id", null: false
@@ -170,6 +183,8 @@ ActiveRecord::Schema[8.2].define(version: 2025_12_12_154340) do
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "bans", "users"
   add_foreign_key "boosts", "messages"
+  add_foreign_key "bot_action_selections", "messages"
+  add_foreign_key "bot_action_selections", "users"
   add_foreign_key "messages", "rooms"
   add_foreign_key "messages", "users", column: "creator_id"
   add_foreign_key "push_subscriptions", "users"

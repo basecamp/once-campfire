@@ -56,6 +56,12 @@ module User::Bot
     webhook.deliver(message)
   end
 
+  def deliver_action_webhook(message, acting_user, value, selected, event_id:)
+    raise Webhook::DeliveryError, "Bot webhook is no longer configured" unless webhook
+
+    webhook.deliver_action(message, acting_user, value, selected, event_id: event_id)
+  end
+
 
   private
     def update_webhook_url!(url)

@@ -11,6 +11,9 @@ expect, including:
 - @mentions
 - API, with support for bot integrations
 
+See the [bot integration guide](docs/bots.md) for sending and updating messages,
+receiving webhooks, and adding interactive actions.
+
 ## Running your own Campfire instance
 
 Campfire's Docker image contains everything needed for a fully-functional,
