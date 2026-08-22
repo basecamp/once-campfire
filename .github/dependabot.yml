@@ -23,9 +23,9 @@ updates:
       exclude:
         - "brakeman"
 
-  - package-ecosystem: docker
-    directory: "/"
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
+  # No docker ecosystem. Our base image tag is a build arg
+  # (`FROM ruby:$RUBY_VERSION-slim`), which the updater cannot read, so the
+  # entry only ever matched nothing — worse than no entry, because it looked
+  # like coverage. Ruby base image bumps are a manual, reviewed step here, as
+  # they are across the rest of the fleet. Keep Dockerfile, Dockerfile-export
+  # and .ruby-version on the same version by hand.
