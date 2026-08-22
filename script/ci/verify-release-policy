@@ -1,0 +1,1042 @@
+#!/usr/bin/env ruby
+
+require "base64"
+require "open3"
+require "pathname"
+require "rbconfig"
+require "ripper"
+require "yaml"
+
+root = Pathname(ARGV.fetch(0, File.expand_path("../..", __dir__))).expand_path
+digest_source = "sha256:[0-9a-f]{64}"
+digest = /#{digest_source}/
+errors = []
+required_executables = %w[
+  bin/boot
+  bin/start-web
+  script/admin/prepare-backup
+  script/admin/verify-backup
+  script/admin/archive-backup
+  script/admin/extract-backup
+  script/admin/install-backup
+  script/admin/generate-backup-encryption-key
+  script/ci/validate-container-image
+  script/ci/verify-image-recovery
+  script/ci/verify-release-policy
+  script/ci/verify-javascript
+]
+
+workflow_triggers = lambda do |workflow|
+  workflow&.fetch("on", nil) || workflow&.fetch(true, nil) || {}
+end
+
+workflow_steps = lambda do |workflow|
+  workflow&.fetch("jobs", {})&.values&.flat_map { _1.fetch("steps", []) } || []
+end
+
+workflow_step = lambda do |workflow, name|
+  workflow_steps.call(workflow).find { _1["name"] == name }
+end
+
+workflow_branch_scopes = lambda do |workflow|
+  triggers = workflow_triggers.call(workflow)
+  %w[ pull_request push ].filter_map do |event|
+    branches = triggers.dig(event, "branches")
+    Array(branches).sort if branches
+  end.sort
+end
+
+pinned_image = ->(reference) { reference.match?(/\A[^\s@]+@#{digest_source}\z/) }
+strip_yaml_value = ->(value) { value.sub(/\s+#.*\z/, "").strip.delete_prefix('"').delete_suffix('"') }
+stale_backup_references = [ ".tar.gz", ".authentication.json", "BACKUP_AUTHENTICATION_FILE" ]
+reject_stale_backup_references = lambda do |source, relative|
+  stale_backup_references.each do |reference|
+    if source.include?(reference)
+      errors << "#{relative}: stale plaintext backup reference is forbidden: #{reference}"
+    end
+  end
+end
+validate_ci_backup_credentials = lambda do |source, relative|
+  assignment = lambda do |name|
+    source.match(/^\s*#{Regexp.escape(name)}=(['"])([^'"]+)\1\s*$/)&.[](2)
+  end
+  authentication_key = assignment.call("backup_authentication_key")
+  encryption_key = assignment.call("backup_encryption_key")
+  encryption_key_id = assignment.call("backup_encryption_key_id")
+  unless authentication_key && encryption_key && encryption_key_id
+    errors << "#{relative}: deterministic CI backup credentials are missing"
+    next
+  end
+
+  begin
+    decoded_authentication_key = Base64.strict_decode64(authentication_key)
+    decoded_encryption_key = Base64.strict_decode64(encryption_key)
+  rescue ArgumentError
+    errors << "#{relative}: CI backup credentials must use strict Base64"
+    next
+  end
+  unless decoded_authentication_key.bytesize >= 32 && decoded_encryption_key.bytesize == 32
+    errors << "#{relative}: CI backup authentication and encryption keys must contain at least 32 and exactly 32 bytes respectively"
+  end
+  if decoded_authentication_key == decoded_encryption_key
+    errors << "#{relative}: CI backup encryption key must be separate from its authentication key"
+  end
+  unless encryption_key_id.match?(/\Aci-[A-Za-z0-9][A-Za-z0-9._-]{0,60}\z/)
+    errors << "#{relative}: CI backup encryption key ID is invalid"
+  end
+end
+
+dockerfiles = Dir[root.join("Dockerfile*")].sort.map { Pathname(_1) }
+errors << "Repository has no Dockerfile" if dockerfiles.empty?
+ruby_version = root.join(".ruby-version").read.strip if root.join(".ruby-version").file?
+dockerfiles.each do |path|
+  source = path.read
+  relative = path.relative_path_from(root)
+  syntax = source.lines.find { _1.match?(/\A#\s*syntax\s*=/) }.to_s.strip
+  unless syntax.match?(/\A#\s*syntax\s*=\s*docker\/dockerfile:1@#{digest_source}\z/)
+    errors << "#{relative}: Dockerfile frontend must use a verified sha256 manifest digest"
+  end
+  if ruby_version && !source.include?("docker.io/library/ruby:#{ruby_version}-slim@sha256:")
+    errors << "#{relative}: Ruby base tag must match .ruby-version and use a sha256 digest"
+  end
+  if relative.to_s == "Dockerfile"
+    bundle_without_references = source.each_line.reject { _1.lstrip.start_with?("#") }
+      .select { _1.match?(/\bBUNDLE_WITHOUT\b/) }
+    bundle_without_assignments = bundle_without_references.filter_map do |line|
+      match = line.match(/^\s*(?:ENV\s+)?BUNDLE_WITHOUT=(?:"([^"]*)"|'([^']*)'|([^\s\\]+))/)
+      match&.captures&.compact&.first
+    end
+    unless bundle_without_references.one? && bundle_without_assignments == [ "development:test" ]
+      errors << "#{relative}: production bundle must exclude development and test dependencies"
+    end
+  end
+
+  stages = []
+  source.each_line.with_index(1) do |line, line_number|
+    next unless match = line.match(/\AFROM(?:\s+--\S+)*\s+(\S+)(?:\s+AS\s+(\S+))?/i)
+
+    reference, stage = match.captures
+    unless stages.include?(reference.downcase) || reference.match?(/@#{digest_source}\z/)
+      errors << "#{relative}:#{line_number}: external base image is not digest-pinned"
+    end
+    stages << stage.downcase if stage
+  end
+end
+
+workflow_sources = {}
+workflow_documents = {}
+Dir[root.join(".github/workflows/*.{yml,yaml}")].sort.each do |path_string|
+  path = Pathname(path_string)
+  relative = path.relative_path_from(root)
+  source = path.read
+  workflow_sources[path.basename.to_s] = source
+  begin
+    workflow = YAML.safe_load(source, aliases: false)
+    unless workflow.is_a?(Hash)
+      errors << "#{relative}: workflow must parse as a YAML mapping"
+      workflow = {}
+    end
+  rescue Psych::Exception => error
+    errors << "#{relative}: workflow YAML is invalid: #{error.message}"
+    workflow = {}
+  end
+  workflow_documents[path.basename.to_s] = workflow
+  if source.match?(%r{script/(?:admin/(?:archive|extract)-backup|ci/verify-image-recovery)})
+    reject_stale_backup_references.call(source, relative)
+  end
+  image_variables = source.each_line.filter_map do |line|
+    match = line.match(/^\s*(BUILDKIT_IMAGE|SBOM_SCANNER_IMAGE|LEGACY_IMAGE):\s*(.+?)\s*$/)
+    [ match[1], strip_yaml_value.call(match[2]) ] if match
+  end.to_h
+  resolve_image = lambda do |value|
+    value = strip_yaml_value.call(value)
+    if match = value.match(/\A\$\{\{\s*env\.([A-Z][A-Z0-9_]*)\s*\}\}\z/)
+      image_variables.fetch(match[1], value)
+    else
+      value
+    end
+  end
+
+  run_block_indent = nil
+  source.each_line.with_index(1) do |line, line_number|
+    indentation = line[/\A */].length
+    if run_block_indent
+      next if line.strip.empty? || indentation > run_block_indent
+
+      run_block_indent = nil
+    end
+    if line.match?(/^\s*run:\s*[|>]\s*$/)
+      run_block_indent = indentation
+      next
+    end
+
+    if match = line.match(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/)
+      reference = match[1]
+      unless reference.start_with?("./") || reference.match?(/@[0-9a-f]{40}\z/)
+        errors << "#{relative}:#{line_number}: action is not pinned to a full commit"
+      end
+    elsif match = line.match(/^\s*image:\s*(.+?)\s*$/)
+      reference = resolve_image.call(match[1])
+      unless pinned_image.call(reference)
+        errors << "#{relative}:#{line_number}: workflow image is not digest-pinned"
+      end
+    end
+
+    if match = line.match(/^\s*driver-opts:\s*image=(.+?)\s*$/)
+      reference = resolve_image.call(match[1])
+      unless pinned_image.call(reference)
+        errors << "#{relative}:#{line_number}: BuildKit driver image is not digest-pinned"
+      end
+    end
+    if match = line.match(/^\s*sbom:\s*generator=(.+?)\s*$/)
+      reference = resolve_image.call(match[1])
+      unless pinned_image.call(reference)
+        errors << "#{relative}:#{line_number}: SBOM scanner image is not digest-pinned"
+      end
+    end
+    if line.include?("zizmor: ignore[unpinned-images]")
+      errors << "#{relative}:#{line_number}: unpinned-image suppression is forbidden"
+    end
+  end
+
+  image_variables.each do |name, reference|
+    unless pinned_image.call(reference)
+      errors << "#{relative}: #{name} is not digest-pinned"
+    end
+  end
+
+  buildx_actions = source.scan(%r{uses:\s*docker/setup-buildx-action@[0-9a-f]{40}}).length
+  buildkit_drivers = source.scan(/^\s*driver-opts:\s*image=/).length
+  if buildx_actions != buildkit_drivers
+    errors << "#{relative}: every Buildx action must select the repository's digest-pinned BuildKit image"
+  end
+end
+
+if root.join("bin/release").file?
+  dockerignore = root.join(".dockerignore")
+  if dockerignore.file?
+    dockerignore_source = dockerignore.read
+    [ "/.git/", "/bin/release", "/script/ci/", "/test/" ].each do |entry|
+      errors << ".dockerignore: runtime build context must exclude #{entry}" unless dockerignore_source.lines.map(&:strip).include?(entry)
+    end
+  else
+    errors << ".dockerignore: runtime build context policy is missing"
+  end
+
+  container = workflow_sources["container.yml"]
+  application_ci = workflow_sources["ci.yml"]
+  publish = workflow_sources["publish-image.yml"]
+  container_workflow = workflow_documents["container.yml"]
+  application_ci_workflow = workflow_documents["ci.yml"]
+  publish_workflow = workflow_documents["publish-image.yml"]
+  errors << ".github/workflows/container.yml: required container validation workflow is missing" unless container
+  errors << ".github/workflows/ci.yml: required application CI workflow is missing" unless application_ci
+  errors << ".github/workflows/publish-image.yml: required release image workflow is missing" unless publish
+
+  if application_ci
+    relative = ".github/workflows/ci.yml"
+    [
+      "script/ci/verify-release-policy",
+      "axe-4.12.1.min.js.sha256",
+      "script/ci/verify-javascript",
+      "geckodriver-v0.37.1-linux64.tar.gz",
+      "e815130ea95983e162ae91843b48d3a3ce991735635fce83a647afde21e09f7e"
+    ].each do |token|
+      errors << "#{relative}: required local policy gate is missing: #{token}" unless application_ci.include?(token)
+    end
+    manual_step = workflow_step.call(application_ci_workflow, "Verify manual AT record template")
+    if !manual_step&.fetch("run", "")&.include?("ruby test/support/accessibility/verify_manual_at_template.rb")
+      errors << "#{relative}: manual AT template structure validation is missing"
+    elsif manual_step.key?("if")
+      errors << "#{relative}: manual AT template structure validation must run unconditionally"
+    end
+    if application_ci.include?("node --check")
+      errors << "#{relative}: JavaScript parsing must use script/ci/verify-javascript"
+    end
+    if application_ci.include?("bundler-cache:")
+      errors << "#{relative}: shared dependency caching is forbidden in artifact-producing CI"
+    end
+  end
+
+  if container
+    relative = ".github/workflows/container.yml"
+    required = [
+      "pull_request:",
+      "push:",
+      "permissions: {}",
+      "name: Container validation (${{ matrix.arch }})",
+      'runs-on: ${{ matrix.runner }}',
+      "ubuntu-24.04-arm",
+      "docker/setup-buildx-action@",
+      '[[ "$host_architecture" == "$EXPECTED_HOST_ARCHITECTURE" ]]',
+      'BUILDKIT_MULTI_PLATFORM=1',
+      'BUILDKIT_MULTI_PLATFORM=0',
+      'SOURCE_DATE_EPOCH=$source_date_epoch',
+      "--provenance=mode=max",
+      "--sbom=\"generator=$SBOM_SCANNER_IMAGE\"",
+      "--provenance=false",
+      "--sbom=false",
+      "--output \"type=oci,dest=",
+      "--output \"type=docker,dest=",
+      "docker load --input",
+      "script/ci/validate-container-image",
+      "script/ci/verify-image-recovery",
+      "TARGET_MANIFEST_PATH",
+      "CONTAINER_VALIDATION_EVIDENCE",
+      "verify-receipts:",
+      "name: Verify exact architecture receipts",
+      'needs: validate',
+      'if: ${{ always() }}',
+      'name: Require successful validation matrix',
+      'VALIDATE_RESULT: ${{ needs.validate.result }}',
+      'image_inspection="$directory/image-inspect.json"',
+      'sbom="$directory/sbom.spdx.json"',
+      'buildkit_provenance="$directory/buildkit-provenance.json"',
+      '"native_host_architecture": "passed"',
+      'run_receipt="$directory/run.json"',
+      'upgrade_receipt="$directory/upgrade-recovery.json"',
+      "run_receipt_sha256",
+      "upgrade_receipt_sha256",
+      "name: container-evidence-${{ matrix.arch }}-${{ github.run_attempt }}",
+      "retention-days: 30"
+    ]
+    required.each do |token|
+      errors << "#{relative}: required container control is missing: #{token}" unless container.include?(token)
+    end
+    unless container.scan("docker buildx build").length == 2 &&
+        container.scan('docker buildx build "${common[@]}"').length == 2
+      errors << "#{relative}: runtime and OCI evidence must use exactly two config-matched Buildx builds"
+    end
+    matrix_targets = container_workflow.fetch("jobs", {}).values.flat_map do |job|
+      Array(job.dig("strategy", "matrix", "include"))
+    end.filter_map do |entry|
+      if entry.is_a?(Hash) && entry["runner"] && entry["host_architecture"] && entry["arch"] && entry["platform"]
+        [ entry["runner"], entry["host_architecture"], entry["arch"], entry["platform"] ]
+      end
+    end.sort
+    expected_targets = [
+      [ "ubuntu-24.04", "x86_64", "amd64", "linux/amd64" ],
+      [ "ubuntu-24.04-arm", "aarch64", "arm64", "linux/arm64" ]
+    ]
+    unless matrix_targets == expected_targets
+      errors << "#{relative}: validation matrix must contain exactly linux/amd64 and linux/arm64"
+    end
+    aggregate_receipts = container_workflow.dig("jobs", "verify-receipts")
+    unless aggregate_receipts.is_a?(Hash) &&
+        aggregate_receipts["name"] == "Verify exact architecture receipts" &&
+        aggregate_receipts["needs"] == "validate" &&
+        aggregate_receipts["if"] == "${{ always() }}"
+      errors << "#{relative}: aggregate verify-receipts must always run after the complete native architecture matrix"
+    end
+    receipt_downloads = Array(aggregate_receipts&.fetch("steps", nil)).select do |step|
+      step["name"].to_s.start_with?("Download ")
+    end
+    aggregate_step = workflow_step.call(container_workflow, "Verify exact amd64 and arm64 receipt set")
+    validation_gate = workflow_step.call(container_workflow, "Require successful validation matrix")
+    unless receipt_downloads.length == 2 &&
+        receipt_downloads.all? { _1["if"] == "${{ always() }}" } &&
+        aggregate_step&.fetch("if", nil) == "${{ always() }}" &&
+        validation_gate&.fetch("if", nil) == "${{ always() }}" &&
+        validation_gate&.dig("env", "VALIDATE_RESULT") == "${{ needs.validate.result }}" &&
+        validation_gate&.fetch("run", "").include?('[[ "$VALIDATE_RESULT" != success ]]')
+      errors << "#{relative}: aggregate receipts must be inspected before explicitly requiring validate success"
+    end
+    aggregate_run = aggregate_step&.fetch("run", "").to_s
+    [
+      'image_inspection_sha256=$(sha256sum "$image_inspection"',
+      '.image_inspection_sha256 == $image_inspection_sha256',
+      '.predicateType == "https://spdx.dev/Document"',
+      '.predicateType == "https://slsa.dev/provenance/v1"',
+      '.op.platform.OS == "linux" and .op.platform.Architecture == $architecture'
+    ].each do |control|
+      unless aggregate_run.include?(control)
+        errors << "#{relative}: aggregate architecture evidence validation is missing: #{control}"
+      end
+    end
+    unless aggregate_run.scan('.subject[0].digest == {"sha256": $digest}').length >= 2
+      errors << "#{relative}: aggregate SBOM and provenance must each bind one exact architecture digest"
+    end
+    if application_ci
+      expected_scopes = [ %w[ main release/** ], %w[ main release/** ] ].sort
+      application_scopes = workflow_branch_scopes.call(application_ci_workflow)
+      container_scopes = workflow_branch_scopes.call(container_workflow)
+      unless application_scopes == expected_scopes && container_scopes == application_scopes
+        errors << "#{relative}: push and pull-request branches must match application CI (main and release/**)"
+      end
+    end
+    forbidden = [
+      "pull_request_target:", "docker/login-action@", "packages: write", "id-token: write",
+      "push: true", "--push", "type=registry", "imagetools create", "continue-on-error: true"
+    ]
+    forbidden.each do |token|
+      errors << "#{relative}: pull-request validation may not contain #{token}" if container.include?(token)
+    end
+    unless container.match?(/LEGACY_IMAGE:\s*ghcr\.io\/basecamp\/once-campfire@#{digest_source}/)
+      errors << "#{relative}: legacy recovery image must be an explicit sha256 digest"
+    end
+  end
+
+  if publish
+    relative = ".github/workflows/publish-image.yml"
+    validate_ci_backup_credentials.call(publish, relative)
+    triggers = workflow_triggers.call(publish_workflow)
+    unless triggers.is_a?(Hash) && triggers.keys == [ "workflow_dispatch" ]
+      errors << "#{relative}: release publication must have only the workflow_dispatch trigger"
+    end
+    dispatch_inputs = triggers.dig("workflow_dispatch", "inputs") || {}
+    unless dispatch_inputs.keys.sort == %w[ operation_nonce release_sha release_tag ] &&
+        dispatch_inputs.values.all? { _1.is_a?(Hash) && _1["required"] == true && _1["type"] == "string" }
+      errors << "#{relative}: workflow_dispatch inputs must be exact required strings for release_tag, release_sha, and operation_nonce"
+    end
+    expected_run_name = "Campfire release ${{ inputs.release_tag }} ${{ inputs.release_sha }} ${{ inputs.operation_nonce }}"
+    unless publish_workflow["run-name"] == expected_run_name
+      errors << "#{relative}: run-name must bind the exact release tag, SHA, and operation nonce"
+    end
+    %w[ build manifest ].each do |job_name|
+      unless publish_workflow.dig("jobs", job_name, "environment") == "release"
+        errors << "#{relative}: #{job_name} must use the protected release environment"
+      end
+    end
+    unless publish_workflow.dig("jobs", "manifest", "env", "OPERATION_NONCE") ==
+        "${{ inputs.operation_nonce }}"
+      errors << "#{relative}: manifest job must bind OPERATION_NONCE to the exact dispatch input"
+    end
+    authorization_step = workflow_step.call(publish_workflow, "Validate release authorization")
+    authorization_env = authorization_step&.fetch("env", {}) || {}
+    expected_authorization_env = {
+      "OPERATION_NONCE" => "${{ inputs.operation_nonce }}",
+      "RELEASE_TAG" => "${{ inputs.release_tag }}",
+      "RELEASE_SHA" => "${{ inputs.release_sha }}"
+    }
+    unless authorization_env == expected_authorization_env &&
+        authorization_step&.fetch("run", "")&.include?('[[ "$OPERATION_NONCE" =~ ^[0-9a-f]{64}$ ]]')
+      errors << "#{relative}: parsed release authorization must validate the exact operation nonce input"
+    end
+    architecture_download = workflow_step.call(publish_workflow, "Download architecture evidence")
+    unless architecture_download&.fetch("with", {}) == {
+        "pattern" => "architecture-evidence-*-${{ github.run_attempt }}",
+        "path" => "${{ runner.temp }}/architecture-evidence"
+      }
+      errors << "#{relative}: architecture evidence download contract is invalid"
+    end
+    architecture_assembly = workflow_step.call(publish_workflow, "Assemble flat architecture evidence")
+    architecture_assembly_run = architecture_assembly&.fetch("run", "").to_s
+    [
+      "source_files=(", 'cp "$source_directory/recovery.json"',
+      'cp "$source_directory/upgrade-recovery.json"',
+      'cp "$source_directory/container-validation.json"',
+      'cp "$source_directory/image-inspect.json"',
+      'cp "$source_directory/sbom.spdx.json"',
+      'cp "$source_directory/buildkit-provenance.json"',
+      'cp "$source_directory/parent-provenance.bundle.jsonl"',
+      'cp "$source_directory/runnable-provenance.bundle.jsonl"',
+      'cp "$source_directory/parent-provenance-verification.json"',
+      'cp "$source_directory/runnable-provenance-verification.json"'
+    ].each do |control|
+      unless architecture_assembly_run.include?(control)
+        errors << "#{relative}: architecture evidence assembly is missing: #{control}"
+      end
+    end
+    architecture_receipt = workflow_step.call(publish_workflow, "Record architecture evidence receipt")
+    architecture_receipt_run = architecture_receipt&.fetch("run", "").to_s
+    unless architecture_receipt_run.include?(
+      '--arg inspection_sha256 "$(sha256sum "$evidence_directory/image-inspect.json"'
+    ) && !architecture_receipt_run.include?(
+      '--arg inspection_sha256 "$(sha256sum "$evidence_directory/container-validation.json"'
+    )
+      errors << "#{relative}: image inspection hash must bind the retained image-inspect.json"
+    end
+    manifest_step = workflow_step.call(publish_workflow, "Create and sign digest-bound manifest")
+    manifest_run = manifest_step&.fetch("run", "").to_s
+    [
+      'image_inspection="$evidence_directory/image-inspect-$arch.json"',
+      'image_inspection_sha256=$(sha256sum "$image_inspection"',
+      '.image_inspection_sha256 == $image_inspection_sha256',
+      '.predicateType == "https://spdx.dev/Document"',
+      '.predicateType == "https://slsa.dev/provenance/v1"',
+      '.op.platform.OS == "linux" and .op.platform.Architecture == $architecture'
+    ].each do |control|
+      unless manifest_run.include?(control)
+        errors << "#{relative}: exact architecture evidence validation is missing: #{control}"
+      end
+    end
+    unless manifest_run.scan('.subject[0].digest == {"sha256": $digest}').length >= 2
+      errors << "#{relative}: SBOM and BuildKit provenance must each bind one exact architecture digest"
+    end
+    ghcr_probe = workflow_step.call(publish_workflow, "Prove GHCR rejects disposable alias overwrite")
+    ghcr_probe_run = ghcr_probe&.fetch("run", "").to_s
+    [
+      'probe_reference="${canonical_image}:release-mutability-control-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${OPERATION_NONCE:0:16}"',
+      'absence_status=$?', 'manifest[[:space:]]unknown|not[[:space:]]found',
+      '"${canonical_image}@${seed_digest}"', '"${canonical_image}@${conflict_digest}"',
+      'GHCR permits alias overwrite; immutable release aliases are unsafe',
+      'transient_pattern=', 'immutable_pattern=', 'for verification in 1 2'
+    ].each do |control|
+      unless ghcr_probe_run.include?(control)
+        errors << "#{relative}: non-destructive GHCR immutability gate is missing: #{control}"
+      end
+    end
+    if ghcr_probe_run.include?("RELEASE_TAG") || ghcr_probe_run.include?(":latest")
+      errors << "#{relative}: GHCR mutability probes may target only a disposable operation-bound alias"
+    end
+    evidence_step = workflow_step.call(publish_workflow, "Record release evidence")
+    evidence_run = evidence_step&.fetch("run", "").to_s
+    [
+      '--arg operation_nonce "$OPERATION_NONCE"',
+      "format_version: 1",
+      "operation_nonce: $operation_nonce",
+      "evidence_files:",
+      "promotion_requirements_sha256:"
+    ].each do |control|
+      unless evidence_run.include?(control)
+        errors << "#{relative}: parsed release evidence step is missing: #{control}"
+      end
+    end
+    upload_step = workflow_step.call(publish_workflow, "Upload release evidence")
+    upload_with = upload_step&.fetch("with", {}) || {}
+    unless upload_with["name"] == "release-evidence-${{ github.run_attempt }}" &&
+        upload_with["retention-days"] == 90 && upload_with["if-no-files-found"] == "error"
+      errors << "#{relative}: release evidence upload contract is invalid"
+    end
+    upload_paths = upload_with["path"].to_s.lines.map(&:strip).reject(&:empty?)
+    release_evidence_policy_files = %w[
+      release-evidence.json index-provenance.bundle.jsonl index-provenance-verification.json
+      promotion-requirements.json recovery-amd64.json upgrade-recovery-amd64.json
+      container-validation-amd64.json image-inspect-amd64.json sbom-amd64.spdx.json
+      buildkit-provenance-amd64.json
+      parent-provenance-amd64.bundle.jsonl runnable-provenance-amd64.bundle.jsonl
+      parent-provenance-verification-amd64.json runnable-provenance-verification-amd64.json
+      recovery-arm64.json upgrade-recovery-arm64.json container-validation-arm64.json image-inspect-arm64.json
+      sbom-arm64.spdx.json buildkit-provenance-arm64.json parent-provenance-arm64.bundle.jsonl
+      runnable-provenance-arm64.bundle.jsonl parent-provenance-verification-arm64.json
+      runnable-provenance-verification-arm64.json
+    ]
+    expected_upload_paths = release_evidence_policy_files.map do |name|
+      "${{ runner.temp }}/release-evidence/#{name}"
+    end
+    unless upload_paths.sort == expected_upload_paths.sort && upload_paths.length == expected_upload_paths.length
+      errors << "#{relative}: release evidence upload must be the exact flat inventory"
+    end
+    required = [
+      "GH_HOST: github.com",
+      "linux/amd64",
+      "linux/arm64",
+      "BUILDKIT_MULTI_PLATFORM=1",
+      "SOURCE_DATE_EPOCH=${{ steps.vars.outputs.source_date_epoch }}",
+      "subject-digest: ${{ steps.image.outputs.runnable_digest }}",
+      '--repo "$GITHUB_REPOSITORY"',
+      '--cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main"',
+      "--cert-oidc-issuer https://token.actions.githubusercontent.com",
+      "--signer-workflow \"$GITHUB_REPOSITORY/.github/workflows/publish-image.yml\"",
+      '--bundle "$evidence_directory/${kind}-provenance.bundle.jsonl"',
+      '--bundle "$evidence_directory/index-provenance.bundle.jsonl"',
+      "--cert-identity",
+      '--signer-digest "$RELEASE_SHA"',
+      "--source-ref refs/heads/main",
+      "--source-digest \"$RELEASE_SHA\"",
+      "--predicate-type https://slsa.dev/provenance/v1",
+      "--deny-self-hosted-runners",
+      "script/ci/validate-container-image",
+      "script/ci/verify-image-recovery",
+      "name: Download architecture evidence",
+      "name: Assemble flat architecture evidence",
+      "architecture-evidence-*-${{ github.run_attempt }}",
+      "TARGET_MANIFEST_PATH",
+      "CONTAINER_VALIDATION_EVIDENCE",
+      "script/ci/verify-javascript",
+      "axe-4.12.1.min.js.sha256",
+      "test/support/accessibility/verify_manual_at_template.rb",
+      "script/admin/archive-backup",
+      "script/admin/extract-backup",
+      '--env "BACKUP_ENCRYPTION_KEY=$backup_encryption_key"',
+      '--env "BACKUP_ENCRYPTION_KEY_ID=$backup_encryption_key_id"',
+      ".campfire-backup",
+      "artifact_sha256",
+      "recovery_receipts:",
+      "upgrade_receipts:",
+      "signed_provenance:",
+      "promotion_requirements:",
+      "promotion_requirements=$(jq -cS -n",
+      "evidence_file_names=(",
+      "required_release_driver_evidence:",
+      "repository no-overwrite evidence from an operation-bound disposable alias",
+      "dual Object Lock anchor receipts",
+      "name: release-evidence-${{ github.run_attempt }}",
+      "retention-days: 90"
+    ]
+    required.each do |token|
+      errors << "#{relative}: required release evidence control is missing: #{token}" unless publish.include?(token)
+    end
+    release_environment_job = publish_workflow.dig("jobs", "release-environment")
+    release_build_job = publish_workflow.dig("jobs", "build")
+    release_manifest_job = publish_workflow.dig("jobs", "manifest")
+    environment_step = Array(release_environment_job&.fetch("steps", nil)).find do |step|
+      step["name"] == "Verify required reviewers and deployment branch policy"
+    end
+    environment_source = environment_step&.fetch("run", "").to_s
+    unless release_environment_job.is_a?(Hash) &&
+        release_environment_job["if"] == "github.event_name == 'workflow_dispatch'" &&
+        release_environment_job["permissions"] == { "contents" => "read" } &&
+        release_environment_job["needs"] == "verify" &&
+        environment_step&.dig("env", "GH_TOKEN") == "${{ github.token }}"
+      errors << "#{relative}: release environment preflight must be dispatch-only and read-only"
+    end
+    [
+      "repos/$GITHUB_REPOSITORY/environments/release",
+      "required_reviewers", '.prevent_self_review == true', "deployment-branch-policies",
+      '.branch_policies[0].name == "main"', '.branch_policies[0].type == "branch"'
+    ].each do |token|
+      unless environment_source.include?(token)
+        errors << "#{relative}: release environment preflight is missing: #{token}"
+      end
+    end
+    unless Array(release_build_job&.fetch("needs", nil)).sort == %w[ release-environment verify ] &&
+        release_build_job&.fetch("environment", nil) == "release" &&
+        release_manifest_job&.fetch("environment", nil) == "release"
+      errors << "#{relative}: registry-writing jobs must depend on the protected release environment preflight"
+    end
+    if publish.include?("--no-public-good")
+      errors << "#{relative}: Sigstore public-good attestations must permit public-good verification"
+    end
+    current_image_stop_timeout = publish[
+      /docker stop --timeout ([0-9]+) "\$source_container"/, 1
+    ]&.to_i
+    unless current_image_stop_timeout && current_image_stop_timeout >= 70
+      errors << "#{relative}: current-image stop timeout must be at least 70 seconds"
+    end
+    unless publish.include?('archive_json=$(docker run --rm --user "$(id -u):$(id -g)" --group-add 1000')
+      errors << "#{relative}: release archive must use the host identity with Campfire runtime group access"
+    end
+    matrix_pairs = publish_workflow.fetch("jobs", {}).values.flat_map do |job|
+      Array(job.dig("strategy", "matrix", "include"))
+    end.filter_map do |entry|
+      [ entry["arch"], entry["platform"] ] if entry.is_a?(Hash) && entry["arch"] && entry["platform"]
+    end.sort
+    unless matrix_pairs == [ [ "amd64", "linux/amd64" ], [ "arm64", "linux/arm64" ] ]
+      errors << "#{relative}: release matrix must contain exactly linux/amd64 and linux/arm64"
+    end
+    if workflow_triggers.call(publish_workflow).key?("pull_request")
+      errors << "#{relative}: registry-writing release workflow must not run for pull requests"
+    end
+    if publish.include?("docker build --tag campfire-pre-oidc")
+      errors << "#{relative}: legacy recovery may not rebuild an unpinned source image"
+    end
+    unless publish.match?(/LEGACY_IMAGE:\s*ghcr\.io\/basecamp\/once-campfire@#{digest_source}/)
+      errors << "#{relative}: legacy recovery image must be an explicit sha256 digest"
+    end
+    manual_step = workflow_step.call(publish_workflow, "Verify manual AT record template structure")
+    if !manual_step&.fetch("run", "")&.include?("ruby test/support/accessibility/verify_manual_at_template.rb")
+      errors << "#{relative}: protected publication must validate the manual AT template structure"
+    elsif manual_step.key?("if")
+      errors << "#{relative}: protected publication manual AT template validation must be unconditional"
+    end
+    if publish.include?("node --check")
+      errors << "#{relative}: JavaScript parsing must use script/ci/verify-javascript"
+    end
+  end
+
+  helper = root.join("script/ci/validate-container-image")
+  recovery = root.join("script/ci/verify-image-recovery")
+  unless helper.file? && recovery.file?
+    errors << "Container validation and recovery helpers are required"
+  else
+    helper_source = helper.read
+    [
+      "OCI_ARCHIVE", "ATTESTATION_IMAGE", "org.opencontainers.image.revision",
+      "https://spdx.dev/Document", "https://slsa.dev/provenance/",
+      "buildConfig.llbDefinition", "request_limit_bytes=106954752", "Transfer-Encoding: chunked",
+      '--data-binary "@$oversized_request"', "boot_health",
+      '[[ "$oci_config_digest" == "$config_digest" ]]',
+      "validated_manifest_digest", "config-digest-matched-dual-build", "RUNTIME_ARCHIVE",
+      "image-inspect.json", "REGISTRY_TOKEN", "/blobs/$statement_digest",
+      '.subject[0].digest == {"sha256": $digest}'
+    ].each do |token|
+      errors << "script/ci/validate-container-image: missing evidence check: #{token}" unless helper_source.include?(token)
+    end
+    if helper_source.include?("{{json .SBOM}}") || helper_source.include?("{{json .Provenance}}")
+      errors << "script/ci/validate-container-image: subject-less registry attestation summaries are forbidden"
+    end
+    recovery_source = recovery.read
+    reject_stale_backup_references.call(recovery_source, "script/ci/verify-image-recovery")
+    validate_ci_backup_credentials.call(recovery_source, "script/ci/verify-image-recovery")
+    unless recovery_source.include?('archive_json=$(docker_run --rm --user "$(id -u):$(id -g)" --group-add 1000')
+      errors << "script/ci/verify-image-recovery: archive must use the host identity with Campfire runtime group access"
+    end
+    unless recovery_source.scan('--group-add "$(id -g)"').length == 5
+      errors << "script/ci/verify-image-recovery: guarded-upgrade archive consumers must add the host group"
+    end
+    recovery_lines = recovery_source.lines
+    authorization_commands = recovery_lines.each_index.filter_map do |line_index|
+      next unless recovery_lines[line_index].include?("bin/boot authorize-upgrade")
+
+      command_start = line_index.downto(0).find do |candidate|
+        recovery_lines[candidate].lstrip.start_with?("docker_run --rm ")
+      end
+      recovery_lines[command_start..line_index].join if command_start
+    end
+    unless authorization_commands.length == 4 &&
+        authorization_commands.all? { _1.include?('"${runtime_env[@]}"') }
+      errors << "script/ci/verify-image-recovery: guarded-upgrade authorization must pass the runtime environment"
+    end
+    archive_mutation_ruby = recovery_source[
+      /^\s+-rcampfire_backup\/authentication .* -e '\n(?<source>.*?)^\s+'\s*$/m, :source
+    ]
+    unless archive_mutation_ruby && Ripper.sexp(archive_mutation_ruby)
+      errors << "script/ci/verify-image-recovery: archive mutation Ruby must parse"
+    end
+    [
+      "Legacy image must use an immutable sha256 digest", "--platform \"$container_platform\"",
+      "upgrade_receipt_sha256", "worker_execution", "RECOVERY_EVIDENCE_PATH",
+      "BACKUP_ENCRYPTION_KEY", "BACKUP_ENCRYPTION_KEY_ID", ".campfire-backup",
+      "artifact_sha256", '"$legacy_artifact_container" "$legacy_artifact_container"',
+      "TARGET_MANIFEST_PATH", "CONTAINER_VALIDATION_EVIDENCE",
+      "container_validation_sha256", "target_manifest_digest",
+      'transport_mode: "external-https-loopback-probe"',
+      'transport_contract: "passed"',
+      "retained_upgrade_receipt_path", '"$evidence_parent/upgrade-recovery.json"',
+      '[[ "$retained_receipt" != *"$backup_authentication_key"* ]]',
+      '[[ "$retained_receipt" != *"$backup_encryption_key"* ]]',
+      "rewrite_archive_installation_fingerprint", "Backup archive ID does not match",
+      "Backup archive belongs to a different Campfire installation", "Chrome/120.0.0.0",
+      'docker logs "$container" >&2'
+    ].each do |token|
+      errors << "script/ci/verify-image-recovery: missing recovery receipt control: #{token}" unless recovery_source.include?(token)
+    end
+  end
+
+  javascript_verifier = root.join("script/ci/verify-javascript")
+  if !javascript_verifier.file?
+    errors << "script/ci/verify-javascript: shared JavaScript verifier is missing"
+  else
+    javascript_source = javascript_verifier.read
+    [
+      "git ls-files -z",
+      "app/javascript/**/*.js",
+      "app/views/pwa/service_worker.js",
+      '${#javascript_files[@]} -eq 0',
+      'node --check "$file"'
+    ].each do |token|
+      errors << "script/ci/verify-javascript: missing JavaScript verification contract: #{token}" unless javascript_source.include?(token)
+    end
+    errors << "script/ci/verify-javascript: verifier must be executable" unless javascript_verifier.executable?
+  end
+
+  local_ci = root.join("config/ci.rb")
+  if local_ci.file?
+    local_ci_source = local_ci.read
+    [
+      "bin/setup --skip-server",
+      "bin/rails zeitwerk:check",
+      "script/ci/verify-release-policy",
+      "axe-4.12.1.min.js.sha256",
+      "test/support/accessibility/verify_manual_at_template.rb",
+      "script/ci/verify-javascript",
+      "test/integration/oidc_full_stack_test.rb"
+    ].each do |token|
+      errors << "config/ci.rb: required local verification is missing: #{token}" unless local_ci_source.include?(token)
+    end
+    errors << "config/ci.rb: gh signoff cannot be a local CI dependency" if local_ci_source.include?("gh signoff")
+  else
+    errors << "config/ci.rb: local verification entrypoint is missing"
+  end
+
+  setup = root.join("bin/setup")
+  if setup.file?
+    setup_source = setup.read
+    [
+      '--skip-server) skip_server=true',
+      '[[ "$skip_server" == false ]] && ! redis_running',
+      'if [[ "$skip_server" == false ]]; then'
+    ].each do |token|
+      errors << "bin/setup: --skip-server contract is missing: #{token}" unless setup_source.include?(token)
+    end
+  else
+    errors << "bin/setup: development setup entrypoint is missing"
+  end
+
+  load_script = root.join("bin/load")
+  if load_script.file?
+    load_source = load_script.read
+    [
+      '"--build-arg", "GIT_REVISION=#{revision}"',
+      '"--build-arg", "BUILD_IDENTITY=#{identity}"',
+      'revision.match?(/\\A[0-9a-f]{40}\\z/)',
+      "Digest::SHA256",
+      '[ "campfire-load-build-v1", revision, host, os, platform ]'
+    ].each do |token|
+      errors << "bin/load: deterministic build identity contract is missing: #{token}" unless load_source.include?(token)
+    end
+  else
+    errors << "bin/load: load-test entrypoint is missing"
+  end
+
+  release_source = root.join("bin/release").read
+  unless release_source.include?("RELEASE_JOURNAL_FORMAT_VERSION = 6")
+    errors << "bin/release: generation-bound moving-channel state requires journal format 6"
+  end
+  if release_source.include?("--no-public-good")
+    errors << "bin/release: Sigstore public-good attestations must permit public-good verification"
+  end
+  [ root.join("bin/release"), root.join("lib/release_object_lock_anchors.rb") ].each do |path|
+    _stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-c", path.to_s)
+    errors << "#{path.relative_path_from(root)}: Ruby syntax is invalid: #{stderr}" unless status.success?
+  end
+  executable_contract = <<~'RUBY'
+    load ARGV.fetch(0)
+    release = {
+      "repository" => "basecamp/once-campfire", "version" => "1.2.3",
+      "tag" => "v1.2.3", "sha" => "c" * 40
+    }
+    workflow = { "run_id" => "123", "run_attempt" => "1", "operation_nonce" => "9" * 64 }
+    anchor_set = { "sha256" => "d" * 64 }
+    contract = release_promotion_contract(
+      release:, anchor_set:, workflow_run: workflow, artifacts: {}, channels: {}
+    )
+    abort "mixed release identity" unless contract.fetch("release") == release &&
+      contract.fetch("release").keys.sort == %w[ repository sha tag version ] &&
+      contract.fetch("workflow_run") == workflow
+    abort "GitHub CLI host pin missing" unless
+      command_environment([ "gh", "api", "user" ], "GH_HOST" => "attacker.example") ==
+        { "GH_HOST" => "github.com" }
+    rejected = Struct.new(:exitstatus) do
+      def exited? = true
+      def success? = false
+    end.new(1)
+    abort "arbitrary registry failure accepted" unless
+      registry_immutable_tag_rejection?("", "denied: tag is immutable", rejected) &&
+      !registry_immutable_tag_rejection?("", "unauthorized: authentication required", rejected) &&
+      !registry_immutable_tag_rejection?("", "dial tcp: connection timed out", rejected)
+    success = Struct.new(:successful) do
+      def success? = successful
+    end.new(true)
+    publication_commands = []
+    publication_runner = lambda do |*command, env:|
+      publication_commands << [ command, env ]
+      success
+    end
+    publish_github_release_without_latest!(
+      repository: "basecamp/once-campfire", tag: "v1.2.3", runner: publication_runner
+    )
+    abort "GitHub publication command count changed" unless publication_commands.length == 1
+    publication_command, publication_environment = publication_commands.fetch(0)
+    abort "GitHub publication still couples latest-channel mutation" unless
+      publication_environment == { "GH_HOST" => "github.com" } &&
+      publication_command.include?("--latest=false") &&
+      !publication_command.include?("--latest")
+    entry = {
+      reconciling: false, resuming: false, reconcile_sha: "", git_sha: "c" * 40,
+      existing_tag_sha: nil, release_public: false, remote_main_sha: "c" * 40,
+      release_sha_ancestor_of_main: true
+    }
+    rejects_entry = lambda do |overrides|
+      validate_release_entry!(**entry.merge(overrides))
+      false
+    rescue ReleaseStateError
+      true
+    end
+    abort "stale main accepted for a new release" unless rejects_entry.call(
+      remote_main_sha: "d" * 40, release_sha_ancestor_of_main: true
+    )
+    abort "authenticated ancestor reconciliation rejected" unless validate_release_entry!(**entry.merge(
+      reconciling: true, reconcile_sha: "c" * 40, existing_tag_sha: "c" * 40,
+      remote_main_sha: "d" * 40
+    ))
+    abort "wrong reconciliation SHA accepted" unless rejects_entry.call(
+      reconciling: true, reconcile_sha: "d" * 40
+    )
+    abort "diverged reconciliation accepted" unless rejects_entry.call(
+      reconciling: true, reconcile_sha: "c" * 40,
+      remote_main_sha: "d" * 40, release_sha_ancestor_of_main: false
+    )
+    abort "mismatched release tag accepted" unless rejects_entry.call(
+      reconciling: true, reconcile_sha: "c" * 40, existing_tag_sha: "e" * 40
+    )
+  RUBY
+  _stdout, stderr, status = Open3.capture3(
+    RbConfig.ruby, "-e", executable_contract, root.join("bin/release").to_s
+  )
+  errors << "bin/release: executable immutable-release contract failed: #{stderr}" unless status.success?
+  release_main_source = release_source
+  unless release_main_source.include?('GITHUB_CLI_ENVIRONMENT = { "GH_HOST" => "github.com" }.freeze')
+    errors << "bin/release: every GitHub CLI invocation must pin GH_HOST to github.com"
+  end
+  registry_probe_source = release_main_source[
+    /def prove_registry_tag_immutability!.*?(?=\ndef create_registry_alias_with_policy!)/m
+  ]
+  registry_probe_targets = registry_probe_source&.scan(
+    /"imagetools", "create", "--tag", ([a-z_]+)/
+  )&.flatten
+  unless registry_probe_targets == %w[ control_reference control_reference ] &&
+      registry_probe_source.include?('"exact_alias_conflict_probes" => false') &&
+      !registry_probe_source.include?("policy_references")
+    errors << "bin/release: production registry aliases may never be conflict-probe targets"
+  end
+  [
+    "journal_anchors.monitor_with! live_mutation_runner",
+    'run! "git", "push", RELEASE_REMOTE, "refs/tags/#{TAG}", runner: live_mutation_runner',
+    '"--notes-file", notes_file, "--prerelease=false", runner: live_mutation_runner',
+    '"--title", TAG, "--notes-file", notes_file, runner: live_mutation_runner',
+    '"--field", "operation_nonce=#{operation_nonce}", runner: live_mutation_runner',
+    "Workflow reruns require the monitored live-owner mutation runner",
+    "mutation_runner: live_mutation_runner",
+    "def upload_immutable(local_path, remote_name, revision, runner:)",
+    "def stage_static_release!(archive_path, checksum_path, version, revision, runner:)",
+    "def upload_release_assets_immutably(repository, tag, paths, journal:, runner:)",
+    "capture_remote command, mutation_runner: invocation_lock",
+    "capture_remote move, mutation_runner: invocation_lock"
+  ].each do |control|
+    unless release_main_source.include?(control)
+      errors << "bin/release: monitored live-owner mutation control is missing: #{control}"
+    end
+  end
+  [
+    "script/ci/verify-javascript",
+    "test/support/accessibility/verify_manual_at_template.rb",
+    "axe-4.12.1.min.js.sha256"
+  ].each do |token|
+    errors << "bin/release: authorized release verification is missing: #{token}" unless release_main_source.include?(token)
+  end
+  if release_main_source.include?('run! "node", "--check"') || release_main_source.include?("javascript_files =")
+    errors << "bin/release: JavaScript parsing must use script/ci/verify-javascript"
+  end
+  revalidation_calls = release_main_source.scan(/revalidate_release_source!\(\n.*?\n\s*\)/m)
+  unless revalidation_calls.length == 3 && revalidation_calls.all? { _1.include?("reconciling:") }
+    errors << "bin/release: every post-workflow source revalidation must preserve reconciliation mode"
+  end
+  [
+    "workflow_evidence_pending",
+    "retain_pending_evidence!",
+    "restore_pending_evidence!",
+    "authenticated_github_release_state!",
+    "validate_github_publication_boundary!",
+    "parse_release_reconcile_action!",
+    "authenticate_reconcile_action!",
+    "abandon_pre_promotion_reconciliation!",
+    "verify_retained_provenance_bundle!",
+    "validate_format!",
+    "convergence_generation"
+  ].each do |control|
+    unless release_main_source.include?(control)
+      errors << "bin/release: durable release transition control is missing: #{control}"
+    end
+  end
+
+  publish_executable_step = workflow_step.call(publish_workflow, "Check executable entrypoints")
+  publish_executable_block = publish_executable_step&.dig("run")&.match(/required_executables=\(\s*(.*?)\s*\)/m)&.[](1)
+  publish_executables = publish_executable_block&.lines&.map(&:strip)&.reject(&:empty?)
+  release_executable_block = release_main_source.match(/required_executables = %w\[\s*(.*?)\s*\]/m)&.[](1)
+  release_executables = release_executable_block&.split
+  unless publish_executables == required_executables && release_executables == required_executables
+    errors << "Release and publication executable checks must use the complete aligned entrypoint set"
+  end
+  required_executables.each do |relative|
+    path = root.join(relative)
+    errors << "#{relative}: required release entrypoint is missing or not executable" unless path.file? && path.executable?
+  end
+  %w[ archive-backup verify-backup install-backup ].each do |name|
+    relative = "script/admin/#{name}"
+    unless root.join(relative).read.include?('require_relative "../../config/boot"')
+      errors << "#{relative}: standalone backup entrypoint must activate bundled gems"
+    end
+  end
+
+  object_lock_helper = root.join("lib/release_object_lock_anchors.rb")
+  if object_lock_helper.file?
+    object_lock_source = object_lock_helper.read
+    [
+      "workflow_evidence_pending", "retain_pending_evidence!", "restore_pending_evidence!",
+      "after_first_anchor", "after_both_anchors", "monitor_with!",
+      "PreconditionFailed", 'error.fetch(:operation) == "PutObject"', "AWS_CLI_ERROR_RECORD",
+      "recover_exact_resource_delete_markers!"
+    ].each do |control|
+      unless object_lock_source.include?(control)
+        errors << "lib/release_object_lock_anchors.rb: pending evidence control is missing: #{control}"
+      end
+    end
+    anchor_contract = <<~'RUBY'
+      load ARGV.fetch(0)
+      env = {
+        "RELEASE_JOURNAL_ANCHOR_PROVIDER" => "aws",
+        "RELEASE_JOURNAL_ANCHOR_1_PROFILE" => "primary",
+        "RELEASE_JOURNAL_ANCHOR_1_ACCOUNT_ID" => "111111111111",
+        "RELEASE_JOURNAL_ANCHOR_1_BUCKET" => "campfire-release-primary",
+        "RELEASE_JOURNAL_ANCHOR_1_PREFIX" => "campfire/release-journal",
+        "RELEASE_JOURNAL_ANCHOR_2_PROFILE" => "secondary",
+        "RELEASE_JOURNAL_ANCHOR_2_ACCOUNT_ID" => "222222222222",
+        "RELEASE_JOURNAL_ANCHOR_2_BUCKET" => "campfire-release-secondary",
+        "RELEASE_JOURNAL_ANCHOR_2_PREFIX" => "campfire/release-journal"
+      }
+      identity = ReleaseObjectLockAnchors.anchor_set_identity_from_env!(env:)
+      abort "anchor digest missing" unless identity.fetch("sha256").match?(/\A[0-9a-f]{64}\z/)
+      abort "configured endpoint override policy missing" unless
+        identity.fetch("ignore_configured_endpoint_urls") == true
+      begin
+        ReleaseObjectLockAnchors.anchor_set_identity_from_env!(
+          env: env.merge("RELEASE_JOURNAL_ANCHOR_1_ENDPOINT_URL" => "https://s3.example.test")
+        )
+        abort "AWS endpoint override accepted"
+      rescue ReleaseObjectLockAnchors::Error => error
+        raise unless error.message.include?("forbid custom endpoint")
+      end
+      env[ReleaseObjectLockAnchors::EXPECTED_ANCHOR_SET_DIGEST_ENVIRONMENT_VARIABLE] =
+        identity.fetch("sha256")
+      env["AWS_CONFIG_FILE"] = "/protected/profile-with-redirects"
+      env["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"] = "false"
+      success = Struct.new(:success?).new(true)
+      executor = lambda do |environment, *command|
+        abort "configured endpoint overrides not ignored" unless
+          environment.fetch("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS") == "true"
+        abort "production endpoint override reached AWS CLI" if command.include?("--endpoint-url")
+        if command == [ "aws", "--version" ]
+          [ "aws-cli/2.31.0", "", success ]
+        else
+          profile = command.fetch(command.index("--profile") + 1)
+          service_index = command.index { %w[ sts s3api ].include?(_1) }
+          service = command.fetch(service_index)
+          operation = command.fetch(service_index + 1)
+          output = case [ service, operation ]
+          when [ "sts", "get-caller-identity" ]
+            account = profile == "primary" ? "111111111111" : "222222222222"
+            JSON.generate("Account" => account)
+          when [ "s3api", "get-bucket-versioning" ]
+            JSON.generate("Status" => "Enabled")
+          when [ "s3api", "get-object-lock-configuration" ]
+            JSON.generate("ObjectLockEnabled" => "Enabled")
+          else
+            "{}"
+          end
+          [ output, "", success ]
+        end
+      end
+      ReleaseObjectLockAnchors.from_env!(env:, executor:)
+    RUBY
+    _stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, "-e", anchor_contract, object_lock_helper.to_s
+    )
+    errors << "lib/release_object_lock_anchors.rb: executable anchor-set contract failed: #{stderr}" unless status.success?
+  else
+    errors << "lib/release_object_lock_anchors.rb: dual WORM anchor implementation is missing"
+  end
+
+  releasing_document = root.join("docs/releasing.md")
+  if releasing_document.file?
+    documentation = releasing_document.read
+    [
+      "Object Lock", "independently administered Object Lock", "branch protection",
+      "Container validation", "Verify exact architecture receipts", "native `linux/arm64`",
+      "Sigstore public-good", "journal format 6", "s3:ListBucket", '"s3:DeleteObject",',
+      ".exact-resource-delete-marker-intents", "before `promotion.converge!`"
+    ].each do |token|
+      errors << "docs/releasing.md: required release evidence guidance is missing: #{token}" unless documentation.include?(token)
+    end
+  else
+    errors << "docs/releasing.md: release controls documentation is missing"
+  end
+end
+
+unless errors.empty?
+  warn errors.join("\n")
+  exit 1
+end
+
+puts "Release and container policy verified"

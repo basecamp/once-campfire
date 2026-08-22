@@ -22,7 +22,7 @@
 .txt-primary { color: var(--color-text); }
 .txt-reversed { color: var(--color-text-reversed); }
 .txt-negative { color: var(--color-negative); }
-.txt-subtle { color: var(--color-border-darker); }
+.txt-subtle { color: var(--color-text-subtle); }
 .txt-undecorated { text-decoration: none; }
 .txt-tight-lines { line-height: 1.2; }
 .txt-normal { font-weight: 400; font-style: normal; }

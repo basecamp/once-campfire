@@ -11,10 +11,12 @@ Rails.application.configure do
 
       password_digest = User.new(password: "password").password_digest
       users = (1..10000).map do |i|
+        email_address = "user#{i}@example.com"
         {
           name: "User #{i}",
           role: i == 1 ? :administrator : :member,
-          email_address: "user#{i}@example.com",
+          email_address:,
+          normalized_email_address: User.normalize_email_address(email_address),
           password_digest: password_digest
         }
       end

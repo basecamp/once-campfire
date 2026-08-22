@@ -1,16 +1,16 @@
 module SystemTestHelper
-  def sign_in(email_address, password = "secret123456")
-    visit root_url
+  def sign_in(email_address, password = "secret123456", navigate: true)
+    visit root_url if navigate
 
     fill_in "email_address", with: email_address
     fill_in "password", with: password
 
     click_on "log_in"
-    assert_selector "a.btn", text: "Designers"
+    assert_selector "meta[name='current-user-id']", visible: false
   end
 
   def wait_for_cable_connection
-    assert_selector "turbo-cable-stream-source[connected]", count: 3, visible: false
+    assert_selector "turbo-cable-stream-source[connected]", count: 3, visible: false, wait: 10
   end
 
   def join_room(room)
@@ -22,6 +22,7 @@ module SystemTestHelper
   def send_message(message)
     fill_in_rich_text_area "message_body", with: message
     click_on "send"
+    assert_message_text message
   end
 
   def within_message(message, &block)

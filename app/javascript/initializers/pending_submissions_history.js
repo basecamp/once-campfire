@@ -1,0 +1,1 @@
+window.campfirePendingSubmissionsFromHistory = history.state?.campfirePendingSubmissions

@@ -6,9 +6,11 @@ git_source(:github) { |repo| "https://github.com/#{repo}.git" }
 gem "rails", github: "rails/rails", branch: "main"
 gem "ostruct"
 gem "benchmark"
+gem "fiddle"
 
 # Drivers
 gem "sqlite3"
+gem "campfire_sqlite_native", path: "vendor/campfire_sqlite_native", require: false
 gem "redis", "~> 5.4"
 
 # Deployment
@@ -36,6 +38,7 @@ gem "sentry-rails"
 # Other
 gem "bcrypt"
 gem "web-push"
+gem "omniauth_openid_connect", "~> 0.8.0"
 gem "rqrcode"
 gem "rails_autolink"
 gem "geared_pagination"
@@ -44,7 +47,7 @@ gem "net-http-persistent"
 gem "surfguard", github: "basecamp/surfguard" # The SSRF address policy behind RestrictedHTTP
 gem "kredis"
 gem "platform_agent"
-gem "thruster"
+gem "thruster", "= 0.1.23"
 
 group :development, :test do
   gem "debug"

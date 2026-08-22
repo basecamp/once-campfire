@@ -7,7 +7,8 @@ module ApplicationHelper
     unless Current.user.nil?
       safe_join [
         tag(:meta, name: "current-user-id", content: Current.user.id),
-        tag(:meta, name: "current-user-name", content: Current.user.name)
+        tag(:meta, name: "current-user-name", content: Current.user.name),
+        tag(:meta, name: "current-session-id", content: Current.session&.id)
       ]
     end
   end

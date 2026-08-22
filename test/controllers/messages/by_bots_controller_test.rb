@@ -7,45 +7,148 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "create" do
     assert_difference -> { Message.count }, +1 do
-      post room_bot_messages_url(@room, users(:bender).bot_key), params: +"Hello Bot World!"
+      post room_bot_messages_url(@room), params: +"Hello Bot World!", headers: bot_headers
       assert_equal "Hello Bot World!", Message.last.plain_text_body
+      assert_equal Message::ORIGIN_BOT_API, Message.last.origin
     end
+
+    assert_response :created
+    assert_equal room_at_message_url(@room, Message.last), response.headers["Location"]
+  end
+
+  test "create rejects an ordinary browser session" do
+    sign_in :jz
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room), params: +"Browser-originated bot message"
+    end
+
+    assert_response :forbidden
+  end
+
+  test "index rejects an ordinary browser session before looking up the room" do
+    sign_in :jz
+
+    get room_bot_messages_url(rooms(:designers))
+
+    assert_response :forbidden
   end
 
   test "create with UTF-8 content" do
     assert_difference -> { Message.count }, +1 do
-      post room_bot_messages_url(@room, users(:bender).bot_key), params: +"Hello 👋!"
+      post room_bot_messages_url(@room), params: +"Hello 👋!", headers: bot_headers
       assert_equal "Hello 👋!", Message.last.plain_text_body
     end
   end
 
+  test "create rejects a blank message" do
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room), params: +"", headers: bot_headers
+    end
+
+    assert_response :unprocessable_entity
+  end
+
+  test "create rejects an oversized body without reading past the limit" do
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room),
+        params: +("x" * (ContentLimits::MESSAGE_BODY_BYTES + 1)), headers: bot_headers
+    end
+
+    assert_response :content_too_large
+  end
+
   test "create file" do
     assert_difference -> { Message.count }, +1 do
-      post room_bot_messages_url(@room, users(:bender).bot_key), params: { attachment: fixture_file_upload("moon.jpg", "image/jpeg") }
+      post room_bot_messages_url(@room),
+        params: { attachment: fixture_file_upload("moon.jpg", "image/jpeg") }, headers: bot_headers
       assert Message.last.attachment.present?
     end
+  end
+
+  test "an old bot key cannot commit an upload after key reset" do
+    bot = users(:bender)
+    actor = users(:david)
+    old_key = bot.bot_key
+    original_stage = StagedUpload.method(:stage)
+    StagedUpload.define_singleton_method(:stage) do |*arguments, **options|
+      original_stage.call(*arguments, **options).tap do
+        User.find(bot.id).reset_bot_key!(actor:)
+      end
+    end
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room),
+        params: { attachment: fixture_file_upload("moon.jpg", "image/jpeg") },
+        headers: { "Authorization" => "Bearer #{old_key}" }
+    end
+
+    assert_response :forbidden
+    assert_not_equal old_key, bot.reload.bot_key
+  ensure
+    StagedUpload.define_singleton_method(:stage, original_stage) if original_stage
   end
 
   test "create does not trigger a webhook to the sending bot if it mentions itself" do
     body = "<div>Hey #{mention_attachment_for(:bender)}</div>"
 
     assert_no_enqueued_jobs only: Bot::WebhookJob do
-      post room_bot_messages_url(@room, users(:bender).bot_key), params: body
+      perform_enqueued_jobs only: MessageEffectJob do
+        post room_bot_messages_url(@room), params: body, headers: bot_headers
+      end
     end
   end
 
   test "create does not trigger a webhook to the sending bot in a direct room" do
     assert_no_enqueued_jobs only: Bot::WebhookJob do
-      post room_bot_messages_url(rooms(:bender_and_kevin), users(:bender).bot_key), params: +"Talking to myself again!"
+      perform_enqueued_jobs only: MessageEffectJob do
+        post room_bot_messages_url(rooms(:bender_and_kevin)),
+          params: +"Talking to myself again!", headers: bot_headers
+      end
     end
+  end
+
+  test "a bot API message cannot invoke a different mentioned bot" do
+    recipient = User.create_bot!({
+      name: "Second Bot", webhook_url: "https://example.com/second-bot"
+    }, actor: users(:david))
+    Membership.create!(room: @room, user: recipient)
+    body = "<div>Hey #{mention_attachment_for_user(recipient)}</div>"
+
+    post room_bot_messages_url(@room), params: body, headers: bot_headers
+
+    assert_response :created
+    message = Message.last
+    assert_not message.message_effects.exists?(effect: "webhook_fanout")
+    assert_not message.message_effects.exists?(effect: "bot_webhook", recipient_id: recipient.id)
+  end
+
+  test "two bots in a direct room cannot recurse through their webhooks" do
+    recipient = User.create_bot!({
+      name: "Second Bot", webhook_url: "https://example.com/second-bot"
+    }, actor: users(:david))
+    room = Rooms::Direct.find_or_create_for(
+      [ users(:bender), recipient ], actor: users(:bender)
+    )
+    request = WebMock.stub_request(:post, recipient.webhook.url).to_raise("must not deliver")
+
+    perform_enqueued_jobs only: MessageEffectJob do
+      post room_bot_messages_url(room), params: +"Automated direct message", headers: bot_headers
+    end
+
+    assert_response :created
+    message = Message.last
+    assert_equal users(:bender), message.creator
+    assert_not message.message_effects.exists?(effect: %w[ webhook_fanout bot_webhook ])
+    assert_not_requested request
   end
 
   test "create without a body or attachment" do
     assert_no_difference -> { Message.count } do
-      post room_bot_messages_url(@room, users(:bender).bot_key)
+      post room_bot_messages_url(@room), headers: bot_headers
       assert_response :unprocessable_content
 
-      post room_bot_messages_url(@room, users(:bender).bot_key), params: +"   "
+      post room_bot_messages_url(@room), params: +"   ", headers: bot_headers
       assert_response :unprocessable_content
     end
   end
@@ -55,14 +158,29 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     bot_key = "#{user.id}-"
 
     assert_no_difference -> { Message.count } do
-      post room_bot_messages_url(rooms(:bender_and_kevin), bot_key), params: "Hello 👋!"
+      post room_bot_messages_url(rooms(:bender_and_kevin)),
+        params: "Hello 👋!", headers: { "Authorization" => "Bearer #{bot_key}" }
     end
 
-    assert_response :redirect
+    assert_response :unauthorized
+  end
+
+  test "regular messages index remains denied for bots" do
+    get room_messages_url(@room, format: :json), headers: bot_headers
+    assert_response :forbidden
+  end
+
+  test "bot credentials are absent from the request target" do
+    bot_key = users(:bender).bot_key
+
+    assert_not_includes URI(room_bot_messages_url(@room)).request_uri, bot_key
+    post room_bot_messages_url(@room), params: +"Header only", headers: bot_headers
+
+    assert_response :created
   end
 
   test "index returns the room's messages in the order they were sent" do
-    get room_bot_messages_url(@room, users(:bender).bot_key)
+    get room_bot_messages_url(@room), headers: bot_headers
     assert_response :success
 
     json = JSON.parse(response.body)
@@ -70,9 +188,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index includes message details" do
-    post room_bot_messages_url(@room, users(:bender).bot_key), params: +"Hello from Bender!"
+    post room_bot_messages_url(@room), params: +"Hello from Bender!", headers: bot_headers
 
-    get room_bot_messages_url(@room, users(:bender).bot_key)
+    get room_bot_messages_url(@room), headers: bot_headers
     assert_response :success
 
     message = Message.last
@@ -93,7 +211,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
       @room.messages.create!(body: "Filler #{i}", creator: users(:jason), client_message_id: "filler-#{i}")
     end
 
-    get room_bot_messages_url(@room, users(:bender).bot_key)
+    get room_bot_messages_url(@room), headers: bot_headers
     assert_response :success
 
     json = JSON.parse(response.body)
@@ -101,7 +219,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "41", response.headers["X-Total-Count"]
     assert_not_includes json.map { it["id"] }, messages(:fourth).id
 
-    get response.headers["Link"][/<(.*)>/, 1]
+    get response.headers["Link"][/<(.*)>/, 1], headers: bot_headers
     assert_response :success
 
     json = JSON.parse(response.body)
@@ -110,7 +228,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index pages newer messages with after" do
-    get room_bot_messages_url(@room, users(:bender).bot_key, after: messages(:tenth).id)
+    get room_bot_messages_url(@room, after: messages(:tenth).id), headers: bot_headers
     assert_response :success
 
     json = JSON.parse(response.body)
@@ -119,7 +237,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index in a room with no messages" do
-    get room_bot_messages_url(rooms(:bender_and_kevin), users(:bender).bot_key)
+    get room_bot_messages_url(rooms(:bender_and_kevin)), headers: bot_headers
     assert_response :success
 
     assert_equal [], JSON.parse(response.body)
@@ -128,32 +246,27 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index requires a valid bot key" do
-    get room_bot_messages_url(@room, "invalid-bot-key")
+    get room_bot_messages_url(@room), headers: bot_headers("invalid-bot-key")
     assert_response :redirect
   end
 
   test "index is not found for a room the bot is not a member of" do
-    get room_bot_messages_url(rooms(:designers), users(:bender).bot_key)
+    get room_bot_messages_url(rooms(:designers)), headers: bot_headers
     assert_response :not_found
   end
 
   test "create is not found for a room the bot is not a member of" do
     assert_no_difference -> { Message.count } do
-      post room_bot_messages_url(rooms(:designers), users(:bender).bot_key), params: +"Hello!"
+      post room_bot_messages_url(rooms(:designers)), params: +"Hello!", headers: bot_headers
     end
     assert_response :not_found
-  end
-
-  test "regular messages index remains denied for bots" do
-    get room_messages_url(@room, bot_key: users(:bender).bot_key)
-    assert_response :forbidden
   end
 
   test "update" do
     message = post_bot_message "Deploying..."
 
     assert_no_difference -> { Message.count } do
-      patch room_bot_message_url(@room, users(:bender).bot_key, message), params: +"Deployed."
+      patch room_bot_message_url(@room, message), params: +"Deployed.", headers: bot_headers
     end
 
     assert_response :ok
@@ -169,7 +282,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   test "update with UTF-8 content" do
     message = post_bot_message "Deploying..."
 
-    patch room_bot_message_url(@room, users(:bender).bot_key, message), params: +"Deployed 🚀!"
+    patch room_bot_message_url(@room, message), params: +"Deployed 🚀!", headers: bot_headers
 
     assert_response :ok
     assert_equal "Deployed 🚀!", message.reload.plain_text_body
@@ -180,7 +293,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     message = messages(:fourth)
     original = message.plain_text_body
 
-    patch room_bot_message_url(@room, users(:bender).bot_key, message), params: +"Hijacked!"
+    patch room_bot_message_url(@room, message), params: +"Hijacked!", headers: bot_headers
 
     assert_response :forbidden
     assert_equal original, message.reload.plain_text_body
@@ -190,7 +303,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     message = messages(:first)
     original = message.plain_text_body
 
-    patch room_bot_message_url(rooms(:designers), users(:bender).bot_key, message), params: +"Hijacked!"
+    patch room_bot_message_url(rooms(:designers), message), params: +"Hijacked!", headers: bot_headers
 
     assert_response :not_found
     assert_equal original, message.reload.plain_text_body
@@ -201,9 +314,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     bot_key = "#{users(:jz).id}-"
     original = message.plain_text_body
 
-    patch room_bot_message_url(@room, bot_key, message), params: +"Hijacked!"
+    patch room_bot_message_url(@room, message), params: +"Hijacked!", headers: bot_headers(bot_key)
 
-    assert_response :redirect
+    assert_response :unauthorized
     assert_equal original, message.reload.plain_text_body
   end
 
@@ -211,7 +324,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     message = post_bot_message "Deploying..."
 
     assert_difference -> { Message.count }, -1 do
-      delete room_bot_message_url(@room, users(:bender).bot_key, message)
+      delete room_bot_message_url(@room, message), headers: bot_headers
     end
 
     assert_response :no_content
@@ -221,7 +334,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     message = messages(:fourth)
 
     assert_no_difference -> { Message.count } do
-      delete room_bot_message_url(@room, users(:bender).bot_key, message)
+      delete room_bot_message_url(@room, message), headers: bot_headers
     end
 
     assert_response :forbidden
@@ -229,7 +342,19 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   private
     def post_bot_message(body)
-      post room_bot_messages_url(@room, users(:bender).bot_key), params: +body
+      post room_bot_messages_url(@room), params: +body, headers: bot_headers
       Message.last
+    end
+
+    def bot_headers(key = users(:bender).bot_key)
+      { "Authorization" => "Bearer #{key}" }
+    end
+
+    def mention_attachment_for_user(user)
+      content = ApplicationController.render partial: "users/mention", locals: { user: }
+      escaped_content = content.gsub('"', "&quot;")
+      "<action-text-attachment sgid=\"#{user.attachable_sgid}\" " \
+        "content-type=\"application/vnd.campfire.mention\" " \
+        "content=\"#{escaped_content}\"></action-text-attachment>"
     end
 end

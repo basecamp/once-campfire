@@ -4,8 +4,11 @@ export default class extends Controller {
   static targets = [ "pushSubscriptionEndpoint" ]
 
   async logout(event) {
-    await this.#unsubscribeFromWebPush()
-    this.element.requestSubmit()
+    try {
+      await Promise.race([ this.#unsubscribeFromWebPush(), this.#timeout(2000) ])
+    } finally {
+      this.element.requestSubmit()
+    }
   }
 
   async #unsubscribeFromWebPush() {
@@ -13,6 +16,8 @@ export default class extends Controller {
       const registration = await navigator.serviceWorker.getRegistration(window.location.origin)
 
       if (registration) {
+        const notifications = registration.getNotifications ? await registration.getNotifications() : []
+        notifications.forEach(notification => notification.close())
         const subscription = await registration.pushManager.getSubscription()
 
         if (subscription) {
@@ -21,5 +26,10 @@ export default class extends Controller {
         }
       }
     }
+    if (navigator.clearAppBadge) await navigator.clearAppBadge()
+  }
+
+  #timeout(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds))
   }
 }

@@ -1,0 +1,24 @@
+<% @page_title = "Connect single sign-on" %>
+
+<section class="txt-align-center">
+  <div class="panel flex flex-column gap">
+    <h1>Connect <%= Oidc.provider_name %></h1>
+    <% if @password_reauthentication_required %>
+      <p>Enter your current Campfire password before connecting a sign-in identity.</p>
+
+      <%= form_with url: oidc_link_path, method: :patch, class: "flex flex-column gap" do %>
+        <%= label_tag :current_password, "Current password", class: "for-screen-reader" %>
+        <%= password_field_tag :current_password, nil, class: "input", autocomplete: "current-password",
+              placeholder: "Current password", required: true, maxlength: 72 %>
+        <%= submit_tag "Verify password", class: "btn btn--reversed center txt-large" %>
+      <% end %>
+    <% else %>
+      <p>Continue to verify that your identity-provider account matches your Campfire account.</p>
+
+      <%= button_to openid_connect_path, params: { oidc_linking: "1", linking_state: @linking_state }, class: "btn btn--reversed center txt-large", form: { data: { turbo: false } } do %>
+        <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
+        <span>Continue</span>
+      <% end %>
+    <% end %>
+  </div>
+</section>

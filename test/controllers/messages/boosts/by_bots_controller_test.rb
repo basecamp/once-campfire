@@ -9,7 +9,7 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "create adds a boost to the message and returns it" do
     assert_difference -> { @message.boosts.count }, +1 do
-      post room_bot_message_boosts_url(@room, @bot.bot_key, @message), params: +"👀"
+      post room_bot_message_boosts_url(@room, @message), params: +"👀", headers: bot_headers
       assert_response :created
     end
 
@@ -27,7 +27,7 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "create with text content" do
     assert_difference -> { Boost.count }, +1 do
-      post room_bot_message_boosts_url(@room, @bot.bot_key, @message), params: +"Nice!"
+      post room_bot_message_boosts_url(@room, @message), params: +"Nice!", headers: bot_headers
       assert_response :created
     end
 
@@ -36,37 +36,58 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "create broadcasts the boost" do
     assert_turbo_stream_broadcasts [ @message.room, :messages ], count: 1 do
-      post room_bot_message_boosts_url(@room, @bot.bot_key, @message), params: +"👍"
+      post room_bot_message_boosts_url(@room, @message), params: +"👍", headers: bot_headers
     end
   end
 
   test "create without content" do
     assert_no_difference -> { Boost.count } do
-      post room_bot_message_boosts_url(@room, @bot.bot_key, @message)
+      post room_bot_message_boosts_url(@room, @message), headers: bot_headers
       assert_response :unprocessable_content
 
-      post room_bot_message_boosts_url(@room, @bot.bot_key, @message), params: +"   "
+      post room_bot_message_boosts_url(@room, @message), params: +"   ", headers: bot_headers
       assert_response :unprocessable_content
     end
+  end
+
+  test "create rejects oversized content without reading past the limit" do
+    assert_no_difference -> { Boost.count } do
+      post room_bot_message_boosts_url(@room, @message),
+        params: +("x" * (ContentLimits::MESSAGE_BODY_BYTES + 1)), headers: bot_headers
+    end
+
+    assert_response :content_too_large
   end
 
   test "create requires a valid bot key" do
     assert_no_difference -> { Boost.count } do
-      post room_bot_message_boosts_url(@room, "invalid-bot-key", @message), params: +"👀"
+      post room_bot_message_boosts_url(@room, @message),
+        params: +"👀", headers: bot_headers("invalid-bot-key")
     end
-    assert_response :redirect
+    assert_response :unauthorized
+  end
+
+  test "create rejects an ordinary browser session" do
+    sign_in :jz
+
+    assert_no_difference -> { Boost.count } do
+      post room_bot_message_boosts_url(@room, @message), params: +"👀"
+    end
+
+    assert_response :forbidden
   end
 
   test "create is not found for a room the bot is not a member of" do
     assert_no_difference -> { Boost.count } do
-      post room_bot_message_boosts_url(rooms(:designers), @bot.bot_key, messages(:first)), params: +"👀"
+      post room_bot_message_boosts_url(rooms(:designers), messages(:first)),
+        params: +"👀", headers: bot_headers
     end
     assert_response :not_found
   end
 
   test "create is not found for a message outside the room" do
     assert_no_difference -> { Boost.count } do
-      post room_bot_message_boosts_url(@room, @bot.bot_key, messages(:first)), params: +"👀"
+      post room_bot_message_boosts_url(@room, messages(:first)), params: +"👀", headers: bot_headers
     end
     assert_response :not_found
   end
@@ -75,14 +96,14 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
     bot_key = "#{users(:kevin).id}-"
 
     assert_no_difference -> { Boost.count } do
-      post room_bot_message_boosts_url(@room, bot_key, @message), params: +"👀"
+      post room_bot_message_boosts_url(@room, @message), params: +"👀", headers: bot_headers(bot_key)
     end
-    assert_response :redirect
+    assert_response :unauthorized
   end
 
   test "destroy removes the bot's own boost" do
     assert_difference -> { Boost.count }, -1 do
-      delete room_bot_message_boost_url(@room, @bot.bot_key, @message, boosts(:fourth_by_bender))
+      delete room_bot_message_boost_url(@room, @message, boosts(:fourth_by_bender)), headers: bot_headers
     end
 
     assert_response :no_content
@@ -90,13 +111,13 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "destroy broadcasts the removal" do
     assert_turbo_stream_broadcasts [ @message.room, :messages ], count: 1 do
-      delete room_bot_message_boost_url(@room, @bot.bot_key, @message, boosts(:fourth_by_bender))
+      delete room_bot_message_boost_url(@room, @message, boosts(:fourth_by_bender)), headers: bot_headers
     end
   end
 
   test "destroy can't touch a boost the bot did not make" do
     assert_no_difference -> { Boost.count } do
-      delete room_bot_message_boost_url(@room, @bot.bot_key, messages(:thirteenth), boosts(:thirteenth))
+      delete room_bot_message_boost_url(@room, messages(:thirteenth), boosts(:thirteenth)), headers: bot_headers
     end
 
     assert_response :not_found
@@ -104,9 +125,15 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "destroy requires a valid bot key" do
     assert_no_difference -> { Boost.count } do
-      delete room_bot_message_boost_url(@room, "invalid-bot-key", @message, boosts(:fourth_by_bender))
+      delete room_bot_message_boost_url(@room, @message, boosts(:fourth_by_bender)),
+        headers: bot_headers("invalid-bot-key")
     end
 
-    assert_response :redirect
+    assert_response :unauthorized
   end
+
+  private
+    def bot_headers(key = @bot.bot_key)
+      { "Authorization" => "Bearer #{key}" }
+    end
 end

@@ -140,19 +140,24 @@
   }
 
   &.message--failed {
-    opacity: 0.5;
-
-    .message__meta::after {
-      content: "🚫";
-      font-size: 1em;
-      line-height: 1;
-    }
-
     .message__body-content {
       animation: wiggle 0.4s both;
       outline: 1px dashed var(--color-negative);
+
+      @media (prefers-reduced-motion: reduce) {
+        animation: none;
+      }
     }
   }
+}
+
+.message__delivery-failure {
+  background-color: var(--color-bg);
+  border: 2px solid var(--color-negative);
+  border-radius: 0.66em;
+  color: var(--color-text);
+  margin-block-start: var(--block-space-half);
+  padding: var(--block-space-half) var(--inline-space);
 }
 
 .message__day-separator {

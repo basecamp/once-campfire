@@ -5,13 +5,15 @@ class Users::PushSubscriptionsController < ApplicationController
   end
 
   def create
-    if subscription = @push_subscriptions.find_by(push_subscription_params)
-      subscription.touch
-    else
-      @push_subscriptions.create! push_subscription_params.merge(user_agent: request.user_agent)
-    end
+    capability = push_subscription_params.to_h.symbolize_keys
+    Push::Subscription.synchronize!(
+      capability:, user: Current.user, session: Current.session,
+      user_agent: request.user_agent.to_s.first(Push::Subscription::MAXIMUM_USER_AGENT_LENGTH)
+    )
 
     head :ok
+  rescue ActiveRecord::RecordInvalid
+    head :unprocessable_entity
   end
 
   def destroy

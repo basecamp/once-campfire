@@ -1,0 +1,481 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+report_error() {
+  local status=$1 line=$2 command=$3
+  printf 'Container validation failed at line %s: %s\n' "$line" "$command" >&2
+  exit "$status"
+}
+trap 'report_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
+image=${IMAGE:?IMAGE is required}
+platform=${CONTAINER_PLATFORM:?CONTAINER_PLATFORM is required}
+source_revision=${SOURCE_REVISION:?SOURCE_REVISION is required}
+build_identity=${TARGET_BUILD_IDENTITY:?TARGET_BUILD_IDENTITY is required}
+app_version=${APP_VERSION:?APP_VERSION is required}
+source_url=${SOURCE_URL:?SOURCE_URL is required}
+image_description=${IMAGE_DESCRIPTION:?IMAGE_DESCRIPTION is required}
+evidence_directory=${EVIDENCE_DIRECTORY:?EVIDENCE_DIRECTORY is required}
+target_digest=${TARGET_DIGEST:-}
+oci_archive=${OCI_ARCHIVE:-}
+build_metadata=${BUILD_METADATA:-}
+attestation_image=${ATTESTATION_IMAGE:-}
+runtime_archive=${RUNTIME_ARCHIVE:-}
+asset_precompile_contract='RUN DISABLE_SSL=true OIDC_MODE=disabled SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile'
+
+[[ "$(grep -Fxc "$asset_precompile_contract" Dockerfile)" -eq 1 ]]
+
+case "$platform" in
+  linux/amd64) architecture=amd64 ;;
+  linux/arm64) architecture=arm64 ;;
+  *) printf 'Unsupported container platform: %s\n' "$platform" >&2; exit 64 ;;
+esac
+[[ "$source_revision" =~ ^[0-9a-f]{40}$ ]]
+[[ "$build_identity" =~ ^[0-9a-f]{64}$ ]]
+[[ -z "$target_digest" || "$target_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+mkdir -p "$evidence_directory"
+
+file_sha256() {
+  sha256sum "$1" | cut -d' ' -f1
+}
+
+validate_sbom_statement() {
+  local statement=$1 subject_digest=$2
+  jq -e --arg digest "${subject_digest#sha256:}" '
+    .predicateType == "https://spdx.dev/Document" and
+    (.subject | type) == "array" and (.subject | length) == 1 and
+    .subject[0].digest == {"sha256": $digest} and
+    .predicate.SPDXID == "SPDXRef-DOCUMENT" and
+    (.predicate.spdxVersion | startswith("SPDX-")) and
+    (.predicate.packages | length) > 0
+  ' "$statement" >/dev/null
+}
+
+validate_provenance_statement() {
+  local statement=$1 subject_digest=$2
+  jq -e \
+    --arg digest "${subject_digest#sha256:}" \
+    --arg architecture "$architecture" \
+    --arg revision "$source_revision" '
+    .predicateType == "https://slsa.dev/provenance/v1" and
+    (.subject | type) == "array" and (.subject | length) == 1 and
+    .subject[0].digest == {"sha256": $digest} and
+    .predicate.buildDefinition.buildType ==
+      "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
+    (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
+    (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
+    any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
+      .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
+    (.predicate | tostring | contains($revision))
+  ' "$statement" >/dev/null
+}
+
+image_inspection="$evidence_directory/image-inspect.json"
+docker image inspect "$image" > "$image_inspection"
+jq -e \
+  --arg architecture "$architecture" \
+  --arg revision "$source_revision" \
+  --arg build_identity "$build_identity" \
+  --arg app_version "$app_version" \
+  --arg source "$source_url" \
+  --arg description "$image_description" '
+  length == 1 and
+  .[0].Os == "linux" and .[0].Architecture == $architecture and
+  .[0].Config.User == "1000:1000" and
+  .[0].Config.WorkingDir == "/rails" and
+  (.[0].Config.Entrypoint == null or .[0].Config.Entrypoint == []) and
+  .[0].Config.Cmd == ["bin/boot"] and
+  (.[0].Config.ExposedPorts | keys | sort) == ["443/tcp", "80/tcp"] and
+  (.[0].Config.Env | index("RAILS_ENV=production")) != null and
+  (.[0].Config.Env | index("APP_VERSION=" + $app_version)) != null and
+  (.[0].Config.Env | index("GIT_REVISION=" + $revision)) != null and
+  (.[0].Config.Env | index("MAX_REQUEST_BODY=106954752")) != null and
+  (.[0].Config.Env | map(select(startswith("DISABLE_SSL="))) | length) == 0 and
+  (.[0].Config.Env | map(select(startswith("OIDC_MODE="))) | length) == 0 and
+  .[0].Config.Labels["org.opencontainers.image.title"] == "Campfire" and
+  .[0].Config.Labels["org.opencontainers.image.description"] == $description and
+  .[0].Config.Labels["org.opencontainers.image.source"] == $source and
+  .[0].Config.Labels["org.opencontainers.image.licenses"] == "MIT" and
+  .[0].Config.Labels["org.opencontainers.image.version"] == $app_version and
+  .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
+  .[0].Config.Labels["com.basecamp.campfire.build-identity"] == $build_identity and
+  (.[0].RootFS.Layers | length) > 0
+' "$image_inspection" >/dev/null
+
+config_digest=$(jq -r '.[0].Id' "$image_inspection")
+[[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+printf '%s\n' "$config_digest" > "$evidence_directory/config-digest"
+
+sbom_path="$evidence_directory/sbom.spdx.json"
+provenance_path="$evidence_directory/buildkit-provenance.json"
+runnable_digest=""
+oci_archive_sha256=""
+runtime_archive_sha256=""
+runtime_binding=""
+runnable_manifest_path="$evidence_directory/oci-runnable-manifest.json"
+
+if [[ -n "$oci_archive" ]]; then
+  [[ -f "$oci_archive" ]]
+  [[ -n "$build_metadata" && -f "$build_metadata" ]]
+  [[ -n "$runtime_archive" && -f "$runtime_archive" ]]
+  oci_root=$(mktemp -d "${RUNNER_TEMP:-/tmp}/campfire-oci.XXXXXX")
+  trap 'rm -rf "$oci_root"' EXIT
+  tar --extract --file "$oci_archive" --directory "$oci_root"
+  jq -e '.imageLayoutVersion == "1.0.0"' "$oci_root/oci-layout" >/dev/null
+  layout_index="$oci_root/index.json"
+  jq -e '.schemaVersion == 2 and (.manifests | length) >= 1' "$layout_index" >/dev/null
+  cp "$layout_index" "$evidence_directory/oci-layout-index.json"
+
+  manifest_index="$layout_index"
+  nested_index_digest=$(jq -r '
+    if (.manifests | length) == 1 and
+        (.manifests[0].mediaType == "application/vnd.oci.image.index.v1+json" or
+         .manifests[0].mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")
+    then .manifests[0].digest else "" end
+  ' "$layout_index")
+  if [[ -n "$nested_index_digest" ]]; then
+    [[ "$nested_index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+    manifest_index="$oci_root/blobs/sha256/${nested_index_digest#sha256:}"
+    [[ -f "$manifest_index" ]]
+    [[ "sha256:$(file_sha256 "$manifest_index")" == "$nested_index_digest" ]]
+  fi
+  jq -e '.schemaVersion == 2 and (.manifests | length) >= 2' "$manifest_index" >/dev/null
+  cp "$manifest_index" "$evidence_directory/oci-index.json"
+
+  metadata_digest=$(jq -r '.["containerimage.digest"] // empty' "$build_metadata")
+  [[ "$metadata_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  jq -e --arg digest "$metadata_digest" '
+    .["containerimage.descriptor"].digest == $digest and
+    (.["containerimage.descriptor"].mediaType == "application/vnd.oci.image.index.v1+json" or
+     .["containerimage.descriptor"].mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")
+  ' "$build_metadata" >/dev/null
+  [[ -z "$nested_index_digest" || "$metadata_digest" == "$nested_index_digest" ]]
+
+  mapfile -t runnable_digests < <(jq -r \
+    --arg architecture "$architecture" '
+      .manifests[] |
+      select(.annotations["vnd.docker.reference.type"] != "attestation-manifest") |
+      select(.platform.os == "linux" and .platform.architecture == $architecture) |
+      .digest
+    ' "$manifest_index")
+  [[ ${#runnable_digests[@]} -eq 1 ]]
+  runnable_digest=${runnable_digests[0]}
+  [[ "$runnable_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  runnable_manifest="$oci_root/blobs/sha256/${runnable_digest#sha256:}"
+  [[ -f "$runnable_manifest" ]]
+  cp "$runnable_manifest" "$runnable_manifest_path"
+  [[ "sha256:$(file_sha256 "$runnable_manifest_path")" == "$runnable_digest" ]]
+
+  oci_config_digest=$(jq -r '.config.digest' "$runnable_manifest")
+  [[ "$oci_config_digest" == "$config_digest" ]]
+  cp "$oci_root/blobs/sha256/${oci_config_digest#sha256:}" "$evidence_directory/oci-image-config.json"
+  retained_build_metadata="$evidence_directory/build-metadata.json"
+  if [[ ! "$build_metadata" -ef "$retained_build_metadata" ]]; then
+    cp "$build_metadata" "$retained_build_metadata"
+  fi
+
+  mapfile -t attestation_digests < <(jq -r --arg digest "$runnable_digest" '
+    .manifests[] |
+    select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") |
+    select(.annotations["vnd.docker.reference.digest"] == $digest) |
+    .digest
+  ' "$manifest_index")
+  [[ ${#attestation_digests[@]} -ge 1 ]]
+
+  sbom_count=0
+  provenance_count=0
+  for attestation_digest in "${attestation_digests[@]}"; do
+    [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+    attestation_manifest="$oci_root/blobs/sha256/${attestation_digest#sha256:}"
+    [[ -f "$attestation_manifest" ]]
+    [[ "sha256:$(file_sha256 "$attestation_manifest")" == "$attestation_digest" ]]
+    while IFS=$'\t' read -r statement_digest predicate_type media_type statement_size; do
+      [[ "$statement_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+      [[ "$media_type" == "application/vnd.in-toto+json" ]]
+      [[ "$statement_size" =~ ^[1-9][0-9]*$ ]]
+      statement="$oci_root/blobs/sha256/${statement_digest#sha256:}"
+      [[ -f "$statement" ]]
+      [[ "sha256:$(file_sha256 "$statement")" == "$statement_digest" ]]
+      [[ "$(wc -c < "$statement")" -eq "$statement_size" ]]
+      case "$predicate_type" in
+        https://spdx.dev/Document)
+          ((sbom_count += 1))
+          cp "$statement" "$sbom_path"
+          validate_sbom_statement "$statement" "$runnable_digest"
+          ;;
+        https://slsa.dev/provenance/*)
+          ((provenance_count += 1))
+          cp "$statement" "$provenance_path"
+          validate_provenance_statement "$statement" "$runnable_digest"
+          ;;
+      esac
+    done < <(jq -r '.layers[] |
+      [.digest, (.annotations["in-toto.io/predicate-type"] // ""), .mediaType, (.size | tostring)] |
+      @tsv' "$attestation_manifest")
+  done
+  [[ "$sbom_count" -eq 1 && "$provenance_count" -eq 1 ]]
+  oci_archive_sha256=$(file_sha256 "$oci_archive")
+  runtime_archive_sha256=$(file_sha256 "$runtime_archive")
+  runtime_binding="config-digest-matched-dual-build"
+  rm -rf "$oci_root"
+  trap - EXIT
+elif [[ -n "$attestation_image" ]]; then
+  [[ -n "$target_digest" ]]
+  registry_manifest="$evidence_directory/build-index.json"
+  docker buildx imagetools inspect "$attestation_image" --raw > "$registry_manifest"
+  parent_digest=${attestation_image##*@}
+  [[ "$parent_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ "sha256:$(file_sha256 "$registry_manifest")" == "$parent_digest" ]]
+  jq -e --arg architecture "$architecture" --arg digest "$target_digest" '
+    [.manifests[] |
+      select(.annotations["vnd.docker.reference.type"] != "attestation-manifest") |
+      select(.platform.os == "linux" and .platform.architecture == $architecture and .digest == $digest)
+    ] | length == 1
+  ' "$registry_manifest" >/dev/null
+  mapfile -t attestation_digests < <(jq -r --arg digest "$target_digest" '
+    .manifests[] |
+    select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") |
+    select(.annotations["vnd.docker.reference.digest"] == $digest) |
+    .digest
+  ' "$registry_manifest")
+  [[ ${#attestation_digests[@]} -ge 1 ]]
+
+  registry_reference=${attestation_image%@*}
+  registry=${registry_reference%%/*}
+  repository=${registry_reference#*/}
+  registry_username=${REGISTRY_USERNAME:?REGISTRY_USERNAME is required for registry attestations}
+  registry_token=${REGISTRY_TOKEN:?REGISTRY_TOKEN is required for registry attestations}
+  [[ "$registry" == "ghcr.io" ]]
+  [[ "$repository" =~ ^[a-z0-9][a-z0-9._/-]*[a-z0-9]$ && "$repository" != *..* ]]
+  pull_token=$(curl --fail --silent --show-error --get \
+    --user "$registry_username:$registry_token" \
+    --data-urlencode "service=$registry" \
+    --data-urlencode "scope=repository:$repository:pull" \
+    "https://$registry/token" | jq -er \
+      '(.token // .access_token) | select(type == "string" and length > 0)')
+  registry_root=$(mktemp -d "${RUNNER_TEMP:-/tmp}/campfire-registry-attestations.XXXXXX")
+  trap 'rm -rf "$registry_root"' EXIT
+  sbom_count=0
+  provenance_count=0
+  for attestation_digest in "${attestation_digests[@]}"; do
+    [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+    attestation_manifest="$registry_root/${attestation_digest#sha256:}.json"
+    curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+      --header "Authorization: Bearer $pull_token" \
+      --header "Accept: application/vnd.oci.image.manifest.v1+json" \
+      --output "$attestation_manifest" \
+      "https://$registry/v2/$repository/manifests/$attestation_digest"
+    [[ "sha256:$(file_sha256 "$attestation_manifest")" == "$attestation_digest" ]]
+    jq -e '.schemaVersion == 2 and (.layers | type) == "array"' "$attestation_manifest" >/dev/null
+
+    while IFS=$'\t' read -r statement_digest predicate_type media_type statement_size; do
+      [[ "$statement_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+      [[ "$media_type" == "application/vnd.in-toto+json" ]]
+      [[ "$statement_size" =~ ^[1-9][0-9]*$ ]]
+      statement="$registry_root/${statement_digest#sha256:}.statement.json"
+      curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+        --header "Authorization: Bearer $pull_token" \
+        --output "$statement" \
+        "https://$registry/v2/$repository/blobs/$statement_digest"
+      [[ "sha256:$(file_sha256 "$statement")" == "$statement_digest" ]]
+      [[ "$(wc -c < "$statement")" -eq "$statement_size" ]]
+      case "$predicate_type" in
+        https://spdx.dev/Document)
+          ((sbom_count += 1))
+          cp "$statement" "$sbom_path"
+          validate_sbom_statement "$statement" "$target_digest"
+          ;;
+        https://slsa.dev/provenance/*)
+          ((provenance_count += 1))
+          cp "$statement" "$provenance_path"
+          validate_provenance_statement "$statement" "$target_digest"
+          ;;
+      esac
+    done < <(jq -r '.layers[] |
+      [.digest, (.annotations["in-toto.io/predicate-type"] // ""), .mediaType, (.size | tostring)] |
+      @tsv' "$attestation_manifest")
+  done
+  [[ "$sbom_count" -eq 1 && "$provenance_count" -eq 1 ]]
+  rm -rf "$registry_root"
+  trap - EXIT
+  runnable_digest=$target_digest
+  docker buildx imagetools inspect "$image" --raw > "$runnable_manifest_path"
+  [[ "sha256:$(file_sha256 "$runnable_manifest_path")" == "$runnable_digest" ]]
+  [[ "$(jq -r '.config.digest' "$runnable_manifest_path")" == "$config_digest" ]]
+  runtime_binding="registry-manifest-digest"
+else
+  printf 'OCI_ARCHIVE or ATTESTATION_IMAGE is required\n' >&2
+  exit 64
+fi
+
+[[ "$runnable_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+if [[ -n "$target_digest" ]]; then
+  [[ "$runnable_digest" == "$target_digest" ]]
+fi
+printf '%s\n' "$runnable_digest" > "$evidence_directory/runnable-digest"
+
+suffix=${build_identity:0:16}-${architecture}
+container="campfire-container-smoke-$suffix"
+volume="campfire-container-smoke-$suffix"
+transport_headers=(--header 'X-Forwarded-Proto: https')
+cleanup() {
+  if [[ -n "${container:-}" ]]; then
+    docker logs "$container" > "$evidence_directory/container.log" 2>&1 || true
+    docker rm --force "$container" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${volume:-}" ]]; then
+    docker volume rm "$volume" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+missing_transport_log="$evidence_directory/missing-transport.log"
+if docker run --rm --platform "$platform" "$image" bin/start-web > "$missing_transport_log" 2>&1; then
+  printf 'Container startup without an explicit transport mode succeeded unexpectedly\n' >&2
+  exit 1
+fi
+grep -Fq 'built-in Thruster TLS requires a nonempty effective TLS_DOMAIN' "$missing_transport_log"
+
+docker volume create "$volume" >/dev/null
+container_id=$(docker run --detach \
+  --platform "$platform" \
+  --name "$container" \
+  --publish 127.0.0.1::80 \
+  --mount "type=volume,src=$volume,dst=/rails/storage" \
+  --env DISABLE_SSL=true \
+  --env OIDC_MODE=disabled \
+  --env SKIP_TELEMETRY=true \
+  --env WEB_CONCURRENCY=1 \
+  --env SECRET_KEY_BASE=container-smoke-secret-key-base-container-smoke-secret-key-base \
+  --env VAPID_PUBLIC_KEY=container-smoke-public-key \
+  --env VAPID_PRIVATE_KEY=container-smoke-private-key \
+  "$image")
+[[ "$container_id" == "$container" || "$container_id" =~ ^[0-9a-f]{64}$ ]]
+port=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container")
+[[ "$port" =~ ^[0-9]+$ ]]
+health_status=$(curl --fail --silent --show-error \
+  --retry 60 --retry-all-errors --retry-delay 2 --connect-timeout 2 --max-time 10 \
+  "${transport_headers[@]}" --output "$evidence_directory/health-response.txt" \
+  --write-out '%{http_code}' "http://127.0.0.1:$port/up")
+[[ "$health_status" == 200 ]]
+[[ "$(docker exec "$container" id -u)" == 1000 ]]
+[[ "$(docker exec "$container" id -g)" == 1000 ]]
+[[ "$(docker exec "$container" printenv DISABLE_SSL)" == true ]]
+[[ "$(docker exec "$container" printenv OIDC_MODE)" == disabled ]]
+docker exec "$container" sh -ceu '
+  command -v ps >/dev/null
+  test "$(stat -c %u:%g /rails)" = 0:0
+  test "$(stat -c %u:%g /rails/bin/boot)" = 0:0
+  test "$(stat -c %u:%g /usr/local/bundle)" = 0:0
+  test -x /rails/bin/boot
+  test ! -w /rails/bin/boot
+  test ! -w /usr/local/bundle
+  test -z "$(find /usr/local/bundle -xdev \( ! -user 0 -o ! -group 0 \) -print -quit)"
+  test -z "$(find /rails -xdev \( ! -user 0 -o ! -group 0 \) \
+    ! -path /rails/log ! -path "/rails/log/*" \
+    ! -path /rails/storage ! -path "/rails/storage/*" \
+    ! -path /rails/tmp ! -path "/rails/tmp/*" -print -quit)"
+  test -z "$(find /rails/log /rails/storage /rails/tmp -xdev \
+    \( ! -user 1000 -o ! -group 1000 \) -print -quit)"
+  for directory in /rails/log /rails/storage /rails/tmp /rails/tmp/pids; do
+    test "$(stat -c %u:%g "$directory")" = 1000:1000
+    test -w "$directory"
+  done
+'
+docker exec "$container" cat /etc/campfire-build-identity.json | jq -e \
+  --arg revision "$source_revision" --arg build_identity "$build_identity" '
+    (keys | sort) == ["build_identity", "format_version", "revision"] and
+    .format_version == 1 and .revision == $revision and .build_identity == $build_identity
+  ' >/dev/null
+
+request_limit_bytes=106954752
+oversized_request="$evidence_directory/oversized-request.bin"
+dd if=/dev/zero bs=1M count=102 status=none | tr '\000' a > "$oversized_request"
+printf a >> "$oversized_request"
+[[ "$(wc -c < "$oversized_request")" -eq "$((request_limit_bytes + 1))" ]]
+request_limit_status=$(curl --silent --show-error --http1.1 --max-time 60 \
+  --output /dev/null --write-out 'HTTP/%{http_version} %{http_code}' \
+  "${transport_headers[@]}" \
+  --header 'Content-Type: application/x-www-form-urlencoded' --header 'Expect:' \
+  --header 'Transfer-Encoding: chunked' --header 'Content-Length:' \
+  --data-binary "@$oversized_request" "http://127.0.0.1:$port/session")
+rm -f "$oversized_request"
+printf '%s\n' "$request_limit_status" > "$evidence_directory/request-limit-response.txt"
+[[ "$request_limit_status" =~ ^HTTP/1\.[01][[:space:]]413$ ]]
+sleep 1
+[[ "$(curl --fail --silent --show-error --max-time 10 --output /dev/null \
+  --write-out '%{http_code}' "${transport_headers[@]}" "http://127.0.0.1:$port/up")" == 200 ]]
+
+docker stop --timeout 70 "$container" >/dev/null
+[[ "$(docker inspect --format '{{.State.Running}}' "$container")" == false ]]
+exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container")
+[[ "$exit_code" == 0 ]]
+docker logs "$container" > "$evidence_directory/container.log" 2>&1
+docker rm "$container" >/dev/null
+container=""
+docker volume rm "$volume" >/dev/null
+volume=""
+trap - EXIT
+
+sbom_sha256=$(file_sha256 "$sbom_path")
+provenance_sha256=$(file_sha256 "$provenance_path")
+inspection_sha256=$(file_sha256 "$image_inspection")
+jq -n \
+  --arg platform "$platform" \
+  --arg architecture "$architecture" \
+  --arg image "$image" \
+  --arg source_revision "$source_revision" \
+  --arg build_identity "$build_identity" \
+  --arg app_version "$app_version" \
+  --arg runnable_digest "$runnable_digest" \
+  --arg config_digest "$config_digest" \
+  --arg inspection_sha256 "$inspection_sha256" \
+  --arg sbom_sha256 "$sbom_sha256" \
+  --arg provenance_sha256 "$provenance_sha256" \
+  --arg oci_archive_sha256 "$oci_archive_sha256" \
+  --arg runtime_archive_sha256 "$runtime_archive_sha256" \
+  --arg runtime_binding "$runtime_binding" \
+  --arg request_limit_bytes "$request_limit_bytes" \
+  --arg request_limit_status "$request_limit_status" \
+  --arg exit_code "$exit_code" '
+  {
+    format_version: 1,
+    kind: "campfire-container-validation",
+    platform: $platform,
+    architecture: $architecture,
+    image: $image,
+    source_revision: $source_revision,
+    build_identity: $build_identity,
+    app_version: $app_version,
+    runnable_digest: $runnable_digest,
+    config_digest: $config_digest,
+    validated_manifest_digest: $runnable_digest,
+    runtime_binding: $runtime_binding,
+    transport_mode: "external-https-loopback-probe",
+    image_inspection_sha256: $inspection_sha256,
+    sbom_sha256: $sbom_sha256,
+    buildkit_provenance_sha256: $provenance_sha256,
+    oci_archive_sha256: (if $oci_archive_sha256 == "" then null else $oci_archive_sha256 end),
+    runtime_archive_sha256: (if $runtime_archive_sha256 == "" then null else $runtime_archive_sha256 end),
+    request_limit_probe_bytes: ($request_limit_bytes | tonumber),
+    checks: {
+      asset_precompile_transport: "passed",
+      platform_config: "passed",
+      non_root_user: "passed",
+      procps: "passed",
+      immutable_runtime_paths: "passed",
+      mutable_runtime_directories: "passed",
+      runtime_transport_neutrality: "passed",
+      transport_contract: "passed",
+      entrypoint_and_labels: "passed",
+      sbom: "passed",
+      provenance: "passed",
+      boot_health: "passed",
+      request_limit: $request_limit_status,
+      graceful_exit_code: ($exit_code | tonumber)
+    }
+  }
+' > "$evidence_directory/container-validation.json"
+
+printf 'Container validation passed image=%s platform=%s digest=%s\n' \
+  "$image" "$platform" "$runnable_digest"

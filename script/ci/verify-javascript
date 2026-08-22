@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(git rev-parse --show-toplevel)
+cd "$repository_root"
+
+javascript_files=()
+while IFS= read -r -d '' file; do
+  javascript_files+=("$file")
+done < <(git ls-files -z -- \
+  'app/javascript/*.js' \
+  'app/javascript/**/*.js' \
+  'app/views/pwa/service_worker.js')
+
+if [[ ${#javascript_files[@]} -eq 0 ]]; then
+  printf 'No tracked application JavaScript files were found\n' >&2
+  exit 1
+fi
+
+for file in "${javascript_files[@]}"; do
+  node --check "$file"
+done
+
+printf 'JavaScript syntax verified for %d tracked files\n' "${#javascript_files[@]}"

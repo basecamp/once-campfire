@@ -2,7 +2,9 @@ class Messages::ByBotsController < MessagesController
   include RawRequestBody
 
   allow_bot_access only: %i[ index create update destroy ]
+  skip_before_action :set_room, :set_message
 
+  before_action :require_bot_key_authentication
   before_action :set_room
   before_action :set_message, only: %i[ update destroy ]
   before_action :ensure_can_administer, only: %i[ update destroy ]
@@ -15,7 +17,9 @@ class Messages::ByBotsController < MessagesController
 
   def create
     super
-    head :created, location: message_url(@message)
+    return if performed?
+
+    head :created, location: room_at_message_url(@room, @message)
   end
 
   def destroy
@@ -31,7 +35,7 @@ class Messages::ByBotsController < MessagesController
     end
 
     def ensure_body_or_attachment_present
-      if params[:attachment].blank? && raw_request_body.blank?
+      if params[:attachment].blank? && raw_message_body.blank?
         head :unprocessable_content
       end
     end
@@ -40,7 +44,7 @@ class Messages::ByBotsController < MessagesController
       headers["X-Total-Count"] = @room.messages.count.to_s
 
       if next_page = next_page_params
-        headers["Link"] = %(<#{room_bot_messages_url(@room, params[:bot_key], **next_page)}>; rel="next")
+        headers["Link"] = %(<#{room_bot_messages_url(@room, **next_page)}>; rel="next")
       end
     end
 
@@ -56,9 +60,19 @@ class Messages::ByBotsController < MessagesController
 
     def message_params
       if params[:attachment]
-        params.permit(:attachment)
+        params.permit(:attachment).merge(origin: Message::ORIGIN_BOT_API)
       else
-        { body: raw_request_body }
+        { body: raw_message_body, origin: Message::ORIGIN_BOT_API }
       end
+    end
+
+    def message_update_params
+      { body: raw_message_body }
+    end
+
+    def raw_message_body
+      @raw_message_body ||= raw_request_body(
+        maximum: ContentLimits::MESSAGE_BODY_BYTES, description: "message body"
+      )
     end
 end

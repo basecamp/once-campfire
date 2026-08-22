@@ -18,4 +18,26 @@ class WelcomeControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to room_url(rooms(:watercooler))
   end
+
+  test "unactivated required mode fails before authentication without deleting credentials" do
+    current_session = Session.find_by!(token: parsed_cookies.signed[:session_token])
+    configure_oidc("OIDC_MODE" => "required", "OIDC_BREAK_GLASS_EMAIL" => users(:jason).email_address)
+
+    assert_no_difference -> { Session.count } do
+      get root_url
+    end
+
+    assert_response :service_unavailable
+    assert Session.exists?(current_session.id)
+  end
+
+  test "rollback quarantine is enforced even with OIDC disabled" do
+    accounts(:signal).update!(oidc_transition_state: "rollback_prepared")
+
+    assert_no_difference -> { Session.count } do
+      get root_url
+    end
+
+    assert_response :service_unavailable
+  end
 end

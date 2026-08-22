@@ -30,13 +30,14 @@
 
       <div class="flex flex-wrap border-top margin-block-start-half pad-block-start-half message__actions-grid">
         <% if message.content_type.attachment? %>
-          <%= link_to rails_blob_path(message.attachment, disposition: "attachment", only_path: true), class: "btn message__action-btn center full-width hide-in-ios-pwa", title: "Download", aria: { label: "Download" } do %>
+          <%= link_to room_message_attachment_path(message.room, message, disposition: "attachment"), class: "btn message__action-btn center full-width hide-in-ios-pwa", title: "Download", aria: { label: "Download" } do %>
             <%= image_tag "download.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
           <% end %>
 
-          <%= tag.button class: "btn message__action-btn center full-width",
-              data: { controller: "web-share", action: "web-share#share", web_share_files_value: rails_blob_path(message.attachment, only_path: true), web_share_title_value: message.attachment.filename.to_s }, title: "Share", aria: { label: "Share" } do %>
+          <%= tag.button type: "button", class: "btn message__action-btn center full-width",
+              data: { controller: "web-share", action: "web-share#share", web_share_files_value: room_message_attachment_path(message.room, message), web_share_filename_value: message.attachment.filename.to_s, web_share_title_value: message.attachment.filename.to_s }, title: "Share" do %>
             <%= image_tag "share.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+            <span class="for-screen-reader" data-web-share-target="label">Share <%= message.attachment.filename %></span>
           <% end %>
         <% else %>
           <%= tag.button class: "btn message__action-btn center full-width", data: { action: "reply#reply" }, title: "Reply", aria: { label: "Reply" } do %>

@@ -16,5 +16,8 @@ module Campfire
 
     # Fallback to English if translation key is missing
     config.i18n.fallbacks = true
+
+    # Files are served only through application routes that enforce current authorization.
+    config.active_storage.draw_routes = false
   end
 end

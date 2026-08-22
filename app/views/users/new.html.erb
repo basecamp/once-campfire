@@ -10,7 +10,7 @@
   </div>
 <% end %>
 
-<%= form_with model: @user, url: join_path(params[:join_code]), class: "center" do |form| %>
+<%= form_with model: @user, url: join_path, class: "center" do |form| %>
   <section class="nametag u-relative">
     <div class="flex justify-center align-center pad-block">
       <%= image_tag "lanyard.svg", class: "nametag__lanyard", aria: { hidden: "true" } %>
@@ -32,7 +32,7 @@
           </div>
 
           <div class="btn avatar input--file txt-xx-large">
-            <%= image_tag @user.avatar.attached? ? @user.avatar : "default-avatar.svg", aria: { hidden: "true" }, data: { upload_preview_target: "image" } %>
+            <%= image_tag @user.persisted? && @user.avatar.attached? ? fresh_user_avatar_path(@user) : "default-avatar.svg", aria: { hidden: "true" }, data: { upload_preview_target: "image" } %>
             <span class="for-screen-reader">Avatar</span>
           </div>
         </label>

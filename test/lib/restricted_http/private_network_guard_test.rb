@@ -82,7 +82,9 @@ class RestrictedHTTP::PrivateNetworkGuardTest < ActiveSupport::TestCase
   test "private_ip? returns true for the whole local-use NAT64 block (RFC8215)" do
     assert_private_ip "64:ff9b:1::a00:1"    # reads as 10.0.0.1 under a /96
     assert_private_ip "64:ff9b:1::808:808"  # reads as 8.8.8.8 under a /96
+    assert_private_ip "64:ff9b:1:a00:0:100:808:808"
     assert_private_ip "64:ff9b:1:ffff::1"
+    assert_private_ip "64:ff9b:1:ffff:ffff:ffff:ffff:ffff"
   end
 
   # SIIT is the third way an IPv4 address rides inside an IPv6 one and the only

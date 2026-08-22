@@ -21,12 +21,13 @@ bin/setup --reset
 Start the development server with:
 
 ```sh
+export CAMPFIRE_FIRST_RUN_TOKEN="development-only-first-run-token"
 bin/dev
 ```
 
 You'll be able to access the app at http://localhost:3000.
 
-On first run you'll be guided through creating your admin account, and you can sign in with that account from then on.
+On first run you'll be guided through creating your admin account. Enter the `CAMPFIRE_FIRST_RUN_TOKEN` value in the setup form; it is not needed after setup completes.
 
 Note that Campfire needs Redis (for Action Cable, caching, and background jobs), so if you've restarted your machine or stopped the container, `docker start campfire-redis` will bring it back.
 
@@ -57,11 +58,23 @@ And the browser-based system tests with:
 bin/rails test:system
 ```
 
-Before pushing your changes, you can run the full CI suite locally - style checks, security audits, and all the tests - with a single command:
+Before pushing your changes, run the portable local verification suite with:
 
 ```sh
 bin/ci
 ```
+
+This runs style, dependency, code-loading, release-policy, checksum, template,
+JavaScript, Rails, local browser, seed, and OIDC production-boundary checks. It
+uses `bin/setup --skip-server`, so it neither requires nor starts the development
+Redis server. It also does not require GitHub CLI signoff.
+
+`bin/ci` is not equivalent to every protected GitHub check. The platform-specific
+Chrome, Firefox, Safari, mobile-emulation, and `linux/amd64` and `linux/arm64`
+container jobs remain required. The manual assistive-technology command validates
+only the record template's structure; it does not operate VoiceOver or TalkBack
+or create human evidence. Actual human-performed assistive-technology evidence
+remains a release-operator prerequisite.
 
 ### Contributing
 

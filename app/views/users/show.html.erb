@@ -41,15 +41,16 @@
 
         <% if @user.active? %>
           <div class="pad-inline-double margin-inline margin-block-start">
-            <%= button_to rooms_directs_path(user_ids: [ @user.id ]), class: "btn btn--reversed full-width txt-large" do %>
-              <%= image_tag "messages.svg", aria: { hidden: "true", label: "Ping #{@user.name}" } %>
+            <%= button_to rooms_directs_path(user_ids: [ @user.id ]), class: "btn btn--reversed full-width txt-large",
+                  aria: { label: "Ping #{@user.name}" } do %>
+              <%= image_tag "messages.svg", aria: { hidden: "true" } %>
             <% end %>
           </div>
 
           <% if Current.user.can_administer? %>
             <hr class="margin-block-start borderless">
 
-            <%= render "users/profiles/transfer", user: @user %>
+            <%= render "users/profiles/transfer", user: @user unless Oidc.enabled? %>
           <% end %>
         <% end %>
 

@@ -1,0 +1,9 @@
+<% @page_title = "Single sign-on already in progress" %>
+
+<section class="txt-align-center">
+  <div class="panel flex flex-column gap">
+    <h1>Single sign-on already in progress</h1>
+    <p>Complete the provider window that is already open. Canceling here will invalidate that attempt.</p>
+    <%= button_to "Cancel and start again", oidc_flow_path, method: :delete, class: "btn btn--reversed center" %>
+  </div>
+</section>

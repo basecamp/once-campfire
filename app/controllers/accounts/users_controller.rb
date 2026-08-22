@@ -1,4 +1,5 @@
 class Accounts::UsersController < ApplicationController
+  prepend_around_action :with_administrator_roster_mutation_fence, only: %i[ update destroy ]
   before_action :ensure_can_administer, :set_user, only: %i[ update destroy ]
 
   def index
@@ -6,12 +7,12 @@ class Accounts::UsersController < ApplicationController
   end
 
   def update
-    @user.update(role_params)
+    @user.update_role_by! role_params, actor: Current.user
     redirect_to edit_account_url
   end
 
   def destroy
-    @user.deactivate
+    @user.deactivate_by! actor: Current.user
     redirect_to edit_account_url
   end
 

@@ -1,0 +1,552 @@
+#!/usr/bin/env ruby
+require_relative "../../config/boot"
+require "base64"
+require "digest"
+require "json"
+require "pathname"
+require "sqlite3"
+require "tmpdir"
+require File.expand_path("../../lib/campfire_backup/authentication", __dir__)
+require File.expand_path("../../lib/campfire_backup/descriptor_tree", __dir__)
+require File.expand_path("../../lib/campfire_backup/installation_identity", __dir__)
+require File.expand_path("../../lib/campfire_backup/redis_validator", __dir__)
+require File.expand_path("../../lib/campfire_backup/schema_verifier", __dir__)
+require File.expand_path("../../lib/campfire_backup/source_state_inventory", __dir__)
+
+class BackupVerifier
+  FORMAT_VERSION = 1
+  GENERATION_PATTERN = /\A\d{8}T\d{6}Z-[0-9a-f]{16}\z/
+  SHA256_PATTERN = /\A[0-9a-f]{64}\z/
+  MAX_MANIFEST_BYTES = 64 * 1024 * 1024
+  MAX_REDIS_MANIFEST_BYTES = 16 * 1024 * 1024
+  MAX_PAYLOAD_ENTRIES = 1_000_000
+  STAGING_RESERVE_BYTES = 16 * 1024 * 1024
+  COPY_CHUNK_BYTES = 1024 * 1024
+
+  class << self
+    def verify(generation_path:, expected_installation_fingerprint:, expected_environment:,
+        authentication_key: CampfireBackup::Authentication.key_from_env, output: true,
+        fault_after: nil, descriptor_tree: nil)
+      raise "EXPECTED_INSTALLATION_FINGERPRINT is required" if expected_installation_fingerprint.to_s.empty?
+
+      generation_path = Pathname(generation_path).realpath
+      own_tree = descriptor_tree.nil?
+      descriptor_tree ||= CampfireBackup::DescriptorTree.new(
+        generation_path, description: "Backup generation"
+      )
+      unless descriptor_tree.path == generation_path
+        raise "Backup generation descriptor does not match the requested path"
+      end
+      descriptor_tree.assert_root_current!
+
+      manifest_source, manifest_identity = read_manifest(descriptor_tree)
+      manifest = authenticate_manifest(manifest_source, authentication_key)
+      validate_manifest_identity!(
+        manifest, generation_path, expected_installation_fingerprint, expected_environment
+      )
+      validate_manifest_files! manifest
+      CampfireBackup::SourceStateInventory.validate_manifest! manifest
+
+      generation_before = verify_generation_entries(descriptor_tree, manifest)
+      payload_before = verify_files(descriptor_tree, manifest.fetch("files"))
+      with_private_staging do |staging_tree, staging_path|
+        verify_database(
+          descriptor_tree, staging_tree, manifest, payload_before, fault_after:
+        )
+        verify_files(descriptor_tree, manifest.fetch("files"))
+        validate_redis_copy!(
+          descriptor_tree, staging_tree, staging_path, manifest, payload_before
+        )
+      end
+      payload_after = verify_files(descriptor_tree, manifest.fetch("files"))
+      unless payload_after == payload_before
+        raise "Backup payload changed during verification"
+      end
+      generation_after = verify_generation_entries(descriptor_tree, manifest)
+      unless generation_after == generation_before
+        raise "Backup generation changed during verification"
+      end
+      final_manifest, = read_manifest(descriptor_tree, expected_identity: manifest_identity)
+      unless secure_compare(final_manifest, manifest_source)
+        raise "Backup manifest changed during verification"
+      end
+      authenticate_manifest(final_manifest, authentication_key)
+      descriptor_tree.assert_root_current!
+
+      if output
+        puts JSON.generate(
+          status: "verified", backup_id: manifest.fetch("backup_id"), path: generation_path.to_s
+        )
+      end
+      true
+    ensure
+      descriptor_tree&.close if own_tree
+    end
+
+    private
+      def authenticate_manifest(source, authentication_key)
+        CampfireBackup::Authentication.verify_manifest!(JSON.parse(source), key: authentication_key)
+      end
+
+      def validate_manifest_identity!(manifest, generation_path, expected_fingerprint, expected_environment)
+        raise "Unsupported backup manifest version" unless manifest.fetch("format_version") == FORMAT_VERSION
+        backup_id = manifest.fetch("backup_id")
+        unless backup_id.match?(GENERATION_PATTERN) && generation_path.basename.to_s == backup_id
+          raise "Backup generation identity does not match its manifest"
+        end
+        unless manifest.fetch("environment") == expected_environment
+          raise "Backup environment does not match"
+        end
+        unless secure_compare(manifest.fetch("installation_fingerprint"), expected_fingerprint)
+          raise "Backup belongs to a different Campfire installation"
+        end
+
+        expected_database = "#{manifest.fetch('environment')}.sqlite3"
+        unless manifest.dig("database", "path") == expected_database
+          raise "Backup database path does not match its environment"
+        end
+      end
+
+      def validate_manifest_files!(manifest)
+        database = manifest.fetch("database")
+        validate_file_metadata! database, payload: false
+        files = manifest.fetch("files")
+        unless files.is_a?(Array) && files.length <= MAX_PAYLOAD_ENTRIES
+          raise "Backup manifest contains too many file entries"
+        end
+        files.each { validate_file_metadata!(_1, payload: true) }
+        paths = files.map { _1.fetch("path") }
+        unless paths.uniq.size == paths.size
+          raise "Backup manifest contains duplicate file paths"
+        end
+      rescue KeyError, NoMethodError, TypeError, ArgumentError
+        raise "Backup manifest file inventory is invalid"
+      end
+
+      def validate_file_metadata!(metadata, payload:)
+        path = safe_relative_path(metadata.fetch("path"))
+        if !payload && path.each_filename.count != 1
+          raise "Backup database path is unsafe"
+        end
+        bytes = metadata.fetch("bytes")
+        sha256 = metadata.fetch("sha256")
+        unless bytes.is_a?(Integer) && bytes >= 0 && sha256.is_a?(String) &&
+            sha256.match?(SHA256_PATTERN)
+          raise "Backup manifest file metadata is invalid"
+        end
+      end
+
+      def read_manifest(tree, expected_identity: nil)
+        identity = nil
+        contents = tree.open_regular_file("manifest.json", expected_identity:) do |file, stat|
+          unless stat.size.between?(1, MAX_MANIFEST_BYTES)
+            raise "Backup manifest exceeds its safe size limit"
+          end
+          identity = metadata_identity(stat)
+          read_exact_contents(file, stat.size, "Backup manifest")
+        end
+        [ contents, identity ]
+      end
+
+      def verify_generation_entries(tree, manifest)
+        expected = [ "manifest.json", manifest.dig("database", "path"), "payload" ].sort
+        actual_names = tree.children.sort
+        unless actual_names == expected
+          raise "Backup generation contains unexpected or missing entries: " \
+            "expected #{expected.join(', ')}, got #{actual_names.join(', ')}"
+        end
+
+        actual_names.to_h do |name|
+          validate_entry_name! name
+          metadata = tree.open_entry(name) do |_file, stat|
+            type = name == "payload" ? :directory : :file
+            expected_type = type == :directory ? stat.directory? : stat.file? && stat.nlink == 1
+            unless expected_type
+              raise "Backup generation entry has the wrong type: #{name}"
+            end
+            inventory_metadata(stat, type)
+          end
+          [ name, metadata ]
+        end.sort.to_h
+      end
+
+      def verify_files(tree, files)
+        expected_paths = files.map { safe_relative_path(_1.fetch("path")).to_s }.sort
+        expected_directories = expected_paths.flat_map do |path|
+          parts = Pathname(path).each_filename.to_a
+          (1...parts.length).map { parts.first(_1).join("/") }
+        end.uniq.sort
+
+        before = payload_inventory(tree)
+        actual_files = before.filter_map { |path, metadata| path if metadata.fetch(:type) == :file }
+        actual_directories = before.filter_map { |path, metadata| path if metadata.fetch(:type) == :directory }
+        unless actual_files == expected_paths
+          raise "Backup payload does not match its manifest"
+        end
+        unless actual_directories == expected_directories
+          raise "Backup payload contains unexpected directories"
+        end
+
+        files.each do |metadata|
+          path = safe_relative_path(metadata.fetch("path")).to_s
+          verify_file(
+            tree, "payload/#{path}", metadata,
+            expected_identity: before.fetch(path).fetch(:identity)
+          )
+        end
+        after = payload_inventory(tree)
+        unless after == before
+          raise "Backup payload changed during verification"
+        end
+        after
+      end
+
+      def payload_inventory(tree)
+        inventory = {}
+        collect_payload_inventory(tree, "payload", "", inventory)
+        inventory.sort.to_h
+      end
+
+      def collect_payload_inventory(tree, tree_relative, payload_relative, inventory)
+        names = tree.children(tree_relative).sort
+        if inventory.length + names.length > MAX_PAYLOAD_ENTRIES
+          raise "Backup payload contains too many entries"
+        end
+        names.each do |name|
+          validate_entry_name! name
+          relative = payload_relative.empty? ? name : "#{payload_relative}/#{name}"
+          child = "#{tree_relative}/#{name}"
+          tree.open_entry(child) do |_file, stat|
+            if stat.directory?
+              inventory[relative] = inventory_metadata(stat, :directory)
+              collect_payload_inventory(tree, child, relative, inventory)
+            elsif stat.file? && stat.nlink == 1
+              inventory[relative] = inventory_metadata(stat, :file)
+            else
+              raise "Backup payload contains a link or special file: #{relative}"
+            end
+          end
+        end
+      end
+
+      def verify_file(tree, relative, metadata, expected_identity: nil)
+        tree.open_regular_file(relative, expected_identity:) do |file, stat|
+          verify_file_metadata!(file, stat, relative, metadata)
+        end
+      end
+
+      def verify_file_metadata!(file, stat, path, metadata)
+        expected_bytes = metadata.fetch("bytes")
+        raise "Backup file size does not match: #{path}" unless stat.size == expected_bytes
+
+        digest = digest_exact!(file, expected_bytes, Digest::SHA256.new, "Backup file")
+        unless secure_compare(digest.hexdigest, metadata.fetch("sha256"))
+          raise "Backup checksum does not match: #{path}"
+        end
+      end
+
+      def verify_database(source_tree, staging_tree, manifest, payload_inventory, fault_after:)
+        metadata = manifest.fetch("database")
+        database_relative = metadata.fetch("path")
+        generation_identity = nil
+        source_tree.open_regular_file(database_relative) do |database_source, database_stat|
+          generation_identity = metadata_identity(database_stat)
+          verify_file_metadata!(database_source, database_stat, database_relative, metadata)
+          fault_after&.call("database-digest")
+          ensure_staging_capacity!(staging_tree, metadata.fetch("bytes"), "database verification")
+
+          staging_tree.with_unlinked_temporary_file do |staged_database|
+            copy_authenticated_bytes!(database_source, staged_database, metadata, "Backup database")
+            fault_after&.call("database-staged")
+            staged_database.flush
+            staged_database.fsync
+            staged_database.rewind
+            verify_staged_database!(
+              staged_database, source_tree, manifest, payload_inventory, fault_after:
+            )
+          end
+          verify_file_metadata!(database_source, database_source.stat, database_relative, metadata)
+        end
+
+        source_tree.open_regular_file(database_relative, expected_identity: generation_identity) do |file, stat|
+          verify_file_metadata!(file, stat, database_relative, metadata)
+        end
+      end
+
+      def verify_staged_database!(database_file, source_tree, manifest, payload_inventory, fault_after:)
+        database, descriptor_path = open_pinned_database!(database_file, database_file.stat)
+        raise "Backup database failed integrity_check" unless database.get_first_value("PRAGMA integrity_check") == "ok"
+        raise "Backup database failed foreign_key_check" if database.execute("PRAGMA foreign_key_check").any?
+        schema_version = database.get_first_value("SELECT MAX(version) FROM schema_migrations").to_i
+        unless schema_version == manifest.fetch("schema_version")
+          raise "Backup schema does not match its manifest"
+        end
+        fault_after&.call("database-sqlite")
+        CampfireBackup::SchemaVerifier.verify!(descriptor_path, schema_version:)
+        CampfireBackup::UpgradeRecoveryGuard.assert_sqlite_main_file_current! database
+        database.results_as_hash = true
+        account_count = database.get_first_value("SELECT COUNT(*) FROM accounts").to_i
+        raise "Backup database must contain exactly one account" unless account_count == 1
+
+        files = manifest.fetch("files").index_by { _1.fetch("path") }
+        marker = read_installation_marker!(source_tree, files, payload_inventory)
+        if database.execute("PRAGMA table_info(accounts)").any? { _1.fetch("name") == "installation_identifier" }
+          identifier = database.get_first_value("SELECT installation_identifier FROM accounts")
+          raise "Backup installation marker does not match its database" unless identifier == marker
+        end
+        fingerprint = CampfireBackup::InstallationIdentity.fingerprint(marker)
+        unless secure_compare(fingerprint, manifest.fetch("installation_fingerprint"))
+          raise "Backup installation identity does not match its database"
+        end
+        verify_blob_files(database, source_tree, files, payload_inventory)
+      ensure
+        database&.close
+      end
+
+      def open_pinned_database!(file, expected_stat)
+        descriptor_path = open_descriptor_path(file)
+        database = SQLite3::Database.new(
+          "file:#{descriptor_path}?immutable=1", uri: true, readonly: true
+        )
+        descriptor = CampfireBackup::UpgradeRecoveryGuard.sqlite_main_file_descriptor!(database)
+        unless descriptor
+          raise "Native SQLite main-file descriptor verification is required for backup verification"
+        end
+        sqlite_stat = IO.for_fd(descriptor, autoclose: false).stat
+        unless metadata_identity(sqlite_stat) == metadata_identity(expected_stat)
+          raise "SQLite opened a different backup database descriptor"
+        end
+        CampfireBackup::UpgradeRecoveryGuard.assert_sqlite_main_file_current! database
+        [ database, descriptor_path ]
+      rescue Exception
+        database&.close
+        raise
+      end
+
+      def read_installation_marker!(tree, files, inventory)
+        relative = CampfireBackup::InstallationIdentity::FILENAME
+        metadata = files.fetch(relative)
+        if metadata.fetch("bytes") > 1024
+          raise "Backup installation identity marker is too large"
+        end
+        tree.open_regular_file(
+          "payload/#{relative}", expected_identity: inventory.fetch(relative).fetch(:identity)
+        ) do |file, stat|
+          verify_file_metadata!(file, stat, relative, metadata)
+          read_exact_contents(file, stat.size, "Installation identity marker").strip.tap do |identifier|
+            CampfireBackup::InstallationIdentity.validate! identifier
+          end
+        end
+      end
+
+      def verify_blob_files(database, tree, files, inventory)
+        database.execute("SELECT key, byte_size, checksum FROM active_storage_blobs").each do |blob|
+          relative = Pathname("files").join(
+            blob.fetch("key")[0, 2], blob.fetch("key")[2, 2], blob.fetch("key")
+          ).to_s
+          metadata = files.fetch(relative) do
+            raise "Backup is missing uploaded file #{blob.fetch('key')}"
+          end
+          unless metadata.fetch("bytes") == blob.fetch("byte_size")
+            raise "Backup is missing uploaded file #{blob.fetch('key')}"
+          end
+          tree.open_regular_file(
+            "payload/#{relative}", expected_identity: inventory.fetch(relative).fetch(:identity)
+          ) do |file, stat|
+            unless stat.size == blob.fetch("byte_size")
+              raise "Backup is missing uploaded file #{blob.fetch('key')}"
+            end
+            checksum = Base64.strict_encode64(
+              digest_exact!(file, stat.size, Digest::MD5.new, "Backup uploaded file").digest
+            )
+            unless checksum == blob.fetch("checksum")
+              raise "Backup uploaded-file checksum does not match the database"
+            end
+          end
+        end
+      rescue KeyError
+        raise "Backup blob inventory is invalid"
+      end
+
+      def validate_redis_copy!(source_tree, staging_tree, staging_path, manifest, inventory)
+        ensure_staging_directory staging_tree, "payload"
+        redis_files = manifest.fetch("files").select { _1.fetch("path").start_with?("redis/") }
+        required_bytes = redis_files.sum { _1.fetch("bytes") }
+        ensure_staging_capacity!(staging_tree, required_bytes, "Redis verification") if required_bytes.positive?
+
+        redis_files.each do |metadata|
+          relative = safe_relative_path(metadata.fetch("path")).to_s
+          if relative == "redis/appendonlydir/appendonly.aof.manifest" &&
+              metadata.fetch("bytes") > MAX_REDIS_MANIFEST_BYTES
+            raise "Redis AOF manifest exceeds its safe size limit"
+          end
+          destination = "payload/#{relative}"
+          ensure_staging_directory staging_tree, Pathname(destination).dirname.to_s
+          source_tree.open_regular_file(
+            "payload/#{relative}", expected_identity: inventory.fetch(relative).fetch(:identity)
+          ) do |source, stat|
+            unless stat.size == metadata.fetch("bytes")
+              raise "Backup file size does not match: #{relative}"
+            end
+            staging_tree.create_file(destination, mode: 0o600) do |target|
+              copy_authenticated_bytes!(source, target, metadata, "Backup Redis file")
+              target.flush
+              target.fsync
+            end
+          end
+        end
+
+        CampfireBackup::RedisValidator.validate!(
+          staging_path.join("payload"),
+          require_aof: manifest.fetch("schema_version").to_i >=
+            CampfireBackup::UpgradeRecoveryGuard::GATED_MIGRATION
+        )
+      end
+
+      def ensure_staging_directory(tree, relative)
+        return if relative == "."
+
+        parent = Pathname(relative).dirname.to_s
+        ensure_staging_directory(tree, parent) unless parent == "."
+        return unless tree.entry_missing?(relative)
+
+        tree.mkdir(relative, mode: 0o700) { _1.chmod 0o700 }
+      rescue Errno::EEXIST
+        raise "Private backup verification staging changed concurrently"
+      end
+
+      def copy_authenticated_bytes!(source, destination, metadata, description)
+        expected_bytes = metadata.fetch("bytes")
+        source.rewind
+        digest = Digest::SHA256.new
+        remaining = expected_bytes
+        while remaining.positive?
+          chunk = source.read([ remaining, COPY_CHUNK_BYTES ].min)
+          if chunk.nil? || chunk.empty?
+            raise "#{description} was truncated while it was copied"
+          end
+          destination.write chunk
+          digest << chunk
+          remaining -= chunk.bytesize
+        end
+        raise "#{description} grew while it was copied" if source.read(1)
+        destination.flush
+        unless destination.stat.size == expected_bytes &&
+            secure_compare(digest.hexdigest, metadata.fetch("sha256"))
+          raise "#{description} does not match the authenticated manifest"
+        end
+
+        second_digest = digest_exact!(source, expected_bytes, Digest::SHA256.new, description)
+        unless secure_compare(second_digest.hexdigest, metadata.fetch("sha256"))
+          raise "#{description} changed while it was copied"
+        end
+      end
+
+      def digest_exact!(file, bytes, digest, description)
+        file.rewind
+        remaining = bytes
+        while remaining.positive?
+          chunk = file.read([ remaining, COPY_CHUNK_BYTES ].min)
+          if chunk.nil? || chunk.empty?
+            raise "#{description} was truncated while it was read"
+          end
+          digest << chunk
+          remaining -= chunk.bytesize
+        end
+        raise "#{description} grew while it was read" if file.read(1)
+        digest
+      ensure
+        file.rewind if file && !file.closed?
+      end
+
+      def read_exact_contents(file, bytes, description)
+        contents = +"".b
+        while contents.bytesize < bytes
+          chunk = file.read([ bytes - contents.bytesize, COPY_CHUNK_BYTES ].min)
+          if chunk.nil? || chunk.empty?
+            raise "#{description} was truncated while it was read"
+          end
+          contents << chunk
+        end
+        raise "#{description} grew while it was read" if file.read(1)
+        contents
+      ensure
+        file.rewind if file && !file.closed?
+      end
+
+      def ensure_staging_capacity!(tree, bytes, description)
+        required = Integer(bytes) + STAGING_RESERVE_BYTES
+        if tree.available_bytes < required
+          raise "Insufficient free space for private #{description} staging"
+        end
+      rescue ArgumentError, TypeError
+        raise "#{description.capitalize} size is invalid"
+      end
+
+      def with_private_staging
+        Dir.mktmpdir("campfire-backup-verification") do |directory|
+          path = Pathname(directory)
+          File.chmod 0o700, path
+          tree = CampfireBackup::DescriptorTree.new(
+            path, description: "Private backup verification staging"
+          )
+          yield tree, path
+        ensure
+          tree&.close
+        end
+      end
+
+      def inventory_metadata(stat, type)
+        {
+          type:, identity: metadata_identity(stat), nlink: stat.nlink, bytes: stat.size,
+          modified_at: [ stat.mtime.to_i, stat.mtime.nsec ],
+          changed_at: [ stat.ctime.to_i, stat.ctime.nsec ]
+        }.freeze
+      end
+
+      def validate_entry_name!(name)
+        if name.empty? || [ ".", ".." ].include?(name) || name.include?(File::SEPARATOR)
+          raise "Backup contains an unsafe entry name"
+        end
+      end
+
+      def safe_relative_path(value)
+        path = Pathname(value.to_s)
+        components = path.each_filename.to_a
+        if path.absolute? || components.empty? ||
+            components.any? { _1.empty? || [ ".", ".." ].include?(_1) }
+          raise "Backup manifest contains an unsafe path"
+        end
+        path
+      end
+
+      def open_descriptor_path(file)
+        [ "/proc/self/fd/#{file.fileno}", "/dev/fd/#{file.fileno}" ].find { File.exist?(_1) } ||
+          raise("Open file descriptors cannot be addressed safely")
+      end
+
+      def metadata_identity(stat)
+        [ stat.dev, stat.ino, stat.ftype ]
+      end
+
+      def secure_compare(left, right)
+        left = left.to_s.b
+        right = right.to_s.b
+        return false unless left.bytesize == right.bytesize
+
+        result = 0
+        left.bytes.zip(right.bytes) { |a, b| result |= a ^ b }
+        result.zero?
+      end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  backup_directory = Pathname(ENV.fetch("BACKUP_DIRECTORY", File.expand_path("../../storage/backups", __dir__)))
+  generation_path = Pathname(ARGV.first || backup_directory.join("latest"))
+  BackupVerifier.verify(
+    generation_path:,
+    expected_installation_fingerprint: ENV["EXPECTED_INSTALLATION_FINGERPRINT"],
+    expected_environment: ENV.fetch("EXPECTED_ENVIRONMENT", "production")
+  )
+end

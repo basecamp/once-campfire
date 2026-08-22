@@ -4,53 +4,73 @@ import { pageIsTurboPreview } from "helpers/turbo_helpers"
 import { onNextEventLoopTick } from "helpers/timing_helpers"
 import { getCookie, setCookie } from "lib/cookie"
 
+const pageSynchronizations = new Map()
+const recentSynchronizations = new Map()
+const SYNCHRONIZATION_TTL = 30_000
+
 export default class extends Controller {
   static values = { subscriptionsUrl: String }
   static targets = [ "notAllowedNotice", "bell", "details" ]
   static classes = [ "attention" ]
 
+  #enrolling = false
+  #originalBellLabel
+
   async connect() {
     if (!pageIsTurboPreview()) {
-      if (window.notificationsPreviouslyReady) {
+      this.#prepareBellStatus()
+      const firstTimeReady = await this.isEnabled()
+
+      this.#pulseBellButton()
+
+      if (firstTimeReady) {
         onNextEventLoopTick(() => this.dispatch("ready"))
       } else {
-        const firstTimeReady = await this.isEnabled()
-
-        this.#pulseBellButton()
-
-        if (firstTimeReady) {
-          onNextEventLoopTick(() => this.dispatch("ready"))
-          window.notificationsPreviouslyReady = true
-        } else {
-          this.#showBellAlert()
-        }
+        this.#showBellAlert()
       }
     }
   }
 
   async attemptToSubscribe() {
-    if (this.#allowed) {
-      const registration = await this.#serviceWorkerRegistration || await this.#registerServiceWorker()
+    if (this.#enrolling) return
 
-      switch(Notification.permission) {
-        case "denied":  { this.#revealNotAllowedNotice(); break }
-        case "granted": { this.#subscribe(registration); break }
-        case "default": { this.#requestPermissionAndSubscribe(registration) }
+    this.#enrolling = true
+    this.#setEnrollmentBusy(true)
+    let enrollmentFailed = false
+
+    try {
+      if (this.#allowed) {
+        const registration = await this.#serviceWorkerRegistration || await this.#registerServiceWorker()
+
+        switch(Notification.permission) {
+          case "denied":  { this.#revealNotAllowedNotice(); break }
+          case "granted": { enrollmentFailed = !await this.#subscribe(registration); break }
+          case "default": { enrollmentFailed = await this.#requestPermissionAndSubscribe(registration) === false }
+        }
+      } else {
+        this.#revealNotAllowedNotice()
       }
-    } else {
-      this.#revealNotAllowedNotice()
+    } catch {
+      enrollmentFailed = true
+    } finally {
+      this.#enrolling = false
+      this.#setEnrollmentBusy(false)
+      if (enrollmentFailed) this.#showEnrollmentFailure()
+      this.#endFirstRun()
     }
-
-    this.#endFirstRun()
   }
 
   async isEnabled() {
-    if (this.#allowed) {
-      const registration = await this.#serviceWorkerRegistration
-      const existingSubscription = await registration?.pushManager?.getSubscription()
+    try {
+      if (this.#allowed) {
+        const registration = await this.#serviceWorkerRegistration
+        const existingSubscription = await registration?.pushManager?.getSubscription()
 
-      return Notification.permission == "granted" && registration && existingSubscription
-    } else {
+        return Notification.permission == "granted" && registration && existingSubscription &&
+          await this.#syncPushSubscription(existingSubscription)
+      }
+      return false
+    } catch {
       return false
     }
   }
@@ -68,6 +88,7 @@ export default class extends Controller {
   }
 
   #revealNotAllowedNotice() {
+    if (this.#originalBellLabel) this.#setBellLabel(this.#originalBellLabel)
     this.notAllowedNoticeTarget.showModal()
     this.#openSingleOption()
   }
@@ -81,7 +102,9 @@ export default class extends Controller {
   }
 
   #showBellAlert() {
-    this.bellTarget.querySelectorAll("img").forEach(img => img.toggleAttribute("hidden"))
+    const [ loadingIcon, alertIcon ] = this.bellTarget.querySelectorAll("img")
+    if (loadingIcon) loadingIcon.hidden = true
+    if (alertIcon) alertIcon.hidden = false
   }
 
   #pulseBellButton() {
@@ -96,22 +119,57 @@ export default class extends Controller {
   }
 
   async #subscribe(registration) {
-    registration.pushManager
+    const subscription = await registration.pushManager
       .subscribe({ userVisibleOnly: true, applicationServerKey: this.#vapidPublicKey })
-      .then(subscription => {
-        this.#syncPushSubscription(subscription)
-        this.dispatch("ready")
-      })
+
+    if (await this.#syncPushSubscription(subscription, { force: true })) {
+      this.#setBellLabel("Notifications enabled.")
+      this.dispatch("ready")
+      return true
+    }
+
+    return false
   }
 
-  async #syncPushSubscription(subscription) {
-    const response = await post(this.subscriptionsUrlValue, { body: this.#extractJsonPayloadAsString(subscription), responseKind: "turbo-stream" })
-    if (!response.ok) subscription.unsubscribe()
+  async #syncPushSubscription(subscription, { force = false } = {}) {
+    const key = this.#synchronizationKey(subscription)
+    if (pageSynchronizations.has(key)) return pageSynchronizations.get(key)
+    const age = Date.now() - (recentSynchronizations.get(key) || 0)
+    if (!force && age >= 0 && age < SYNCHRONIZATION_TTL) return true
+
+    const synchronization = (async () => {
+      try {
+        const response = await post(this.subscriptionsUrlValue, {
+          body: this.#extractJsonPayloadAsString(subscription),
+          responseKind: "turbo-stream"
+        })
+        return response.ok
+      } catch {
+        return false
+      }
+    })()
+
+    pageSynchronizations.set(key, synchronization)
+    try {
+      const synchronized = await synchronization
+      if (synchronized) recentSynchronizations.set(key, Date.now())
+      return synchronized
+    } finally {
+      if (pageSynchronizations.get(key) == synchronization) pageSynchronizations.delete(key)
+    }
+  }
+
+  #synchronizationKey(subscription) {
+    const sessionId = document.querySelector('meta[name="current-session-id"]')?.content
+    return JSON.stringify([ sessionId || "unknown", this.#extractCapability(subscription) ])
   }
 
   async #requestPermissionAndSubscribe(registration) {
     const permission = await Notification.requestPermission()
-    if (permission === "granted") this.#subscribe(registration)
+    if (permission === "granted") return await this.#subscribe(registration)
+
+    this.#revealNotAllowedNotice()
+    return null
   }
 
   get #vapidPublicKey() {
@@ -136,8 +194,38 @@ export default class extends Controller {
   }
 
   #extractJsonPayloadAsString(subscription) {
+    return JSON.stringify({ push_subscription: this.#extractCapability(subscription) })
+  }
+
+  #extractCapability(subscription) {
     const { endpoint, keys: { p256dh, auth } } = subscription.toJSON()
-    return JSON.stringify({ push_subscription: { endpoint, p256dh_key: p256dh, auth_key: auth } })
+    return { endpoint, p256dh_key: p256dh, auth_key: auth }
+  }
+
+  #prepareBellStatus() {
+    const label = this.bellTarget.querySelector(".for-screen-reader")
+    if (!label) return
+
+    this.#originalBellLabel ??= label.textContent
+    label.setAttribute("role", "status")
+    label.setAttribute("aria-live", "polite")
+    label.setAttribute("aria-atomic", "true")
+  }
+
+  #setEnrollmentBusy(busy) {
+    this.bellTarget.disabled = busy
+    this.bellTarget.toggleAttribute("aria-busy", busy)
+    if (busy) this.#setBellLabel("Enabling notifications…")
+  }
+
+  #showEnrollmentFailure() {
+    this.#showBellAlert()
+    this.#setBellLabel("Notifications could not be enabled. Try again.")
+  }
+
+  #setBellLabel(value) {
+    const label = this.bellTarget.querySelector(".for-screen-reader")
+    if (label) label.textContent = value
   }
 
   // VAPID public key comes encoded as base64 but service worker registration needs it as a Uint8Array

@@ -5,7 +5,7 @@ class Rooms::DirectsController < RoomsController
   end
 
   def create
-    room = Rooms::Direct.find_or_create_for(selected_users)
+    room = Rooms::Direct.find_or_create_for(selected_users, actor: Current.user)
 
     broadcast_create_room(room)
     redirect_to room_url(room)

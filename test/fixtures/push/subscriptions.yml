@@ -1,27 +1,31 @@
 david_chrome:
   user: david
+  session: david_safari
   endpoint: https://fcm.googleapis.com/fcm/send/123
-  p256dh_key: 123-RIXcMgkdjhRnFZaYjjGvo00dydRQbCpQTuXFjLaCPSE7ofxi19awgGc3Doqa1RmYQqsbQDfQTifFZgc
-  auth_key: xxx2DtgvmLkevKRwoyahJl0efg
+  p256dh_key: BFOmkBtSAO-lpyLxV4IW0pEJEa7UB3GDaoL4uNHv-Y8s5pbQgvAB9hJMpE4ZV0u4pxg9EDKwtxJbuIraUnjhx4w
+  auth_key: YWFhYWFhYWFhYWFhYWFhYQ
   user_agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36
 
 jason_chrome:
   user: jason
+  session: jason_chrome
   endpoint: https://fcm.googleapis.com/fcm/send/567
-  p256dh_key: 456-RIXcMgkdjhRnFZaYjjGvo00dydRQbCpQTuXFjLaCPSE7ofxi19awgGc3Doqa1RmYQqsbQDfQTifFZgc
-  auth_key: xxx2DtgvmLkevKRwoyahJl0efg
+  p256dh_key: BFOmkBtSAO-lpyLxV4IW0pEJEa7UB3GDaoL4uNHv-Y8s5pbQgvAB9hJMpE4ZV0u4pxg9EDKwtxJbuIraUnjhx4w
+  auth_key: YWFhYWFhYWFhYWFhYWFhYQ
   user_agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36
 
 jz_chrome:
   user: jz
+  session: jz_chrome
   endpoint: https://fcm.googleapis.com/fcm/send/456
-  p256dh_key: 456-RIXcMgkdjhRnFZaYjjGvo00dydRQbCpQTuXFjLaCPSE7ofxi19awgGc3Doqa1RmYQqsbQDfQTifFZgc
-  auth_key: xxx2DtgvmLkevKRwoyahJl0efg
+  p256dh_key: BFOmkBtSAO-lpyLxV4IW0pEJEa7UB3GDaoL4uNHv-Y8s5pbQgvAB9hJMpE4ZV0u4pxg9EDKwtxJbuIraUnjhx4w
+  auth_key: YWFhYWFhYWFhYWFhYWFhYQ
   user_agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36
 
 kevin_chrome:
   user: kevin
+  session: kevin_chrome
   endpoint: https://fcm.googleapis.com/fcm/send/789
-  p256dh_key: 456-RIXcMgkdjhRnFZaYjjGvo00dydRQbCpQTuXFjLaCPSE7ofxi19awgGc3Doqa1RmYQqsbQDfQTifFZgc
-  auth_key: xxx2DtgvmLkevKRwoyahJl0efg
+  p256dh_key: BFOmkBtSAO-lpyLxV4IW0pEJEa7UB3GDaoL4uNHv-Y8s5pbQgvAB9hJMpE4ZV0u4pxg9EDKwtxJbuIraUnjhx4w
+  auth_key: YWFhYWFhYWFhYWFhYWFhYQ
   user_agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36

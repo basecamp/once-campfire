@@ -6,7 +6,7 @@
 
         <div class="message__edit-btns flex align-center justify-space-between gap full-width pad-block-start-half">
           <%= button_tag class: "btn btn--negative center margin-block-end", type: "submit",
-                form: dom_id(@message, :delete_form), data: { turbo_confirm: "Are you sure you want to delete this message?" } do %>
+                form: dom_id(@message, :delete_form) do %>
             <%= image_tag "trash.svg", aria: { hidden: "true" } %>
             <span class="for-screen-reader">Delete message</span>
           <% end %>
@@ -15,15 +15,26 @@
         <div class="composer--edit composer--rich-text">
           <%= form_with model: @message, url: room_message_path(@room, @message), id: dom_id(@message, :form), data: {
                 controller: "form", action: "trix-file-accept->form#preventAttachment keydown.esc->form#cancel keydown.ctrl+enter->form#submit:prevent keydown.meta+enter->form#submit:prevent" } do |form| %>
+            <% if @message.errors.any? %>
+              <p id="<%= dom_id(@message, :edit_errors) %>" class="txt-small colorize--red" role="alert">
+                <%= @message.errors.full_messages.to_sentence %>
+              </p>
+            <% end %>
+
             <div class="full-width input input--actor min-width fill-white">
               <%= form.rich_text_area :body,
                     rows: 1,
                     class: "input",
-                    aria: { multiline: "true", label: "Edit message" },
+                    aria: {
+                      multiline: "true", label: "Edit message", invalid: @message.errors.any?,
+                      describedby: (@message.errors.any? ? dom_id(@message, :edit_errors) : nil)
+                    },
                     autofocus: true,
                     data: {
                       controller: "rich-autocomplete",
                       action: rich_text_data_actions,
+                      direct_upload_url: "",
+                      blob_url_template: "",
                       rich_autocomplete_url_value: autocompletable_users_path(room_id: @room.id) } %>
             </div>
 
@@ -35,8 +46,7 @@
                 <span class="for-screen-reader">Save changes</span>
               <% end %>
 
-              <%= button_tag class: "btn btn--negative", type: "submit", form: dom_id(@message, :delete_form),
-                      data: { turbo_confirm: "Are you sure you want to delete this message?" } do %>
+              <%= button_tag class: "btn btn--negative", type: "submit", form: dom_id(@message, :delete_form) do %>
                 <%= image_tag "trash.svg", aria: { hidden: "true" } %>
                 <span class="for-screen-reader">Delete message</span>
               <% end %>
@@ -53,6 +63,7 @@
       <% end %>
     </div>
 
-    <%= form_with url: room_message_path(@message.room, @message), method: :delete, id: dom_id(@message, :delete_form), data: { turbo_frame: dom_id(@message, :edit) } %>
+    <%= form_with url: room_message_path(@message.room, @message), method: :delete, id: dom_id(@message, :delete_form),
+          data: { turbo_frame: dom_id(@message, :edit), turbo_confirm: "Are you sure you want to delete this message?" } %>
   </div>
 </turbo-frame>

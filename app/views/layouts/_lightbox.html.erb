@@ -1,5 +1,5 @@
 <dialog class="lightbox" aria-label="Image Viewer (Press escape to close)" data-lightbox-target="dialog" data-action="close->lightbox#reset">
-  <img src="" class="lightbox__image" data-lightbox-target="zoomedImage" />
+  <img src="" alt="" class="lightbox__image" data-lightbox-target="zoomedImage" />
 
   <form method="dialog" class="lightbox__btn">
     <button class="btn">
@@ -19,6 +19,6 @@
       data-web-share-files-value=""
       data-lightbox-target="share">
     <%= image_tag "share.svg", aria: { hidden: "true" } %>
-    <span class="for-screen-reader">Share file</span>
+    <span class="for-screen-reader" data-web-share-target="label">Share file</span>
   </button>
 </dialog>

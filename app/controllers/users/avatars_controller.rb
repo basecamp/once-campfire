@@ -20,7 +20,7 @@ class Users::AvatarsController < ApplicationController
   end
 
   def destroy
-    Current.user.avatar.destroy
+    Current.user.remove_avatar! actor: Current.user
     redirect_to user_profile_url
   end
 

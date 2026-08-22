@@ -66,7 +66,8 @@ module RoomsHelper
         controller: "composer drop-target",
         action: composer_data_actions,
         composer_messages_outlet: "#message-area",
-        composer_toolbar_class: "composer--rich-text", composer_room_id_value: room.id
+        composer_toolbar_class: "composer--rich-text", composer_room_id_value: room.id,
+        composer_reconciliation_url_value: reconciliation_room_messages_path(room)
       }
     end
 
@@ -77,7 +78,11 @@ module RoomsHelper
         "trix-file-accept->composer#preventAttachment refresh-room:online@window->composer#online"
 
       remaining_actions =
-        "typing-notifications#stop paste->composer#pasteFiles turbo:submit-end->composer#submitEnd refresh-room:offline@window->composer#offline"
+        "typing-notifications#stop paste->composer#pasteFiles trix-change->composer#saveDraft " \
+        "turbo:submit-end->composer#submitEnd refresh-room:offline@window->composer#offline " \
+        "turbo:before-cache@document->composer#beforeCache " \
+        "messages:retry-pending@window->composer#retryPendingMessage " \
+        "messages:committed@window->composer#confirmPendingMessage"
 
       [ drop_target_actions, drag_and_drop_actions, trix_attachment_actions, remaining_actions ].join(" ")
     end

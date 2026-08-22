@@ -1,17 +1,57 @@
 #!/usr/bin/env ruby
 
-require "json"
+require_relative "../config/boot"
+require "fileutils"
 require "yaml"
+require_relative "../lib/campfire_backup/operation_lock"
+require_relative "../lib/campfire_backup/recovery_markers"
+require_relative "../lib/campfire_backup/upgrade_recovery_guard"
+
+UpgradeRecoveryGuard = CampfireBackup::UpgradeRecoveryGuard unless defined?(UpgradeRecoveryGuard)
 
 class ProcessMonitor
-  SIGNALS = %w[ INT TERM CLD ]
+  POLL_INTERVAL = 0.05
+  DEFAULT_SHUTDOWN_TIMEOUT = 60
+  DEFAULT_KILL_TIMEOUT = 5
 
-  def initialize(procfile)
+  def initialize(procfile,
+      shutdown_timeout: Integer(ENV.fetch("CAMPFIRE_SHUTDOWN_TIMEOUT", DEFAULT_SHUTDOWN_TIMEOUT).to_s, 10),
+      kill_timeout: DEFAULT_KILL_TIMEOUT, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+      sleeper: ->(duration) { sleep duration }, autostart: true)
+    raise ArgumentError, "shutdown timeout must be positive" unless shutdown_timeout.positive?
+
     @procs = process_list(procfile)
+    @shutdown_timeout = shutdown_timeout
+    @kill_timeout = kill_timeout
+    @clock = clock
+    @sleeper = sleeper
+    @unattributed_descendant_statuses = []
     handle_signals
 
-    @procs.each &:start
-    @procs.each &:wait
+    run if autostart
+  end
+
+  def run_preparation(environment, *command, **spawn_options)
+    return false if @shutdown_requested
+
+    preparation = @preparation = MonitoredProcess.new("database preparation", command)
+    preparation.start(environment, **spawn_options)
+    preparation.terminate(@shutdown_signal || "TERM") if @shutdown_requested
+    monitor_preparation
+
+    !@shutdown_requested && preparation.acceptable_exit? && !unexpected_unattributed_descendant_exit?
+  ensure
+    @preparation = nil
+  end
+
+  def interrupted?
+    @interrupted
+  end
+
+  def run
+    start_processes
+    monitor_processes
+    validate_shutdown!
   end
 
   private
@@ -20,35 +60,311 @@ class ProcessMonitor
       config.map { |name, cmd| MonitoredProcess.new(name, cmd) }
     end
 
-    def handle_signals
-      SIGNALS.each do |signal|
-        Signal.trap(signal) do
-          @procs.each &:terminate
+    def start_processes
+      @procs.each do |process|
+        break if @shutdown_requested
+
+        process.start
+        process.terminate(@shutdown_signal || "TERM") if @shutdown_requested
+      end
+    end
+
+    def monitor_preparation
+      loop do
+        reap_children
+        break if @preparation.finished?
+
+        if !@shutdown_requested && unexpected_preparation_exit?
+          # A preparation command must not leave process-group descendants behind.
+          shut_down
+        end
+        enforce_shutdown_deadline if @shutdown_requested
+        if @kill_deadline && @clock.call >= @kill_deadline
+          @kill_timeout_expired = true
+          break
+        end
+
+        @sleeper.call POLL_INTERVAL
+      end
+    end
+
+    def monitor_processes
+      loop do
+        reap_children
+        if !@shutdown_requested && unexpected_process_exit?
+          @unexpected_child_exit = true
+          shut_down
+        end
+        terminate_redis_if_ready
+        break if @procs.all?(&:finished?)
+
+        enforce_shutdown_deadline if @shutdown_requested
+        if @kill_deadline && @clock.call >= @kill_deadline
+          @kill_timeout_expired = true
+          break
+        end
+
+        @sleeper.call POLL_INTERVAL
+      end
+    end
+
+    def reap_children
+      # PID 1 adopts orphaned process-group descendants and must reap them too.
+      monitored_processes.each { reap_process_group(_1) }
+      reap_remaining_children
+    end
+
+    def reap_process_group(process)
+      return unless process.pid
+
+      reap_wait_target(-process.pid) do |pid, status|
+        if pid == process.pid
+          process.record_exit(status)
+        else
+          process.record_descendant_exit(status)
         end
       end
+    end
+
+    def reap_remaining_children
+      reap_wait_target(-1) do |pid, status|
+        process = monitored_processes.find { _1.pid == pid }
+        if process
+          process.record_exit(status)
+        elsif !status.success?
+          # A child can exit between its group-specific poll and this catch-all poll.
+          (@unattributed_descendant_statuses ||= []) << status
+        end
+      end
+    end
+
+    def reap_wait_target(target)
+      loop do
+        pid, status = Process.waitpid2(target, Process::WNOHANG)
+        break unless pid
+
+        yield pid, status
+      end
+    rescue Errno::ECHILD
+      nil
+    end
+
+    def monitored_processes
+      [ @preparation, *Array(@procs) ].compact
+    end
+
+    def unexpected_preparation_exit?
+      @preparation.exited? ||
+        @preparation.unexpected_descendant_exit? ||
+        unexpected_unattributed_descendant_exit?
+    end
+
+    def unexpected_process_exit?
+      @procs.any? { _1.exited? || _1.unexpected_descendant_exit? } ||
+        unexpected_unattributed_descendant_exit?
+    end
+
+    def unexpected_unattributed_descendant_exit?
+      Array(@unattributed_descendant_statuses).any? do |status|
+        monitored_processes.none? { _1.acceptable_status?(status) }
+      end
+    end
+
+    def handle_signals
+      %w[ INT TERM ].each do |signal|
+        Signal.trap(signal) do
+          @interrupted = true
+          shut_down signal
+        end
+      end
+    end
+
+    def shut_down(signal = "TERM")
+      return if @shutdown_requested
+
+      @shutdown_requested = true
+      @shutdown_signal = signal
+      @shutdown_deadline = @clock.call + @shutdown_timeout
+      if @preparation
+        @preparation.terminate(signal) unless @preparation.finished?
+        return
+      end
+
+      @procs.reject { _1.name == "redis" }.each { _1.terminate signal }
+      terminate_redis_if_ready
+    end
+
+    def terminate_redis_if_ready
+      return unless @shutdown_requested
+      return if @redis_shutdown_requested
+
+      redis = @procs.find { _1.name == "redis" }
+      return unless redis
+      return unless @procs.all? { _1.equal?(redis) || _1.finished? }
+
+      @redis_shutdown_requested = true
+      redis.terminate(@shutdown_signal || "TERM") unless redis.finished?
+    end
+
+    def enforce_shutdown_deadline
+      return if @kill_deadline || @clock.call < @shutdown_deadline
+
+      @forced_shutdown = true
+      [ @preparation, *@procs ].compact.each(&:kill)
+      @kill_deadline = @clock.call + @kill_timeout
+    end
+
+    def validate_shutdown!
+      abort "A Campfire process exited unexpectedly" if @unexpected_child_exit
+      if unexpected_unattributed_descendant_exit?
+        abort "A Campfire adopted descendant exited unsuccessfully"
+      end
+      if @kill_timeout_expired || !@procs.all?(&:finished?)
+        abort "Campfire process groups did not stop after forced termination"
+      end
+      if @forced_shutdown
+        abort "Campfire graceful shutdown timed out and required forced termination"
+      end
+
+      redis = @procs.find { _1.name == "redis" }
+      unless redis&.status&.success?
+        abort "Redis did not exit successfully; clean shutdown was not recorded"
+      end
+      failed = @procs.reject(&:acceptable_exit?)
+      if failed.any?
+        abort "Campfire processes exited unsuccessfully: #{failed.map(&:name).join(", ")}"
+      end
+      true
     end
 end
 
 class MonitoredProcess
+  attr_reader :name, :pid, :status
+
   def initialize(name, cmd)
-    @name, @cmd = name, cmd
+    @name, @cmd = name.to_s, cmd
+    @descendant_statuses = []
+    @expected_signals = []
   end
 
-  def start
-    @pid = Process.spawn(@cmd)
+  def start(environment = nil, **spawn_options)
+    arguments = Array(@cmd)
+    arguments.unshift environment if environment
+    @pid = Process.spawn(*arguments, **spawn_options, pgroup: true)
   end
 
-  def wait
-    Process.wait @pid
-  rescue Errno::ECHILD
-    nil
+  def record_exit(status)
+    @status = status
+    @reaped = true
   end
 
-  def terminate
-    Process.kill "TERM", @pid
-  rescue Errno::ESRCH
-    nil
+  def record_descendant_exit(status)
+    @descendant_statuses << status unless status.success?
   end
+
+  def exited?
+    @reaped
+  end
+
+  def finished?
+    !@pid || (@reaped && !process_group_alive?)
+  end
+
+  def acceptable_exit?
+    acceptable_status?(status) && @descendant_statuses.all? { acceptable_status?(_1) }
+  end
+
+  def acceptable_status?(status)
+    status&.success? || (status&.signaled? && @expected_signals.include?(status.termsig))
+  end
+
+  def unexpected_descendant_exit?
+    @descendant_statuses.any? { !acceptable_status?(_1) }
+  end
+
+  def terminate(signal = "TERM")
+    signal_group signal
+  end
+
+  def kill
+    signal_group "KILL"
+  end
+
+  private
+    def process_group_alive?
+      Process.kill 0, -@pid
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def signal_group(signal)
+      return unless @pid
+
+      Process.kill signal, -@pid
+      signal_name = signal.to_s.delete_prefix("SIG")
+      @expected_signals << Signal.list.fetch(signal_name)
+    rescue Errno::ESRCH
+      nil
+    end
 end
 
-ProcessMonitor.new("Procfile")
+if $PROGRAM_NAME == __FILE__
+  runtime_lock = nil
+  begin
+    storage_directory = File.expand_path("../storage", __dir__)
+    runtime_lock = CampfireBackup::OperationLock.acquire(storage_directory, purpose: "runtime", shared: true)
+    storage_directory = runtime_lock.directory
+    runtime_lock.assert_current!
+    guard = UpgradeRecoveryGuard.from_environment
+    begin
+      CampfireBackup::RecoveryMarkers.assert_restore_complete! storage_directory
+    rescue StandardError => error
+      abort "Campfire startup blocked: #{error.message}"
+    end
+    if ARGV.first == "authorize-upgrade"
+      abort "Usage: bin/boot authorize-upgrade ARCHIVE AUTHENTICATION_STATEMENT" unless ARGV.length == 3
+
+      guard.authorize!(archive_path: ARGV.fetch(1), authentication_path: ARGV.fetch(2))
+      exit
+    elsif ARGV.any?
+      abort "Unknown bin/boot command: #{ARGV.first}"
+    end
+
+    boot_id = CampfireBackup::RecoveryMarkers.new_boot_id
+    begin
+      CampfireBackup::RecoveryMarkers.invalidate_clean_shutdown! storage_directory
+    rescue StandardError => error
+      abort "Campfire startup blocked: #{error.message}"
+    end
+    monitor = ProcessMonitor.new("Procfile", autostart: false)
+
+    begin
+      guard.verify_before_prepare!
+    rescue StandardError => error
+      abort "Database preparation blocked: #{error.message}"
+    end
+    runtime_lock.assert_current!
+    prepared = runtime_lock.with_inheritable_shared_lock do |lock_environment|
+      monitor.run_preparation(lock_environment, "./bin/rails", "db:prepare", close_others: false)
+    end
+    abort "Campfire startup interrupted during database preparation" if monitor.interrupted?
+    abort "Database preparation failed" unless prepared
+    runtime_lock.assert_current!
+    ENV.delete CampfireBackup::Authentication::KEY_ENVIRONMENT_VARIABLE
+    guard.complete!
+    FileUtils.mkdir_p storage_directory.join("redis")
+    runtime_lock.assert_current!
+    monitor.run
+    runtime_lock.assert_current!
+    begin
+      CampfireBackup::RecoveryMarkers.publish_clean_shutdown!(storage_directory, boot_id:)
+    rescue StandardError => error
+      abort "Campfire clean shutdown could not be recorded: #{error.message}"
+    end
+  ensure
+    runtime_lock&.release
+  end
+end

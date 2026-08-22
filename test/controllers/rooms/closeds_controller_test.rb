@@ -55,6 +55,19 @@ class Rooms::ClosedsControllerTest < ActionDispatch::IntegrationTest
     assert_equal rooms(:pets).memberships.count, 2
   end
 
+  test "cannot update a direct room or its participants as closed" do
+    room = rooms(:david_and_jason)
+    participant_ids = room.user_ids.sort
+
+    put rooms_closed_url(room), params: {
+      room: { name: "Not closed" }, user_ids: [ users(:david).id ]
+    }
+
+    assert_redirected_to root_url
+    assert room.reload.direct?
+    assert_equal participant_ids, room.user_ids.sort
+  end
+
   test "only admins or creators can update" do
     sign_in :jz
 
@@ -74,6 +87,7 @@ class Rooms::ClosedsControllerTest < ActionDispatch::IntegrationTest
       room: { name: "Watercooler" }, user_ids: [ users(:kevin).id, users(:jz).id ]
     }
 
+    assert_redirected_to root_url
     assert_equal "Rooms::Direct", Room.find(direct.id).type
     assert_equal [ users(:bender).id, users(:kevin).id ].sort, Room.find(direct.id).user_ids.sort
   end

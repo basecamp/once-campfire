@@ -64,20 +64,40 @@
 
         <label class="flex align-center gap flex-item-grow input input--actor">
           <%= form.email_field :email_address, class: "input txt-large", value: @user.email_address, autocomplete: "username",
-                placeholder: "Enter your email address", required: false %>
+                placeholder: "Enter your email address", required: false,
+                readonly: Oidc.required_active? && Oidc.break_glass?(@user),
+                aria: ({ describedby: "recovery-email-explanation" } if Oidc.required_active? && Oidc.break_glass?(@user)) %>
           <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
         </label>
       </div>
 
-      <div class="flex align-center gap">
-        <%= translation_button(:update_password) %>
+      <% if Oidc.required_active? && Oidc.break_glass?(@user) %>
+        <p id="recovery-email-explanation" class="txt-small margin-none">Rotate the recovery administrator before changing this email address.</p>
+      <% end %>
 
-        <label class="flex align-center gap flex-item-grow input input--actor">
-          <%= form.password_field :password, class: "input txt-large", autocomplete: "new-password", placeholder: "Change password",
-                required: false, maxlength: 72 %>
-          <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
-        </label>
-      </div>
+      <% if Oidc.local_authentication_allowed_for?(@user) || !@user.identities.exists?(issuer: Oidc.issuer) %>
+        <div class="flex align-center gap">
+          <%= translation_button(:password) %>
+
+          <label class="flex align-center gap flex-item-grow input input--actor">
+            <%= password_field_tag "user[current_password]", nil, class: "input txt-large", autocomplete: "current-password",
+                  placeholder: "Current password", maxlength: 72 %>
+            <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+          </label>
+        </div>
+      <% end %>
+
+      <% if Oidc.local_authentication_allowed_for?(@user) %>
+        <div class="flex align-center gap">
+          <%= translation_button(:update_password) %>
+
+          <label class="flex align-center gap flex-item-grow input input--actor">
+            <%= form.password_field :password, class: "input txt-large", autocomplete: "new-password", placeholder: "Change password",
+                  required: false, maxlength: 72 %>
+            <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+          </label>
+        </div>
+      <% end %>
 
       <div class="flex align-start gap">
         <%= translation_button(:bio) %>
@@ -93,6 +113,18 @@
     </div>
   <% end %>
 
+  <% if Oidc.enabled? %>
+    <fieldset class="flex flex-column gap align-center">
+      <legend><%= image_tag "key.svg", aria: { hidden: "true" }, size: 36, class: "colorize--black" %></legend>
+      <% if @user.identities.any? { Oidc.current_identity?(_1) } %>
+        <strong><%= Oidc.provider_name %> is connected</strong>
+      <% else %>
+        <% connection_action = @user.identities.exists?(issuer: Oidc.issuer) ? "Reconnect" : "Connect" %>
+        <%= link_to "#{connection_action} #{Oidc.provider_name}", oidc_link_path, class: "btn" %>
+      <% end %>
+    </fieldset>
+  <% end %>
+
   <div class="margin-block pad-inline pad-block fill-shade border-radius">
     <menu class="flex flex-column gap margin-none pad">
       <%= render partial: "users/profiles/membership", collection: @shared_memberships %>
@@ -105,7 +137,7 @@
     </menu>
   </div>
 
-  <%= render "users/profiles/transfer", user: @user %>
+  <%= render "users/profiles/transfer", user: @user unless Oidc.enabled? %>
 
   <% if Rails.env.development? %>
     <fieldset>

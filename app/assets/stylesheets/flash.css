@@ -1,23 +1,62 @@
 .flash {
   display: flex;
+  inset-inline: var(--block-space);
   inset-block-start: var(--block-space);
-  inset-inline-start: 50%;
   justify-content: center;
   position: fixed;
-  transform: translate(-50%);
   z-index: 6;
 }
 
 .flash__inner {
-  animation: appear-then-fade 3s 300ms both;
-  aspect-ratio: 1;
-  background-color: var(--flash-background, var(--color-positive));
-  border-radius: 50%;
+  animation: appear-then-fade 8s 300ms both;
+  background-color: var(--color-bg);
+  border: 2px solid var(--flash-background, var(--color-positive));
+  border-radius: 2em;
+  color: var(--color-text);
   display: grid;
+  gap: 0.5em;
+  grid-auto-flow: column;
+  max-inline-size: 100%;
   padding: var(--block-space);
   place-items: center;
 
   img {
     grid-area: 1/1;
+  }
+}
+
+.flash--error .flash__inner {
+  animation: none;
+}
+
+.flash:not(.flash--error):is(:hover, :focus-within) .flash__inner {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash__inner {
+    animation: none !important;
+  }
+}
+
+.flash__message {
+  max-inline-size: min(70vw, 40em);
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 35rem) {
+  .flash__inner {
+    border-radius: 1em;
+    grid-auto-flow: row;
+    grid-template-columns: auto minmax(0, 1fr);
+
+    img {
+      grid-area: auto;
+    }
+
+    .btn {
+      grid-column: 1 / -1;
+    }
   }
 }

@@ -1,3 +1,4 @@
 bender:
   user: bender
-  url: http://example.com/bender
+  url: https://example.com/bender
+  delivery_generation: 123e4567-e89b-42d3-a456-426614174000

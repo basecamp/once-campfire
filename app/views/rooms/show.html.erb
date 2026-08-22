@@ -11,6 +11,8 @@
 
 <%= message_area_tag(@room) do %>
   <%= render "messages/template" %>
+  <p id="message-delivery-status" class="for-screen-reader" role="status" aria-live="polite" aria-atomic="true"
+      data-messages-target="deliveryStatus"></p>
 
   <%= messages_tag(@room) do %>
     <%= render "rooms/show/invitation", room: @room %>

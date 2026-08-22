@@ -1,4 +1,5 @@
 require File.expand_path("../config/environment", File.dirname(__FILE__))
+require "puma_chunked_body_limit"
 
 # Puma can serve each request in a thread from an internal thread pool.
 # The `threads` method setting takes two numbers: a minimum and maximum.
@@ -16,8 +17,14 @@ threads min_threads_count, max_threads_count
 worker_timeout 3600 if ENV.fetch("RAILS_ENV", "development") == "development"
 
 # Bind http listener.
-PORT=ENV.fetch("PORT", 3000)
-bind "tcp://0.0.0.0:#{PORT}"
+port = ENV.fetch("PORT", 3000)
+bind_host = case ENV["CAMPFIRE_INTERNAL_TLS_PROXY"]
+when "true" then "127.0.0.1"
+when nil then "0.0.0.0"
+else raise "CAMPFIRE_INTERNAL_TLS_PROXY must be exactly true when set"
+end
+bind "tcp://#{bind_host}:#{port}"
+http_content_length_limit ContentLimits.request_body_bytes
 
 # Specifies the `environment` that Puma will run in.
 #
@@ -32,10 +39,11 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 # Workers do not work on JRuby or Windows (both of which do not support
 # processes).
 #
-worker_count = (Concurrent.processor_count * 0.666).ceil
+worker_count = [ (Concurrent.available_processor_count * 0.666).ceil, 4 ].min
 workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
-
-ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
+shutdown_timeout = Integer(ENV.fetch("CAMPFIRE_SHUTDOWN_TIMEOUT", "60"), 10)
+raise "CAMPFIRE_SHUTDOWN_TIMEOUT must be positive" unless shutdown_timeout.positive?
+worker_shutdown_timeout shutdown_timeout
 
 # Use the `preload_app!` method when specifying a `workers` number.
 # This directive tells Puma to first boot the application and load code

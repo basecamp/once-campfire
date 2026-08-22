@@ -2,6 +2,7 @@ class Rooms::ClosedsController < RoomsController
   before_action :set_room, only: %i[ show edit update ]
   before_action :ensure_can_administer, only: %i[ update ]
   before_action :remember_last_room_visited, only: :show
+  before_action :ensure_room_type_can_change, only: %i[ edit update ]
   before_action :force_room_type, only: %i[ edit update ]
   before_action :ensure_permission_to_create_rooms, only: %i[ new create ]
 
@@ -17,7 +18,7 @@ class Rooms::ClosedsController < RoomsController
   end
 
   def create
-    room = Rooms::Closed.create_for(room_params, users: grantees)
+    room = Rooms::Closed.create_for(room_params, users: grantees, actor: Current.user)
 
     broadcast_create_room(room)
     redirect_to room_url(room)
@@ -29,8 +30,7 @@ class Rooms::ClosedsController < RoomsController
   end
 
   def update
-    @room.update! room_params
-    @room.memberships.revise(granted: grantees, revoked: revokees)
+    @room.update_as_closed! room_params, user_ids: grantee_ids, actor: Current.user
 
     broadcast_update_room
     redirect_to room_url(@room)
@@ -50,10 +50,6 @@ class Rooms::ClosedsController < RoomsController
 
     def grantees
       User.where(id: grantee_ids)
-    end
-
-    def revokees
-      @room.users.where.not(id: grantee_ids)
     end
 
     def grantee_ids

@@ -4,32 +4,58 @@
 <section class="txt-align-center">
   <div class="panel <%= "shake" if flash[:alert] %>">
     <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
+    <h1 class="txt-large">Sign in to <%= Current.account.name %></h1>
 
-    <%= form_with url: session_url, class: "flex flex-column gap" do |form| %>
-      <fieldset class="flex flex-column gap center-block upad">
-        <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
+    <% if flash[:oidc_verified] %>
+      <p role="status">Single sign-on verification is complete. You can close this page while an administrator finishes activation.</p>
+    <% end %>
 
-        <div class="flex align-center gap">
-          <%= translation_button(:email_address) %>
-          <label class="flex align-center gap input input--actor txt-large">
-            <%= form.email_field :email_address, required: true, class: "input", autofocus: true, autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
-            <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
-          </label>
-        </div>
+    <% if params[:oidc_retry].present? %>
+      <p>The previous single sign-on attempt was canceled. You can start again.</p>
+    <% end %>
 
-        <div class="flex align-center gap">
-          <%= translation_button(:password) %>
-          <label class="flex align-center gap input input--actor txt-large">
-            <%= form.password_field :password, required: true, class: "input", autocomplete: "current-password", placeholder: "Enter your password", maxlength: 72 %>
-            <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
-          </label>
-        </div>
+    <% if !Oidc.required? || (Oidc.break_glass_user.present? && params[:local].present?) %>
+      <%= form_with url: session_url, class: "flex flex-column gap", data: { turbo: false } do |form| %>
+        <fieldset class="flex flex-column gap center-block upad">
+          <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
 
-        <%= form.button class: "btn btn--reversed center txt-large", type: "submit", name: "log_in" do %>
-          <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
-          <span class="for-screen-reader">Go</span>
-        <% end %>
-      </fieldset>
+          <div class="flex align-center gap">
+            <%= translation_button(:email_address) %>
+            <label class="flex align-center gap input input--actor txt-large">
+              <%= form.email_field :email_address, required: true, class: "input", autofocus: true, autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
+              <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+            </label>
+          </div>
+
+          <div class="flex align-center gap">
+            <%= translation_button(:password) %>
+            <label class="flex align-center gap input input--actor txt-large">
+              <%= form.password_field :password, required: true, class: "input", autocomplete: "current-password", placeholder: "Enter your password", maxlength: 72 %>
+              <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+            </label>
+          </div>
+
+          <%= form.button class: "btn btn--reversed center txt-large", type: "submit", name: "log_in" do %>
+            <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
+            <span class="for-screen-reader">Go</span>
+          <% end %>
+        </fieldset>
+      <% end %>
+    <% end %>
+
+    <% if Oidc.enabled? %>
+      <% if !Oidc.required? || (Oidc.break_glass_user.present? && params[:local].present?) %>
+        <hr class="separator full-width" style="--border-style: solid">
+      <% end %>
+
+      <%= button_to openid_connect_path, class: "btn btn--reversed center txt-large", form: { data: { turbo: false } } do %>
+        <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
+        <span>Sign in with <%= Oidc.provider_name %></span>
+      <% end %>
+
+      <% if Oidc.required? && Oidc.break_glass_user.present? && params[:local].blank? %>
+        <p class="txt-small"><%= link_to "Administrator recovery sign-in", new_session_path(local: 1) %></p>
+      <% end %>
     <% end %>
   </div>
 

@@ -3,6 +3,9 @@ require "test_helper"
 class UnfurlLinksControllerTest < ActionDispatch::IntegrationTest
   setup do
     sign_in :david
+    Resolv.stubs(:getaddresses).with("www.example.com").returns([ "93.184.216.34" ])
+    Resolv.stubs(:getaddresses).with("example.com").returns([ "93.184.216.34" ])
+    Resolv.stubs(:getaddresses).with("fxtwitter.com").returns([ "93.184.216.34" ])
   end
 
   test "create" do
@@ -16,6 +19,19 @@ class UnfurlLinksControllerTest < ActionDispatch::IntegrationTest
     assert_equal "https://example.com", json_response["url"]
     assert_equal "https://example.com/image.png", json_response["image"]
     assert_equal "desc..", json_response["description"]
+  end
+
+  test "create does not hold the session mutation fence during network work" do
+    observed_fence = nil
+    Opengraph::Metadata.stubs(:from_url).with do |_url|
+      observed_fence = User::MutationFence.held?(users(:david).id)
+      true
+    end.returns(stub(valid?: false))
+
+    post unfurl_link_url, params: { url: "https://www.example.com" }
+
+    assert_response :no_content
+    assert_not observed_fence
   end
 
   test "create with missing opengraph meta tags" do

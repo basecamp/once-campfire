@@ -20,7 +20,7 @@
         <strong class="overflow-ellipsis"><%= room_display_name(room) %></strong>
       </legend>
 
-      <% curl_text_line = "curl -d 'Hello!' #{room_bot_messages_url(room, bot.bot_key)}" %>
+      <% curl_text_line = "curl -H 'Authorization: Bearer #{bot.bot_key}' -d 'Hello!' #{room_bot_messages_url(room)}" %>
       <div class="flex align-center gap">
         <%= image_tag "messages-outlined.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
 
@@ -36,7 +36,7 @@
         </div>
       </div>
 
-      <% curl_upload_line = %[curl -F "attachment=@/path/to/file" #{room_bot_messages_url(room, bot.bot_key)}] %>
+      <% curl_upload_line = %[curl -H 'Authorization: Bearer #{bot.bot_key}' -F "attachment=@/path/to/file" #{room_bot_messages_url(room)}] %>
       <div class="flex align-center gap">
         <%= image_tag "attachment.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
 

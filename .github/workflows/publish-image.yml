@@ -1,34 +1,378 @@
 name: Build and publish container image to GHCR
+run-name: Campfire release ${{ inputs.release_tag }} ${{ inputs.release_sha }} ${{ inputs.operation_nonce }}
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-  pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Signed stable release tag
+        required: true
+        type: string
+      release_sha:
+        description: Exact main commit approved for release
+        required: true
+        type: string
+      operation_nonce:
+        description: Exact release-driver operation nonce
+        required: true
+        type: string
 
 concurrency:
-  group: publish-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && 'campfire-release' || format('publish-pr-{0}', github.ref) }}
+  cancel-in-progress: false
 
 permissions: {}
 
 env:
+  GH_HOST: github.com
   IMAGE_DESCRIPTION: Campfire is a web-based chat application with multiple rooms, direct messages, file attachments with previews, search, web push notifications, @mentions, and bot integrations. Single-tenant; production-ready image with web app, background jobs, caching, file serving, and SSL.
   SOURCE_URL: https://github.com/${{ github.repository }}
+  BUILDKIT_IMAGE: docker.io/moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+  SBOM_SCANNER_IMAGE: docker.io/docker/buildkit-syft-scanner:1.11.0@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+  LEGACY_IMAGE: ghcr.io/basecamp/once-campfire@sha256:1d65108897b04482ce0c4627f1c62e234bc25a4bab1422d2a234b048f5db84bb
+  LEGACY_REVISION: 50f25cea80c8b610325bc03c1f2504c5bfda3191
 
 jobs:
+  verify:
+    name: Verify release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    services:
+      redis:
+        image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential libsqlite3-dev libvips curl ffmpeg
+
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release authorization
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          OPERATION_NONCE: ${{ inputs.operation_nonce }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          stable_version='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          [[ "$GITHUB_REPOSITORY" == "basecamp/once-campfire" ]] || { echo "Release authority exists only in the canonical repository"; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "Release dispatch must use main"; exit 1; }
+          [[ "$RELEASE_TAG" =~ $stable_version ]] || { echo "Only stable vMAJOR.MINOR.PATCH tags may publish"; exit 1; }
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Release SHA is invalid"; exit 1; }
+          [[ "$OPERATION_NONCE" =~ ^[0-9a-f]{64}$ ]] || { echo "Operation nonce is invalid"; exit 1; }
+
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          [[ "$GITHUB_SHA" == "$RELEASE_SHA" ]] || { echo "Workflow source does not match approved SHA"; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$RELEASE_SHA" ]] || { echo "Approved SHA is not current main"; exit 1; }
+          [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$RELEASE_SHA" ]] || { echo "Release tag target does not match"; exit 1; }
+
+          latest_tag=""
+          while IFS= read -r candidate; do
+            if [[ "$candidate" =~ $stable_version ]]; then
+              latest_tag="$candidate"
+              break
+            fi
+          done < <(git tag --list 'v*' --sort=-version:refname)
+          [[ "$RELEASE_TAG" == "$latest_tag" ]] || { echo "Refusing a non-latest stable release tag"; exit 1; }
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - name: Run application tests
+        env:
+          REDIS_URL: redis://localhost:6379/0
+        run: bin/rails db:setup test test:system
+
+      - name: Run OIDC production-boundary tests
+        env:
+          OIDC_MODE: optional
+          OIDC_ISSUER: https://idp.example.com
+          OIDC_CLIENT_ID: campfire
+          OIDC_CLIENT_SECRET: test-secret
+          OIDC_REDIRECT_URI: https://campfire.example.com/auth/openid_connect/callback
+          TLS_DOMAIN: campfire.example.com
+        run: bin/rails test test/integration/oidc_full_stack_test.rb
+
+      - name: Run static and security checks
+        run: bin/rubocop && bin/rails zeitwerk:check && bin/brakeman && bin/bundler-audit check --update && bin/importmap audit && script/ci/verify-release-policy
+
+      - name: Verify vendored axe-core checksum
+        working-directory: test/support/axe
+        run: sha256sum --check axe-4.12.1.min.js.sha256
+
+      - name: Verify manual AT record template structure
+        run: ruby test/support/accessibility/verify_manual_at_template.rb
+
+      - name: Parse application JavaScript
+        run: script/ci/verify-javascript
+
+      - name: Check executable entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_executables=(
+            bin/boot
+            bin/start-web
+            script/admin/prepare-backup
+            script/admin/verify-backup
+            script/admin/archive-backup
+            script/admin/extract-backup
+            script/admin/install-backup
+            script/admin/generate-backup-encryption-key
+            script/ci/validate-container-image
+            script/ci/verify-image-recovery
+            script/ci/verify-release-policy
+            script/ci/verify-javascript
+          )
+          for executable in "${required_executables[@]}"; do
+            test -x "$executable" || { echo "Required entrypoint is not executable: $executable" >&2; exit 1; }
+          done
+
+      - name: Set up pinned Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+          cache-binary: false
+
+      - name: Build and boot a production image with OIDC enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_identity=$(printf '%s' "verify:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_SHA}" | sha256sum | cut -d' ' -f1)
+          docker buildx build --load --pull --provenance=false --sbom=false \
+            --build-arg OCI_SOURCE="$SOURCE_URL" \
+            --build-arg OCI_DESCRIPTION="$IMAGE_DESCRIPTION" \
+            --build-arg APP_VERSION="verify-${GITHUB_SHA:0:12}" \
+            --build-arg GIT_REVISION="$GITHUB_SHA" \
+            --build-arg BUILD_IDENTITY="$build_identity" \
+            --tag campfire-release-candidate .
+          docker run --rm campfire-release-candidate cat /etc/campfire-build-identity.json | jq -e \
+            --arg revision "$GITHUB_SHA" --arg build_identity "$build_identity" \
+            '.format_version == 1 and .revision == $revision and .build_identity == $build_identity' >/dev/null
+          [[ "$(docker image inspect campfire-release-candidate --format '{{ index .Config.Labels "com.basecamp.campfire.build-identity" }}')" == "$build_identity" ]]
+          container_id=$(docker run --detach --publish 3000:80 \
+            --env DISABLE_SSL=true \
+            --env SKIP_TELEMETRY=true \
+            --env SECRET_KEY_BASE=release-smoke-secret-key-base-release-smoke-secret-key-base \
+            --env VAPID_PUBLIC_KEY=release-smoke-public-key \
+            --env VAPID_PRIVATE_KEY=release-smoke-private-key \
+            --env OIDC_MODE=optional \
+            --env OIDC_ISSUER=https://idp.example.com \
+            --env OIDC_CLIENT_ID=campfire \
+            --env OIDC_CLIENT_SECRET=release-smoke-client-secret \
+            --env OIDC_REDIRECT_URI=https://campfire.example.com/auth/openid_connect/callback \
+            --env OIDC_TRUSTED_PROXY_CIDRS=172.16.0.0/12 \
+            --env TLS_DOMAIN=campfire.example.com \
+            campfire-release-candidate)
+          trap 'docker logs "$container_id" || true; docker rm --force "$container_id" || true' EXIT
+          curl --fail --retry 30 --retry-all-errors --retry-delay 1 http://127.0.0.1:3000/up
+          curl --fail --retry 5 --retry-all-errors --retry-delay 1 http://127.0.0.1:3000/up/oidc
+          docker exec "$container_id" bin/rails runner 'abort "OIDC middleware missing" unless Rails.application.middleware.any? { _1.klass == Oidc::RequestGuard }'
+
+      - name: Exercise production backup and new-volume restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_volume="campfire-backup-source-${GITHUB_RUN_ID}"
+          restore_volume="campfire-backup-restore-${GITHUB_RUN_ID}"
+          archive_directory="$RUNNER_TEMP/campfire-backup-${GITHUB_RUN_ID}"
+          source_container=""
+          restored_container=""
+          cleanup() {
+            [ -z "$source_container" ] || docker rm --force "$source_container" >/dev/null 2>&1 || true
+            [ -z "$restored_container" ] || docker rm --force "$restored_container" >/dev/null 2>&1 || true
+            docker volume rm "$source_volume" "$restore_volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          mkdir -m 700 "$archive_directory"
+          docker volume create "$source_volume" >/dev/null
+          docker volume create "$restore_volume" >/dev/null
+          backup_authentication_key='YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI='
+          backup_encryption_key='Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M='
+          backup_encryption_key_id='ci-recovery-v1'
+          runtime_env=(
+            --env DISABLE_SSL=true
+            --env SKIP_TELEMETRY=true
+            --env SECRET_KEY_BASE=backup-smoke-secret-key-base-backup-smoke-secret-key-base
+            --env VAPID_PUBLIC_KEY=backup-smoke-public-key
+            --env VAPID_PRIVATE_KEY=backup-smoke-private-key
+            --env "BACKUP_AUTHENTICATION_KEY=$backup_authentication_key"
+            --env "BACKUP_ENCRYPTION_KEY=$backup_encryption_key"
+            --env "BACKUP_ENCRYPTION_KEY_ID=$backup_encryption_key_id"
+            --env OIDC_MODE=optional
+            --env OIDC_ISSUER=https://idp.example.com
+            --env OIDC_CLIENT_ID=campfire
+            --env OIDC_CLIENT_SECRET=backup-smoke-client-secret
+            --env OIDC_REDIRECT_URI=https://campfire.example.com/auth/openid_connect/callback
+            --env OIDC_TRUSTED_PROXY_CIDRS=172.16.0.0/12
+            --env TLS_DOMAIN=campfire.example.com
+          )
+
+          source_container=$(docker run --detach --publish 3001:80 \
+            --volume "$source_volume":/rails/storage \
+            "${runtime_env[@]}" campfire-release-candidate)
+          curl --fail --retry 30 --retry-all-errors --retry-delay 1 http://127.0.0.1:3001/up
+          docker exec "$source_container" bin/rails runner \
+            'Account.create!(name: "Backup smoke", join_code: SecureRandom.hex(12)) unless Account.exists?; Resque.redis.set("backup-smoke", "durable")'
+          docker stop --timeout 70 "$source_container" >/dev/null
+          [[ "$(docker inspect --format '{{.State.Running}}' "$source_container")" == false ]]
+          [[ "$(docker inspect --format '{{.State.ExitCode}}' "$source_container")" == 0 ]]
+
+          backup_json=$(docker run --rm \
+            --volume "$source_volume":/rails/storage \
+            "${runtime_env[@]}" \
+            --env CONFIRM_QUIESCED_BACKUP="CAMPFIRE IS STOPPED" \
+            campfire-release-candidate script/admin/prepare-backup)
+          backup_id=$(jq -r '.backup_id' <<< "$backup_json")
+          fingerprint=$(jq -r '.installation_fingerprint' <<< "$backup_json")
+          [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$ ]]
+          [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]]
+
+          docker run --rm \
+            --volume "$source_volume":/rails/storage \
+            "${runtime_env[@]}" \
+            --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+            --env EXPECTED_ENVIRONMENT=production \
+            campfire-release-candidate script/admin/verify-backup "/rails/storage/backups/$backup_id"
+          archive_json=$(docker run --rm --user "$(id -u):$(id -g)" --group-add 1000 \
+            --volume "$source_volume":/rails/storage:ro \
+            --volume "$archive_directory":/archive \
+            "${runtime_env[@]}" \
+            --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+            --env EXPECTED_ENVIRONMENT=production \
+            campfire-release-candidate script/admin/archive-backup \
+            "/rails/storage/backups/$backup_id" /archive)
+          [[ "$(jq -r '.status' <<< "$archive_json")" == "archived" ]]
+          [[ "$(jq -r '.encryption_key_id' <<< "$archive_json")" == "$backup_encryption_key_id" ]]
+          archive_path="/archive/campfire-$backup_id.campfire-backup"
+          [[ "$(jq -r '.archive' <<< "$archive_json")" == "$archive_path" ]]
+          mkdir -m 700 "$archive_directory/restore"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --volume "$archive_directory":/archive:ro \
+            --volume "$archive_directory/restore":/restore \
+            "${runtime_env[@]}" \
+            --env BACKUP_ID="$backup_id" \
+            --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+            --env EXPECTED_ENVIRONMENT=production \
+            campfire-release-candidate script/admin/extract-backup \
+            "$archive_path" /restore
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --volume "$archive_directory/restore":/backup \
+            "${runtime_env[@]}" \
+            --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+            --env EXPECTED_ENVIRONMENT=production \
+            campfire-release-candidate script/admin/verify-backup "/backup/$backup_id"
+          docker run --rm --user root \
+            --mount "type=volume,src=$restore_volume,dst=/rails/storage,volume-nocopy" \
+            --volume "$archive_directory/restore":/backup:ro \
+            "${runtime_env[@]}" \
+            --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+            --env EXPECTED_ENVIRONMENT=production \
+            --env RESTORE_UID=1000 \
+            --env RESTORE_GID=1000 \
+            campfire-release-candidate script/admin/install-backup "/backup/$backup_id" /rails/storage
+
+          restored_container=$(docker run --detach --publish 3002:80 \
+            --volume "$restore_volume":/rails/storage \
+            "${runtime_env[@]}" \
+            --env EXPECTED_INSTALLATION_FINGERPRINT="$fingerprint" \
+            campfire-release-candidate)
+          curl --fail --retry 30 --retry-all-errors --retry-delay 1 http://127.0.0.1:3002/up
+          docker exec "$restored_container" bin/rails runner '
+            expected = ENV.fetch("EXPECTED_INSTALLATION_FINGERPRINT")
+            actual = Digest::SHA256.hexdigest(Account.sole.installation_identifier)
+            abort "installation mismatch" unless actual == expected
+            abort "Redis state missing" unless Resque.redis.get("backup-smoke") == "durable"
+          '
+
+      - name: Exercise pre-migration recovery and upgrade
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$LEGACY_IMAGE"
+          build_identity=$(printf '%s' "verify:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_SHA}" | sha256sum | cut -d' ' -f1)
+          target_digest=$(docker image inspect campfire-release-candidate --format '{{.Id}}')
+          RELEASE_SHA="$GITHUB_SHA" \
+            RELEASE_TAG="verify-$GITHUB_SHA" \
+            TARGET_DIGEST="$target_digest" \
+            TARGET_BUILD_IDENTITY="$build_identity" \
+            CONTAINER_PLATFORM=linux/amd64 \
+            ARCHITECTURE=amd64 \
+            LEGACY_REVISION="$LEGACY_REVISION" \
+            script/ci/verify-image-recovery \
+            campfire-release-candidate "$LEGACY_IMAGE" \
+            "verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+  release-environment:
+    name: Verify release environment protection
+    needs: verify
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Verify required reviewers and deployment branch policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          environment=$(gh api \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$GITHUB_REPOSITORY/environments/release")
+          jq -e '
+            .name == "release" and
+            .deployment_branch_policy == {
+              "custom_branch_policies": true,
+              "protected_branches": false
+            } and
+            ([
+              .protection_rules[]? |
+              select(
+                .type == "required_reviewers" and
+                .prevent_self_review == true and
+                (.reviewers | length) > 0
+              )
+            ] | length) == 1
+          ' <<< "$environment" >/dev/null
+
+          branch_policies=$(gh api \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$GITHUB_REPOSITORY/environments/release/deployment-branch-policies")
+          jq -e '
+            .total_count == 1 and
+            (.branch_policies | length) == 1 and
+            .branch_policies[0].name == "main" and
+            .branch_policies[0].type == "branch"
+          ' <<< "$branch_policies" >/dev/null
+
   build:
-    name: Build and push image (${{ matrix.arch }})
+    name: Build, smoke, and sign image (${{ matrix.arch }})
+    needs: [ verify, release-environment ]
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    environment: release
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
-    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -42,14 +386,42 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_SHA: ${{ inputs.release_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify allowlisted release tag signer
+        shell: bash
+        env:
+          TAG_SIGNER_PUBLIC_KEY: ${{ secrets.RELEASE_TAG_SIGNER_PUBLIC_KEY }}
+          TAG_SIGNER_FINGERPRINT: ${{ secrets.RELEASE_TAG_SIGNER_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG_SIGNER_FINGERPRINT" =~ ^[0-9A-Fa-f]{40,64}$ ]]
+          export GNUPGHOME
+          GNUPGHOME=$(mktemp -d)
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+          printf '%s' "$TAG_SIGNER_PUBLIC_KEY" | gpg --batch --import
+          imported=$(gpg --batch --with-colons --fingerprint | awk -F: '$1 == "fpr" { print toupper($10) }')
+          grep -Fxq "${TAG_SIGNER_FINGERPRINT^^}" <<< "$imported"
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          [[ "$(git rev-list -n 1 "$RELEASE_TAG")" == "$RELEASE_SHA" ]]
+          verification=$(git verify-tag --raw "$RELEASE_TAG" 2>&1)
+          valid_signatures=$(awk '/\[GNUPG:\] VALIDSIG / { for (i = 3; i <= NF; i++) if ($i ~ /^[0-9A-Fa-f]+$/ && length($i) >= 40 && length($i) <= 64) print toupper($i) }' <<< "$verification")
+          grep -Fxq "${TAG_SIGNER_FINGERPRINT^^}" <<< "$valid_signatures"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+          cache-binary: false
 
       - name: Log in to GHCR
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
@@ -58,88 +430,393 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute canonical image name (lowercase)
+      - name: Compute immutable build inputs
         id: vars
         shell: bash
         run: |
-          set -eu
-          IMAGE_REF="${IMAGE_NAME:-$GITHUB_REPOSITORY}"
-          CANONICAL_IMAGE="${REGISTRY}/${IMAGE_REF,,}"
-          echo "canonical=${CANONICAL_IMAGE}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          canonical_image="${REGISTRY}/${IMAGE_NAME,,}"
+          app_version="${RELEASE_TAG#v}"
+          build_identity=$(printf '%s' "release:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${{ matrix.arch }}:${RELEASE_SHA}" | sha256sum | cut -d' ' -f1)
+          source_date_epoch=$(git show -s --format=%ct "$RELEASE_SHA")
+          {
+            echo "canonical=${canonical_image}"
+            echo "app_version=${app_version}"
+            echo "build_identity=${build_identity}"
+            echo "source_date_epoch=${source_date_epoch}"
+            echo "staging=${canonical_image}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.arch }}"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Compute app version
-        id: version
-        shell: bash
-        run: |
-          set -eu
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Extract Docker metadata (tags, labels) with arch suffix
-        id: meta
-        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
-        with:
-          images: ${{ steps.vars.outputs.canonical }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha,format=short,prefix=sha-
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-          flavor: |
-            latest=false
-            suffix=-${{ matrix.arch }}
-          labels: |
-            org.opencontainers.image.source=${{ env.SOURCE_URL }}
-
-      - name: Build and push (${{ matrix.platform }})
+      - name: Build and push staging image
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: Dockerfile
           build-args: |
+            BUILDKIT_MULTI_PLATFORM=1
+            SOURCE_DATE_EPOCH=${{ steps.vars.outputs.source_date_epoch }}
             OCI_SOURCE=${{ env.SOURCE_URL }}
             OCI_DESCRIPTION=${{ env.IMAGE_DESCRIPTION }}
-            APP_VERSION=${{ steps.version.outputs.version }}
-            GIT_REVISION=${{ github.sha }}
+            APP_VERSION=${{ steps.vars.outputs.app_version }}
+            GIT_REVISION=${{ inputs.release_sha }}
+            BUILD_IDENTITY=${{ steps.vars.outputs.build_identity }}
           platforms: ${{ matrix.platform }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          pull: true
+          push: true
+          tags: ${{ steps.vars.outputs.staging }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_URL }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max
-          sbom: false
-          provenance: false
+          sbom: generator=${{ env.SBOM_SCANNER_IMAGE }}
+          provenance: mode=max
 
-      - name: Attest image provenance (per-arch)
-        if: github.event_name != 'pull_request'
+      - name: Attest architecture digest
+        id: parent-provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-name: ${{ steps.vars.outputs.canonical }}
           subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: false
+          push-to-registry: true
+
+      - name: Resolve runnable architecture digest
+        id: image
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          CANONICAL_IMAGE: ${{ steps.vars.outputs.canonical }}
+          PARENT_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          parent_digest="$PARENT_DIGEST"
+          manifest=$(docker buildx imagetools inspect "${CANONICAL_IMAGE}@${parent_digest}" --raw)
+          runnable_digest=$(jq -r \
+            --arg architecture "$ARCHITECTURE" \
+            '[.manifests[] | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest" and .platform.os == "linux" and .platform.architecture == $architecture) | .digest] | if length == 1 then .[0] else empty end' \
+            <<< "$manifest")
+          [[ "$runnable_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Could not identify one runnable architecture manifest"; exit 1; }
+          echo "parent_digest=$parent_digest" >> "$GITHUB_OUTPUT"
+          echo "runnable_digest=$runnable_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest runnable architecture digest
+        id: runnable-provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ${{ steps.vars.outputs.canonical }}
+          subject-digest: ${{ steps.image.outputs.runnable_digest }}
+          push-to-registry: true
+
+      - name: Verify commit-bound signed architecture provenance
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          CANONICAL_IMAGE: ${{ steps.vars.outputs.canonical }}
+          PARENT_DIGEST: ${{ steps.image.outputs.parent_digest }}
+          RUNNABLE_DIGEST: ${{ steps.image.outputs.runnable_digest }}
+          PARENT_BUNDLE: ${{ steps.parent-provenance.outputs.bundle-path }}
+          RUNNABLE_BUNDLE: ${{ steps.runnable-provenance.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_directory="$RUNNER_TEMP/release-evidence-$ARCHITECTURE"
+          mkdir -m 700 "$evidence_directory"
+          cp "$PARENT_BUNDLE" "$evidence_directory/parent-provenance.bundle.jsonl"
+          cp "$RUNNABLE_BUNDLE" "$evidence_directory/runnable-provenance.bundle.jsonl"
+          for kind in parent runnable; do
+            if [[ "$kind" == parent ]]; then digest=$PARENT_DIGEST; else digest=$RUNNABLE_DIGEST; fi
+            gh attestation verify "oci://${CANONICAL_IMAGE}@${digest}" \
+              --bundle "$evidence_directory/${kind}-provenance.bundle.jsonl" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main" \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml" \
+              --signer-digest "$RELEASE_SHA" \
+              --source-ref refs/heads/main \
+              --source-digest "$RELEASE_SHA" \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --deny-self-hosted-runners \
+              --format json > "$evidence_directory/${kind}-provenance-verification.json"
+            jq -e --arg digest "${digest#sha256:}" '
+              length >= 1 and
+              any(.[].verificationResult.statement.subject[]?; .digest.sha256 == $digest)
+            ' "$evidence_directory/${kind}-provenance-verification.json" >/dev/null
+          done
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - name: Sign architecture digest
+        shell: bash
+        env:
+          CANONICAL_IMAGE: ${{ steps.vars.outputs.canonical }}
+          PARENT_DIGEST: ${{ steps.image.outputs.parent_digest }}
+          RUNNABLE_DIGEST: ${{ steps.image.outputs.runnable_digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${CANONICAL_IMAGE}@${PARENT_DIGEST}"
+          cosign sign --yes "${CANONICAL_IMAGE}@${RUNNABLE_DIGEST}"
+
+      - name: Inspect and smoke-test the exact architecture digest
+        shell: bash
+        env:
+          IMAGE: ${{ steps.vars.outputs.canonical }}@${{ steps.image.outputs.runnable_digest }}
+          ATTESTATION_IMAGE: ${{ steps.vars.outputs.canonical }}@${{ steps.image.outputs.parent_digest }}
+          TARGET_DIGEST: ${{ steps.image.outputs.runnable_digest }}
+          TARGET_BUILD_IDENTITY: ${{ steps.vars.outputs.build_identity }}
+          APP_VERSION: ${{ steps.vars.outputs.app_version }}
+          CONTAINER_PLATFORM: ${{ matrix.platform }}
+          SOURCE_REVISION: ${{ inputs.release_sha }}
+          ARCHITECTURE: ${{ matrix.arch }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          docker pull --platform "$CONTAINER_PLATFORM" "$IMAGE"
+          EVIDENCE_DIRECTORY="$RUNNER_TEMP/release-evidence-$ARCHITECTURE" \
+            script/ci/validate-container-image
+
+      - name: Recovery-test the exact architecture digest
+        id: recovery
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          CONTAINER_PLATFORM: ${{ matrix.platform }}
+          TARGET_IMAGE: ${{ steps.vars.outputs.canonical }}@${{ steps.image.outputs.runnable_digest }}
+          PARENT_DIGEST: ${{ steps.image.outputs.parent_digest }}
+          TARGET_DIGEST: ${{ steps.image.outputs.runnable_digest }}
+          TARGET_BUILD_IDENTITY: ${{ steps.vars.outputs.build_identity }}
+        run: |
+          set -euo pipefail
+          evidence_directory="$RUNNER_TEMP/release-evidence-$ARCHITECTURE"
+          docker pull --platform "$CONTAINER_PLATFORM" "$LEGACY_IMAGE"
+          TARGET_MANIFEST_PATH="$evidence_directory/oci-runnable-manifest.json" \
+            CONTAINER_VALIDATION_EVIDENCE="$evidence_directory/container-validation.json" \
+            RECOVERY_EVIDENCE_PATH="$evidence_directory/recovery-core.json" \
+            script/ci/verify-image-recovery "$TARGET_IMAGE" "$LEGACY_IMAGE" \
+            "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCHITECTURE}"
+
+      - name: Record architecture evidence receipt
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          PARENT_DIGEST: ${{ steps.image.outputs.parent_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_directory="$RUNNER_TEMP/release-evidence-$ARCHITECTURE"
+          jq \
+            --arg parent_digest "$PARENT_DIGEST" \
+            --arg inspection_sha256 "$(sha256sum "$evidence_directory/image-inspect.json" | cut -d' ' -f1)" \
+            --arg sbom_sha256 "$(sha256sum "$evidence_directory/sbom.spdx.json" | cut -d' ' -f1)" \
+            --arg buildkit_provenance_sha256 "$(sha256sum "$evidence_directory/buildkit-provenance.json" | cut -d' ' -f1)" \
+            --arg parent_bundle_sha256 "$(sha256sum "$evidence_directory/parent-provenance.bundle.jsonl" | cut -d' ' -f1)" \
+            --arg runnable_bundle_sha256 "$(sha256sum "$evidence_directory/runnable-provenance.bundle.jsonl" | cut -d' ' -f1)" \
+            --arg parent_verification_sha256 "$(sha256sum "$evidence_directory/parent-provenance-verification.json" | cut -d' ' -f1)" \
+            --arg runnable_verification_sha256 "$(sha256sum "$evidence_directory/runnable-provenance-verification.json" | cut -d' ' -f1)" '
+            . + {
+              parent_digest: $parent_digest,
+              image_inspection_sha256: $inspection_sha256,
+              buildkit: {
+                sbom_sha256: $sbom_sha256,
+                provenance_sha256: $buildkit_provenance_sha256
+              },
+              signed_provenance: {
+                parent_bundle_sha256: $parent_bundle_sha256,
+                runnable_bundle_sha256: $runnable_bundle_sha256,
+                parent_verification_sha256: $parent_verification_sha256,
+                runnable_verification_sha256: $runnable_verification_sha256,
+                source_digest: .source_sha,
+                source_ref: "refs/heads/main",
+                signer_workflow: "publish-image.yml"
+              }
+            }
+          ' "$evidence_directory/recovery-core.json" > "$RUNNER_TEMP/recovery-${ARCHITECTURE}.json"
+
+      - name: Stage exact architecture release evidence
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          source_directory="$RUNNER_TEMP/release-evidence-$ARCHITECTURE"
+          artifact_directory="$RUNNER_TEMP/architecture-release-evidence-$ARCHITECTURE"
+          rm -rf "$artifact_directory"
+          mkdir -m 700 "$artifact_directory"
+
+          cp "$RUNNER_TEMP/recovery-${ARCHITECTURE}.json" "$artifact_directory/recovery.json"
+          cp "$source_directory/upgrade-recovery.json" "$artifact_directory/upgrade-recovery.json"
+          cp "$source_directory/container-validation.json" "$artifact_directory/container-validation.json"
+          cp "$source_directory/image-inspect.json" "$artifact_directory/image-inspect.json"
+          cp "$source_directory/sbom.spdx.json" "$artifact_directory/sbom.spdx.json"
+          cp "$source_directory/buildkit-provenance.json" "$artifact_directory/buildkit-provenance.json"
+          cp "$source_directory/parent-provenance.bundle.jsonl" "$artifact_directory/parent-provenance.bundle.jsonl"
+          cp "$source_directory/runnable-provenance.bundle.jsonl" "$artifact_directory/runnable-provenance.bundle.jsonl"
+          cp "$source_directory/parent-provenance-verification.json" "$artifact_directory/parent-provenance-verification.json"
+          cp "$source_directory/runnable-provenance-verification.json" "$artifact_directory/runnable-provenance-verification.json"
+
+          expected_files=(
+            buildkit-provenance.json
+            container-validation.json
+            image-inspect.json
+            parent-provenance.bundle.jsonl
+            parent-provenance-verification.json
+            recovery.json
+            runnable-provenance.bundle.jsonl
+            runnable-provenance-verification.json
+            sbom.spdx.json
+            upgrade-recovery.json
+          )
+          [[ "$(find "$artifact_directory" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq "${#expected_files[@]}" ]]
+          for name in "${expected_files[@]}"; do
+            [[ -f "$artifact_directory/$name" && ! -L "$artifact_directory/$name" && -s "$artifact_directory/$name" ]]
+          done
+          [[ "$(jq -r '.upgrade_receipt_sha256' "$artifact_directory/recovery.json")" == \
+            "$(sha256sum "$artifact_directory/upgrade-recovery.json" | cut -d' ' -f1)" ]]
+
+      - name: Save architecture digest
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          RUNNABLE_DIGEST: ${{ steps.image.outputs.runnable_digest }}
+        run: printf '%s\n' "$RUNNABLE_DIGEST" > "$RUNNER_TEMP/digest-${ARCHITECTURE}"
+
+      - name: Upload architecture digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digest-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/digest-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload exact architecture release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: architecture-evidence-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/architecture-release-evidence-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 90
 
   manifest:
-    name: Create multi-arch manifest and sign
+    name: Assemble signed release manifest
     needs: build
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
     permissions:
       contents: read
       packages: write
       id-token: write
-    timeout-minutes: 20
+      attestations: write
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
+      OPERATION_NONCE: ${{ inputs.operation_nonce }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_SHA: ${{ inputs.release_sha }}
     steps:
-      - name: Set up Docker Buildx (for imagetools)
+      - name: Download architecture digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: digest-*-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Download architecture evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: architecture-evidence-*-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/architecture-evidence
+
+      - name: Assemble flat architecture evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          source_root="$RUNNER_TEMP/architecture-evidence"
+          destination="$RUNNER_TEMP/release-evidence"
+          rm -rf "$destination"
+          mkdir -m 700 "$destination"
+
+          digest_files=(digest-amd64 digest-arm64)
+          [[ "$(find "$RUNNER_TEMP/digests" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq "${#digest_files[@]}" ]]
+          for name in "${digest_files[@]}"; do
+            [[ -f "$RUNNER_TEMP/digests/$name" && ! -L "$RUNNER_TEMP/digests/$name" && -s "$RUNNER_TEMP/digests/$name" ]]
+          done
+
+          source_directories=(
+            "architecture-evidence-amd64-${GITHUB_RUN_ATTEMPT}"
+            "architecture-evidence-arm64-${GITHUB_RUN_ATTEMPT}"
+          )
+          [[ "$(find "$source_root" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq "${#source_directories[@]}" ]]
+          for name in "${source_directories[@]}"; do
+            [[ -d "$source_root/$name" && ! -L "$source_root/$name" ]]
+          done
+
+          source_files=(
+            buildkit-provenance.json
+            container-validation.json
+            image-inspect.json
+            parent-provenance.bundle.jsonl
+            parent-provenance-verification.json
+            recovery.json
+            runnable-provenance.bundle.jsonl
+            runnable-provenance-verification.json
+            sbom.spdx.json
+            upgrade-recovery.json
+          )
+          for arch in amd64 arm64; do
+            source_directory="$source_root/architecture-evidence-${arch}-${GITHUB_RUN_ATTEMPT}"
+            [[ "$(find "$source_directory" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq "${#source_files[@]}" ]]
+            for name in "${source_files[@]}"; do
+              [[ -f "$source_directory/$name" && ! -L "$source_directory/$name" && -s "$source_directory/$name" ]]
+            done
+
+            cp "$source_directory/recovery.json" "$destination/recovery-${arch}.json"
+            cp "$source_directory/upgrade-recovery.json" "$destination/upgrade-recovery-${arch}.json"
+            cp "$source_directory/container-validation.json" "$destination/container-validation-${arch}.json"
+            cp "$source_directory/image-inspect.json" "$destination/image-inspect-${arch}.json"
+            cp "$source_directory/sbom.spdx.json" "$destination/sbom-${arch}.spdx.json"
+            cp "$source_directory/buildkit-provenance.json" "$destination/buildkit-provenance-${arch}.json"
+            cp "$source_directory/parent-provenance.bundle.jsonl" "$destination/parent-provenance-${arch}.bundle.jsonl"
+            cp "$source_directory/runnable-provenance.bundle.jsonl" "$destination/runnable-provenance-${arch}.bundle.jsonl"
+            cp "$source_directory/parent-provenance-verification.json" "$destination/parent-provenance-verification-${arch}.json"
+            cp "$source_directory/runnable-provenance-verification.json" "$destination/runnable-provenance-verification-${arch}.json"
+          done
+
+          architecture_files=(
+            buildkit-provenance-amd64.json
+            buildkit-provenance-arm64.json
+            container-validation-amd64.json
+            container-validation-arm64.json
+            image-inspect-amd64.json
+            image-inspect-arm64.json
+            parent-provenance-amd64.bundle.jsonl
+            parent-provenance-arm64.bundle.jsonl
+            parent-provenance-verification-amd64.json
+            parent-provenance-verification-arm64.json
+            recovery-amd64.json
+            recovery-arm64.json
+            runnable-provenance-amd64.bundle.jsonl
+            runnable-provenance-arm64.bundle.jsonl
+            runnable-provenance-verification-amd64.json
+            runnable-provenance-verification-arm64.json
+            sbom-amd64.spdx.json
+            sbom-arm64.spdx.json
+            upgrade-recovery-amd64.json
+            upgrade-recovery-arm64.json
+          )
+          [[ "$(find "$destination" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq "${#architecture_files[@]}" ]]
+          for name in "${architecture_files[@]}"; do
+            [[ -f "$destination/$name" && ! -L "$destination/$name" && -s "$destination/$name" ]]
+          done
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+          cache-binary: false
 
       - name: Log in to GHCR
         uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
@@ -148,79 +825,431 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute canonical image name (lowercase)
-        id: vars
-        shell: bash
-        run: |
-          set -eu
-          IMAGE_REF="${IMAGE_NAME:-$GITHUB_REPOSITORY}"
-          CANONICAL_IMAGE="${REGISTRY}/${IMAGE_REF,,}"
-          echo "canonical=${CANONICAL_IMAGE}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute base tags (no suffix)
-        id: meta
-        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
-        with:
-          images: ${{ steps.vars.outputs.canonical }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha,format=short,prefix=sha-
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-          flavor: |
-            latest=false
-          labels: |
-            org.opencontainers.image.source=${{ env.SOURCE_URL }}
-
-      - name: Create multi-arch manifests
-        shell: bash
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          set -eu
-          tags="$TAGS"
-          echo "Creating manifests for tags:"
-          printf '%s\n' "$tags"
-          while IFS= read -r tag; do
-            [ -z "$tag" ] && continue
-            echo "Creating manifest for $tag"
-            src_tag="$tag"
-            if [[ "$tag" == *:latest && "${GITHUB_REF}" == refs/tags/* ]]; then
-              ref="${GITHUB_REF#refs/tags/}"
-              src_tag="${tag%:latest}:$ref"
-            fi
-            if [ -n "${IMAGE_DESCRIPTION:-}" ]; then
-              docker buildx imagetools create \
-                --tag "$tag" \
-                --annotation "index:org.opencontainers.image.description=${IMAGE_DESCRIPTION}" \
-                "${src_tag}-amd64" \
-                "${src_tag}-arm64"
-            else
-              docker buildx imagetools create \
-                --tag "$tag" \
-                "${src_tag}-amd64" \
-                "${src_tag}-arm64"
-            fi
-          done <<< "$tags"
-
       - name: Install Cosign
         uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
 
-      - name: Cosign sign all tags (keyless OIDC)
+      - name: Prove GHCR rejects disposable alias overwrite
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_image="${REGISTRY}/${IMAGE_NAME,,}"
+          evidence_directory="$RUNNER_TEMP/release-evidence"
+          probe_reference="${canonical_image}:release-mutability-control-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${OPERATION_NONCE:0:16}"
+          seed_digest=$(jq -r '.parent_digest' "$evidence_directory/recovery-amd64.json")
+          conflict_digest=$(jq -r '.parent_digest' "$evidence_directory/recovery-arm64.json")
+          digest_pattern='^sha256:[0-9a-f]{64}$'
+          [[ "$seed_digest" =~ $digest_pattern && "$conflict_digest" =~ $digest_pattern ]]
+          [[ "$seed_digest" != "$conflict_digest" ]]
+
+          set +e
+          absence_output=$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}' 2>&1)
+          absence_status=$?
+          set -e
+          if [[ "$absence_status" -eq 0 ]]; then
+            echo "Disposable GHCR mutability control already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+          absence_output=$(tr '[:upper:]' '[:lower:]' <<< "$absence_output")
+          [[ "$absence_output" =~ manifest[[:space:]]unknown|not[[:space:]]found ]] || {
+            echo "Could not prove the disposable GHCR mutability control is unused" >&2
+            exit 1
+          }
+
+          docker buildx imagetools create --tag "$probe_reference" "${canonical_image}@${seed_digest}"
+          [[ "$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}')" == "$seed_digest" ]]
+
+          conflict_log="$RUNNER_TEMP/ghcr-mutability-conflict.log"
+          set +e
+          docker buildx imagetools create --tag "$probe_reference" \
+            "${canonical_image}@${conflict_digest}" > "$conflict_log" 2>&1
+          conflict_status=$?
+          set -e
+          if [[ "$conflict_status" -eq 0 ]]; then
+            [[ "$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}')" == "$conflict_digest" ]]
+            echo "GHCR permits alias overwrite; immutable release aliases are unsafe" >&2
+            exit 1
+          fi
+
+          rejection=$(<"$conflict_log")
+          rejection=$(tr '[:upper:]' '[:lower:]' <<< "$rejection")
+          transient_pattern='unauthori[sz]ed|authentication required|insufficient.scope|requested access.*denied|timeout|timed out|connection|network|no such host|tls|certificate|unsupported|not implemented|unknown command|manifest unknown'
+          rejection_pattern='denied|forbidden|conflict|invalid'
+          immutable_pattern='immutable|cannot (overwrite|replace|update).*(tag|manifest)|(tag|manifest).*already exists'
+          [[ ! "$rejection" =~ $transient_pattern ]]
+          [[ "$rejection" =~ $rejection_pattern && "$rejection" =~ $immutable_pattern ]]
+          for verification in 1 2; do
+            : "$verification"
+            [[ "$(docker buildx imagetools inspect "$probe_reference" --format '{{.Manifest.Digest}}')" == "$seed_digest" ]]
+          done
+
+      - name: Create and sign digest-bound manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_image="${REGISTRY}/${IMAGE_NAME,,}"
+          evidence_directory="$RUNNER_TEMP/release-evidence"
+          amd64_digest=$(<"$RUNNER_TEMP/digests/digest-amd64")
+          arm64_digest=$(<"$RUNNER_TEMP/digests/digest-arm64")
+          digest_pattern='^sha256:[0-9a-f]{64}$'
+          [[ "$amd64_digest" =~ $digest_pattern && "$arm64_digest" =~ $digest_pattern ]] || { echo "Invalid architecture digest"; exit 1; }
+          [[ "$amd64_digest" != "$arm64_digest" ]] || { echo "Architecture digests must be distinct"; exit 1; }
+          for arch in amd64 arm64; do
+            evidence="$evidence_directory/recovery-$arch.json"
+            [[ "$(jq -r '.format_version' "$evidence")" == 1 ]]
+            [[ "$(jq -r '.kind' "$evidence")" == "campfire-image-recovery" ]]
+            [[ "$(jq -r '.architecture' "$evidence")" == "$arch" ]]
+            [[ "$(jq -r '.platform' "$evidence")" == "linux/$arch" ]]
+            [[ "$(jq -r '.source_sha' "$evidence")" == "$RELEASE_SHA" ]]
+            [[ "$(jq -r '.release_tag' "$evidence")" == "$RELEASE_TAG" ]]
+            [[ "$(jq -r '.run_id' "$evidence")" == "$GITHUB_RUN_ID" ]]
+            [[ "$(jq -r '.run_attempt' "$evidence")" == "$GITHUB_RUN_ATTEMPT" ]]
+            [[ "$(jq -r '.target_digest' "$evidence")" == "$(<"$RUNNER_TEMP/digests/digest-$arch")" ]]
+            [[ "$(jq -r '.target_manifest_digest' "$evidence")" == "$(<"$RUNNER_TEMP/digests/digest-$arch")" ]]
+            [[ "$(jq -r '.runtime_binding' "$evidence")" == "registry-manifest-digest" ]]
+            expected_build_identity=$(printf '%s' "release:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${arch}:${RELEASE_SHA}" | sha256sum | cut -d' ' -f1)
+            [[ "$(jq -r '.target_build_identity' "$evidence")" == "$expected_build_identity" ]]
+            [[ "$(jq -r '.parent_digest' "$evidence")" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "$(jq -r '.legacy_digest' "$evidence")" == "${LEGACY_IMAGE##*@}" ]]
+            [[ "$(jq -r '.legacy_revision' "$evidence")" == "$LEGACY_REVISION" ]]
+            [[ "$(jq -r '.upgrade_receipt_sha256' "$evidence")" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$(jq -r '.image_inspection_sha256' "$evidence")" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$(jq -r '.buildkit.sbom_sha256' "$evidence")" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$(jq -r '.buildkit.provenance_sha256' "$evidence")" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$(jq -r '.signed_provenance.source_digest' "$evidence")" == "$RELEASE_SHA" ]]
+            [[ "$(jq -r '.signed_provenance.source_ref' "$evidence")" == "refs/heads/main" ]]
+            [[ "$(jq -r '.signed_provenance.signer_workflow' "$evidence")" == "publish-image.yml" ]]
+            [[ "$(jq -r '.recovery' "$evidence")" == "passed" ]]
+            architecture_digest=$(<"$RUNNER_TEMP/digests/digest-$arch")
+            image_inspection="$evidence_directory/image-inspect-$arch.json"
+            sbom="$evidence_directory/sbom-$arch.spdx.json"
+            buildkit_provenance="$evidence_directory/buildkit-provenance-$arch.json"
+            container_validation_sha256=$(sha256sum "$evidence_directory/container-validation-$arch.json" | cut -d' ' -f1)
+            image_inspection_sha256=$(sha256sum "$image_inspection" | cut -d' ' -f1)
+            sbom_sha256=$(sha256sum "$sbom" | cut -d' ' -f1)
+            buildkit_provenance_sha256=$(sha256sum "$buildkit_provenance" | cut -d' ' -f1)
+            [[ "$(jq -r '.container_validation_sha256' "$evidence")" == "$container_validation_sha256" ]]
+            [[ "$(jq -r '.image_inspection_sha256' "$evidence")" == "$image_inspection_sha256" ]]
+            [[ "$(jq -r '.upgrade_receipt_sha256' "$evidence")" == \
+              "$(sha256sum "$evidence_directory/upgrade-recovery-$arch.json" | cut -d' ' -f1)" ]]
+            [[ "$(jq -r '.buildkit.sbom_sha256' "$evidence")" == "$sbom_sha256" ]]
+            [[ "$(jq -r '.buildkit.provenance_sha256' "$evidence")" == "$buildkit_provenance_sha256" ]]
+            [[ "$(jq -r '.signed_provenance.parent_bundle_sha256' "$evidence")" == \
+              "$(sha256sum "$evidence_directory/parent-provenance-$arch.bundle.jsonl" | cut -d' ' -f1)" ]]
+            [[ "$(jq -r '.signed_provenance.runnable_bundle_sha256' "$evidence")" == \
+              "$(sha256sum "$evidence_directory/runnable-provenance-$arch.bundle.jsonl" | cut -d' ' -f1)" ]]
+            [[ "$(jq -r '.signed_provenance.parent_verification_sha256' "$evidence")" == \
+              "$(sha256sum "$evidence_directory/parent-provenance-verification-$arch.json" | cut -d' ' -f1)" ]]
+            [[ "$(jq -r '.signed_provenance.runnable_verification_sha256' "$evidence")" == \
+              "$(sha256sum "$evidence_directory/runnable-provenance-verification-$arch.json" | cut -d' ' -f1)" ]]
+            jq -e \
+              --arg architecture "$arch" \
+              --arg config_digest "$(jq -r '.target_config_digest' "$evidence")" \
+              --arg revision "$RELEASE_SHA" \
+              --arg build_identity "$expected_build_identity" '
+                length == 1 and .[0].Os == "linux" and .[0].Architecture == $architecture and
+                .[0].Id == $config_digest and
+                .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
+                .[0].Config.Labels["com.basecamp.campfire.build-identity"] == $build_identity
+              ' "$image_inspection" >/dev/null
+            jq -e \
+              --arg architecture "$arch" \
+              --arg platform "linux/$arch" \
+              --arg revision "$RELEASE_SHA" \
+              --arg build_identity "$expected_build_identity" \
+              --arg runnable_digest "$architecture_digest" \
+              --arg config_digest "$(jq -r '.target_config_digest' "$evidence")" \
+              --arg image_inspection_sha256 "$image_inspection_sha256" \
+              --arg sbom_sha256 "$sbom_sha256" \
+              --arg provenance_sha256 "$buildkit_provenance_sha256" '
+                .format_version == 1 and .kind == "campfire-container-validation" and
+                .architecture == $architecture and .platform == $platform and
+                .source_revision == $revision and .build_identity == $build_identity and
+                .runnable_digest == $runnable_digest and
+                .validated_manifest_digest == $runnable_digest and .config_digest == $config_digest and
+                .image_inspection_sha256 == $image_inspection_sha256 and
+                .sbom_sha256 == $sbom_sha256 and
+                .buildkit_provenance_sha256 == $provenance_sha256 and
+                .checks.sbom == "passed" and .checks.provenance == "passed"
+              ' "$evidence_directory/container-validation-$arch.json" >/dev/null
+            jq -e --arg digest "${architecture_digest#sha256:}" '
+              .predicateType == "https://spdx.dev/Document" and
+              (.subject | type) == "array" and (.subject | length) == 1 and
+              .subject[0].digest == {"sha256": $digest} and
+              .predicate.SPDXID == "SPDXRef-DOCUMENT" and
+              (.predicate.spdxVersion | startswith("SPDX-")) and
+              (.predicate.packages | length) > 0
+            ' "$sbom" >/dev/null
+            jq -e \
+              --arg digest "${architecture_digest#sha256:}" \
+              --arg architecture "$arch" \
+              --arg revision "$RELEASE_SHA" '
+                .predicateType == "https://slsa.dev/provenance/v1" and
+                (.subject | type) == "array" and (.subject | length) == 1 and
+                .subject[0].digest == {"sha256": $digest} and
+                .predicate.buildDefinition.buildType ==
+                  "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md" and
+                (.predicate.buildDefinition.resolvedDependencies | length) >= 2 and
+                (.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition | length) > 0 and
+                any(.predicate.buildDefinition.internalParameters.buildConfig.llbDefinition[]?;
+                  .op.platform.OS == "linux" and .op.platform.Architecture == $architecture) and
+                (.predicate | tostring | contains($revision))
+              ' "$buildkit_provenance" >/dev/null
+            jq -e \
+              --arg target_reference "${canonical_image}@$(<"$RUNNER_TEMP/digests/digest-$arch")" \
+              --arg legacy_reference "$LEGACY_IMAGE" '
+              .target_reference == $target_reference and
+              .legacy_reference == $legacy_reference and
+              (.checks | to_entries | all(.value == "passed")) and
+              ([
+                .target_config_digest,
+                .container_validation_sha256,
+                .upgrade_receipt_sha256,
+                .current_recovery.artifact_sha256,
+                .legacy_recovery.artifact_sha256,
+                .image_inspection_sha256,
+                .buildkit.sbom_sha256,
+                .buildkit.provenance_sha256,
+                .signed_provenance.parent_bundle_sha256,
+                .signed_provenance.runnable_bundle_sha256,
+                .signed_provenance.parent_verification_sha256,
+                .signed_provenance.runnable_verification_sha256
+              ] | all(test("^(sha256:)?[0-9a-f]{64}$"))) and
+              .current_recovery.artifact_kind == "campfire-backup" and
+              .legacy_recovery.artifact_kind == "campfire-backup"
+            ' "$evidence" >/dev/null
+          done
+
+          staging_tag="${canonical_image}:staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          amd64_parent=$(jq -r '.parent_digest' "$evidence_directory/recovery-amd64.json")
+          arm64_parent=$(jq -r '.parent_digest' "$evidence_directory/recovery-arm64.json")
+          docker buildx imagetools create \
+            --tag "$staging_tag" \
+            --annotation "index:org.opencontainers.image.description=${IMAGE_DESCRIPTION}" \
+            "${canonical_image}@${amd64_parent}" \
+            "${canonical_image}@${arm64_parent}"
+          index_digest=$(docker buildx imagetools inspect "$staging_tag" --format '{{.Manifest.Digest}}')
+          [[ "$index_digest" =~ $digest_pattern ]] || { echo "Invalid index digest"; exit 1; }
+
+          manifest_json=$(docker buildx imagetools inspect "$staging_tag" --raw)
+          actual_amd64=$(jq -r '.manifests[] | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest" and .platform.os == "linux" and .platform.architecture == "amd64") | .digest' <<< "$manifest_json")
+          actual_arm64=$(jq -r '.manifests[] | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest" and .platform.os == "linux" and .platform.architecture == "arm64") | .digest' <<< "$manifest_json")
+          [[ "$actual_amd64" == "$amd64_digest" && "$actual_arm64" == "$arm64_digest" ]] || { echo "Manifest child digests do not match tested images"; exit 1; }
+          for child_digest in "$amd64_digest" "$arm64_digest"; do
+            [[ "$(jq -r --arg digest "$child_digest" '[.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest" and .annotations["vnd.docker.reference.digest"] == $digest)] | length' <<< "$manifest_json")" == 1 ]]
+          done
+          mapfile -t platforms < <(jq -r \
+            '.manifests[] | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest") | "\(.platform.os)/\(.platform.architecture)"' \
+            <<< "$manifest_json" | sort -u)
+          [[ "${platforms[*]}" == "linux/amd64 linux/arm64" ]] || { echo "Unexpected manifest platforms: ${platforms[*]}"; exit 1; }
+
+          for child_digest in "$amd64_digest" "$arm64_digest"; do
+            cosign verify \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${canonical_image}@${child_digest}" >/dev/null
+          done
+
+          cosign sign --yes "${canonical_image}@${index_digest}"
+          cosign verify \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${canonical_image}@${index_digest}" >/dev/null
+
+          {
+            echo "canonical=${canonical_image}"
+            echo "digest=${index_digest}"
+            echo "staging=${staging_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest multi-arch digest
+        id: index-provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ${{ steps.manifest.outputs.canonical }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify commit-bound signed index provenance
+        env:
+          CANONICAL_IMAGE: ${{ steps.manifest.outputs.canonical }}
+          INDEX_DIGEST: ${{ steps.manifest.outputs.digest }}
+          INDEX_BUNDLE: ${{ steps.index-provenance.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_directory="$RUNNER_TEMP/release-evidence"
+          cp "$INDEX_BUNDLE" "$evidence_directory/index-provenance.bundle.jsonl"
+          gh attestation verify "oci://${CANONICAL_IMAGE}@${INDEX_DIGEST}" \
+            --bundle "$evidence_directory/index-provenance.bundle.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-image.yml@refs/heads/main" \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml" \
+            --signer-digest "$RELEASE_SHA" \
+            --source-ref refs/heads/main \
+            --source-digest "$RELEASE_SHA" \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --deny-self-hosted-runners \
+            --format json > "$evidence_directory/index-provenance-verification.json"
+          jq -e --arg digest "${INDEX_DIGEST#sha256:}" '
+            length >= 1 and
+            any(.[].verificationResult.statement.subject[]?; .digest.sha256 == $digest)
+          ' "$evidence_directory/index-provenance-verification.json" >/dev/null
+
+      - name: Record release evidence
         shell: bash
         env:
-          TAGS: ${{ steps.meta.outputs.tags }}
+          CANONICAL_IMAGE: ${{ steps.manifest.outputs.canonical }}
+          INDEX_DIGEST: ${{ steps.manifest.outputs.digest }}
+          STAGING_REFERENCE: ${{ steps.manifest.outputs.staging }}
         run: |
-          set -eu
-          tags="$TAGS"
-          printf '%s\n' "$tags"
-          while IFS= read -r tag; do
-            [ -z "$tag" ] && continue
-            echo "Signing $tag"
-            cosign sign --yes "$tag"
-          done <<< "$tags"
+          set -euo pipefail
+          umask 077
+          evidence_directory="$RUNNER_TEMP/release-evidence"
+          [[ "$OPERATION_NONCE" =~ ^[0-9a-f]{64}$ ]]
 
+          promotion_requirements=$(jq -cS -n '
+            {
+              authority: "bin/release",
+              required_release_driver_evidence: [
+                "repository no-overwrite evidence from an operation-bound disposable alias",
+                "dual Object Lock anchor receipts for the authenticated journal head"
+              ],
+              workflow_scope: "attempt-scoped staging only"
+            }
+          ')
+          printf '%s\n' "$promotion_requirements" > "$evidence_directory/promotion-requirements.json"
 
+          evidence_file_names=(
+            index-provenance.bundle.jsonl
+            index-provenance-verification.json
+            promotion-requirements.json
+            recovery-amd64.json
+            upgrade-recovery-amd64.json
+            container-validation-amd64.json
+            image-inspect-amd64.json
+            sbom-amd64.spdx.json
+            buildkit-provenance-amd64.json
+            parent-provenance-amd64.bundle.jsonl
+            runnable-provenance-amd64.bundle.jsonl
+            parent-provenance-verification-amd64.json
+            runnable-provenance-verification-amd64.json
+            recovery-arm64.json
+            upgrade-recovery-arm64.json
+            container-validation-arm64.json
+            image-inspect-arm64.json
+            sbom-arm64.spdx.json
+            buildkit-provenance-arm64.json
+            parent-provenance-arm64.bundle.jsonl
+            runnable-provenance-arm64.bundle.jsonl
+            parent-provenance-verification-arm64.json
+            runnable-provenance-verification-arm64.json
+          )
+          [[ "$(find "$evidence_directory" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq "${#evidence_file_names[@]}" ]]
+          evidence_files='{}'
+          for name in "${evidence_file_names[@]}"; do
+            path="$evidence_directory/$name"
+            [[ -f "$path" && ! -L "$path" && -s "$path" ]]
+            [[ "$(stat -c %h "$path")" -eq 1 ]]
+            digest=$(sha256sum "$path" | cut -d' ' -f1)
+            evidence_files=$(jq -cS --arg name "$name" --arg digest "$digest" \
+              '. + {($name): $digest}' <<< "$evidence_files")
+          done
+          [[ "$(jq 'length' <<< "$evidence_files")" -eq "${#evidence_file_names[@]}" ]]
+
+          jq -S -n \
+            --arg operation_nonce "$OPERATION_NONCE" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg source_sha "$RELEASE_SHA" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg image "$CANONICAL_IMAGE" \
+            --arg index_digest "$INDEX_DIGEST" \
+            --arg staging_reference "$STAGING_REFERENCE" \
+            --arg amd64_digest "$(<"$RUNNER_TEMP/digests/digest-amd64")" \
+            --arg arm64_digest "$(<"$RUNNER_TEMP/digests/digest-arm64")" \
+            --arg amd64_parent_digest "$(jq -r '.parent_digest' "$evidence_directory/recovery-amd64.json")" \
+            --arg arm64_parent_digest "$(jq -r '.parent_digest' "$evidence_directory/recovery-arm64.json")" \
+            --arg amd64_legacy_digest "$(jq -r '.legacy_digest' "$evidence_directory/recovery-amd64.json")" \
+            --arg arm64_legacy_digest "$(jq -r '.legacy_digest' "$evidence_directory/recovery-arm64.json")" \
+            --arg amd64_build_identity "$(jq -r '.target_build_identity' "$evidence_directory/recovery-amd64.json")" \
+            --arg arm64_build_identity "$(jq -r '.target_build_identity' "$evidence_directory/recovery-arm64.json")" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson evidence_files "$evidence_files" \
+            --argjson promotion_requirements "$promotion_requirements" \
+            '{
+              format_version: 1,
+              operation_nonce: $operation_nonce,
+              repository: $repository,
+              source_sha: $source_sha,
+              release_tag: $release_tag,
+              image: $image,
+              index_digest: $index_digest,
+              staging_reference: $staging_reference,
+              build_indexes: {amd64: $amd64_parent_digest, arm64: $arm64_parent_digest},
+              children: {amd64: $amd64_digest, arm64: $arm64_digest},
+              build_identities: {amd64: $amd64_build_identity, arm64: $arm64_build_identity},
+              legacy_images: {amd64: $amd64_legacy_digest, arm64: $arm64_legacy_digest},
+              recovery: {amd64: "passed", arm64: "passed"},
+              recovery_receipts: {
+                amd64: $evidence_files["recovery-amd64.json"],
+                arm64: $evidence_files["recovery-arm64.json"]
+              },
+              upgrade_receipts: {
+                amd64: $evidence_files["upgrade-recovery-amd64.json"],
+                arm64: $evidence_files["upgrade-recovery-arm64.json"]
+              },
+              signed_provenance: {
+                source_digest: $source_sha,
+                source_ref: "refs/heads/main",
+                signer_workflow: "publish-image.yml",
+                index_bundle_sha256: $evidence_files["index-provenance.bundle.jsonl"],
+                index_verification_sha256: $evidence_files["index-provenance-verification.json"]
+              },
+              promotion_requirements: $promotion_requirements,
+              promotion_requirements_sha256: $evidence_files["promotion-requirements.json"],
+              evidence_files: $evidence_files,
+              run_id: $run_id,
+              run_attempt: $run_attempt
+            }' \
+            > "$evidence_directory/release-evidence.json"
+
+          inventory_files=(release-evidence.json "${evidence_file_names[@]}")
+          [[ "$(find "$evidence_directory" -mindepth 1 -maxdepth 1 -print | wc -l)" -eq "${#inventory_files[@]}" ]]
+          for name in "${inventory_files[@]}"; do
+            [[ -f "$evidence_directory/$name" && ! -L "$evidence_directory/$name" && -s "$evidence_directory/$name" ]]
+          done
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/release-evidence/release-evidence.json
+            ${{ runner.temp }}/release-evidence/index-provenance.bundle.jsonl
+            ${{ runner.temp }}/release-evidence/index-provenance-verification.json
+            ${{ runner.temp }}/release-evidence/promotion-requirements.json
+            ${{ runner.temp }}/release-evidence/recovery-amd64.json
+            ${{ runner.temp }}/release-evidence/upgrade-recovery-amd64.json
+            ${{ runner.temp }}/release-evidence/container-validation-amd64.json
+            ${{ runner.temp }}/release-evidence/image-inspect-amd64.json
+            ${{ runner.temp }}/release-evidence/sbom-amd64.spdx.json
+            ${{ runner.temp }}/release-evidence/buildkit-provenance-amd64.json
+            ${{ runner.temp }}/release-evidence/parent-provenance-amd64.bundle.jsonl
+            ${{ runner.temp }}/release-evidence/runnable-provenance-amd64.bundle.jsonl
+            ${{ runner.temp }}/release-evidence/parent-provenance-verification-amd64.json
+            ${{ runner.temp }}/release-evidence/runnable-provenance-verification-amd64.json
+            ${{ runner.temp }}/release-evidence/recovery-arm64.json
+            ${{ runner.temp }}/release-evidence/upgrade-recovery-arm64.json
+            ${{ runner.temp }}/release-evidence/container-validation-arm64.json
+            ${{ runner.temp }}/release-evidence/image-inspect-arm64.json
+            ${{ runner.temp }}/release-evidence/sbom-arm64.spdx.json
+            ${{ runner.temp }}/release-evidence/buildkit-provenance-arm64.json
+            ${{ runner.temp }}/release-evidence/parent-provenance-arm64.bundle.jsonl
+            ${{ runner.temp }}/release-evidence/runnable-provenance-arm64.bundle.jsonl
+            ${{ runner.temp }}/release-evidence/parent-provenance-verification-arm64.json
+            ${{ runner.temp }}/release-evidence/runnable-provenance-verification-arm64.json
+          if-no-files-found: error
+          retention-days: 90

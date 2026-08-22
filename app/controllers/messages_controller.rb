@@ -1,9 +1,12 @@
 class MessagesController < ApplicationController
   include ActiveStorage::SetCurrent, RoomScoped
 
+  skip_around_action :with_session_mutation_fence, only: :create
+
+  rescue_from ActiveRecord::RecordNotFound, with: -> { head :not_found }
   before_action :set_room, except: :create
   before_action :set_message, only: %i[ show edit update destroy ]
-  before_action :ensure_can_administer, only: %i[ edit update destroy ]
+  before_action :ensure_can_administer, only: :edit
 
   layout false, only: :index
 
@@ -19,12 +22,26 @@ class MessagesController < ApplicationController
 
   def create
     set_room
-    @message = @room.messages.create_with_attachment!(message_params)
-
-    @message.broadcast_create
-    deliver_webhooks_to_bots
+    @message = @room.messages.create_with_attachment!(
+      message_params, authenticated_session: Current.session, authenticated_bot_key:
+    )
+  rescue Message::ClientMessageIdConflict
+    head :conflict
   rescue ActiveRecord::RecordNotFound
-    render action: :room_not_found
+    head :not_found
+  rescue ActiveRecord::RecordInvalid
+    head :unprocessable_entity
+  end
+
+  def reconciliation
+    client_message_id = params.require(:client_message_id).to_s
+    raise ActionController::BadRequest, "client message ID is blank" if client_message_id.blank?
+
+    ContentLimits.verify! client_message_id.bytesize,
+      maximum: ContentLimits::CLIENT_MESSAGE_ID_BYTES, description: "client message ID"
+    response.headers["Cache-Control"] = "private, no-store"
+    @message = @room.messages.find_by(creator: Current.user, client_message_id:)
+    head :no_content unless @message
   end
 
   def show
@@ -34,19 +51,26 @@ class MessagesController < ApplicationController
   end
 
   def update
-    @message.update!(message_params)
-
-    @message.broadcast_replace_to @room, :messages, target: [ @message, :presentation ], partial: "messages/presentation", attributes: { maintain_scroll: true }
+    @message.update_with_broadcast!(
+      message_update_params, actor: Current.user, authenticated_bot_key:
+    )
 
     respond_to do |format|
       format.html { redirect_to room_message_url(@room, @message) }
       format.json { render :show }
     end
+  rescue ActiveRecord::RecordInvalid => error
+    raise unless error.record.is_a?(Message)
+
+    @message = error.record
+    respond_to do |format|
+      format.html { render :edit, status: :unprocessable_entity }
+      format.json { head :unprocessable_content }
+    end
   end
 
   def destroy
-    @message.destroy
-    @message.broadcast_remove
+    @message.destroy_with_broadcast! actor: Current.user, authenticated_bot_key:
   end
 
   private
@@ -75,12 +99,12 @@ class MessagesController < ApplicationController
       params.require(:message).permit(:body, :attachment, :client_message_id)
     end
 
+    def message_update_params
+      attributes = params.require(:message)
+      if attributes.key?(:attachment) || attributes.key?(:client_message_id)
+        raise ActionController::BadRequest, "message attachments and client IDs cannot be updated"
+      end
 
-    def deliver_webhooks_to_bots
-      bots_eligible_for_webhook.excluding(@message.creator).each { |bot| bot.deliver_webhook_later(@message) }
-    end
-
-    def bots_eligible_for_webhook
-      @room.direct? ? @room.users.active_bots : @message.mentionees.active_bots
+      attributes.permit(:body)
     end
 end

@@ -1,47 +1,62 @@
 require "test_helper"
 
 class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
-  test "streams only the subscriber's own unread stream" do
-    stub_connection(current_user: users(:jz))
+  setup do
+    stub_connection(current_user: users(:david))
+  end
 
+  test "subscribes only to the current user's unread stream" do
     subscribe
 
     assert subscription.confirmed?
-    assert_has_stream "user_#{users(:jz).id}_unreads"
+    assert_has_stream_for users(:david)
+    assert_not_includes subscription.streams, UnreadRoomsChannel.broadcasting_for(users(:jz))
     assert_not_includes subscription.streams, "unread_rooms"
   end
 
-  test "an outsider is not told about activity in a room they can't see" do
-    direct = rooms(:bender_and_kevin)
-    assert_not direct.users.include?(users(:jz)), "jz must be an outsider for this test to mean anything"
+  test "an outsider is not told about activity in a room they cannot see" do
+    room = rooms(:bender_and_kevin)
+    outsider = users(:jz)
+    assert_not room.users.include?(outsider), "jz must be an outsider for this test to mean anything"
 
-    broadcasts = capture_unread_broadcasts_for(users(:jz)) do
-      direct.messages.create!(body: "Private", creator: users(:kevin), client_message_id: "outsider").broadcast_create
+    assert_no_broadcasts UnreadRoomsChannel.broadcasting_for(outsider) do
+      room.messages.create!(
+        body: "Private", creator: users(:kevin), client_message_id: SecureRandom.uuid
+      )
     end
-
-    assert_empty broadcasts
   end
 
   test "a member is told about activity in their own room" do
-    direct = rooms(:bender_and_kevin)
+    room = rooms(:bender_and_kevin)
+    recipient = users(:kevin)
 
-    broadcasts = capture_unread_broadcasts_for(users(:kevin)) do
-      direct.messages.create!(body: "Private", creator: users(:bender), client_message_id: "member").broadcast_create
+    assert_broadcasts UnreadRoomsChannel.broadcasting_for(recipient), 1 do
+      room.messages.create!(
+        body: "Private", creator: users(:bender), client_message_id: SecureRandom.uuid
+      )
     end
-
-    assert_equal [ direct.id ], broadcasts.collect { |broadcast| broadcast["roomId"] }
   end
 
-  private
-    def capture_unread_broadcasts_for(user)
-      stub_connection(current_user: user)
-      subscribe
+  test "a removed member receives no future room activity" do
+    room = rooms(:designers)
+    removed_user = users(:kevin)
+    Membership.find_by!(room:, user: removed_user).destroy!
 
-      stream = subscription.streams.sole
-      before = ActionCable.server.pubsub.broadcasts(stream).size
-
-      yield
-
-      ActionCable.server.pubsub.broadcasts(stream).drop(before).collect { |broadcast| JSON.parse(broadcast) }
+    assert_no_broadcasts UnreadRoomsChannel.broadcasting_for(removed_user) do
+      assert_broadcasts UnreadRoomsChannel.broadcasting_for(users(:jz)), 1 do
+        room.messages.create!(
+          creator: users(:david), body: "Private after removal", client_message_id: SecureRandom.uuid
+        )
+      end
     end
+  end
+
+  test "the room broadcast does not query or fan out over participants" do
+    message = messages(:first)
+    message.room
+    message.stubs(:broadcast_append_to)
+
+    UnreadRoomsChannel.expects(:broadcast_to).never
+    assert_no_queries { message.broadcast_create }
+  end
 end

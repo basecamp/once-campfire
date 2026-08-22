@@ -12,7 +12,7 @@ class RoomsController < ApplicationController
   end
 
   def destroy
-    @room.destroy
+    @room.destroy_by! actor: Current.user
 
     broadcast_remove_room
     redirect_to root_url
@@ -41,6 +41,10 @@ class RoomsController < ApplicationController
       if Current.account.settings.restrict_room_creation_to_administrators? && !Current.user.administrator?
         head :forbidden
       end
+    end
+
+    def ensure_room_type_can_change
+      head :forbidden if @room.direct?
     end
 
     def find_messages

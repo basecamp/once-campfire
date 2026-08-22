@@ -2,6 +2,7 @@ class Rooms::OpensController < RoomsController
   before_action :set_room, only: %i[ show edit update ]
   before_action :ensure_can_administer, only: %i[ update ]
   before_action :remember_last_room_visited, only: :show
+  before_action :ensure_room_type_can_change, only: %i[ edit update ]
   before_action :force_room_type, only: %i[ edit update ]
   before_action :ensure_permission_to_create_rooms, only: %i[ new create ]
 
@@ -17,7 +18,7 @@ class Rooms::OpensController < RoomsController
   end
 
   def create
-    room = Rooms::Open.create_for(room_params, users: Current.user)
+    room = Rooms::Open.create_for(room_params, users: Current.user, actor: Current.user)
 
     broadcast_create_room(room)
     redirect_to room_url(room)
@@ -28,7 +29,7 @@ class Rooms::OpensController < RoomsController
   end
 
   def update
-    @room.update! room_params
+    @room.update_as_open! room_params, actor: Current.user
 
     broadcast_update_room
     redirect_to room_url(@room)

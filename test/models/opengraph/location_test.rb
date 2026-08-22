@@ -2,6 +2,10 @@ require "test_helper"
 require "restricted_http/private_network_guard"
 
 class Opengraph::LocationTest < ActiveSupport::TestCase
+  setup do
+    Resolv.stubs(:getaddresses).with("www.example.com").returns([ "93.184.216.34" ])
+  end
+
   test "url validations" do
     assert Opengraph::Location.new("https://www.example.com").valid?
     assert Opengraph::Location.new("http://www.example.com").valid?
@@ -9,6 +13,7 @@ class Opengraph::LocationTest < ActiveSupport::TestCase
     assert_not Opengraph::Location.new("~/etc/password").valid?
     assert_not Opengraph::Location.new("ftp://speedtest.tele2.net").valid?
     assert_not Opengraph::Location.new("httpfake").valid?
+    assert_not Opengraph::Location.new("http:/missing-host").valid?
     assert_not Opengraph::Location.new(" foo").valid?
     assert_not Opengraph::Location.new("https/incorrect").valid?
   end

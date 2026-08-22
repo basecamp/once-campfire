@@ -2,7 +2,13 @@ module Authentication
   extend ActiveSupport::Concern
   include SessionLookup
 
+  PASSWORD_REAUTHENTICATION_ATTEMPT_LIMIT = 5
+  PASSWORD_REAUTHENTICATION_ATTEMPT_WINDOW = 10.minutes
+  PASSWORD_REAUTHENTICATION_LIFETIME = 5.minutes
+  PASSWORD_REAUTHENTICATION_SESSION_KEY = "password_reauthentication"
+
   included do
+    around_action :with_session_mutation_fence
     before_action :require_authentication
     before_action :deny_bots
     helper_method :signed_in?
@@ -26,6 +32,81 @@ module Authentication
   end
 
   private
+    def with_session_mutation_fence
+      if request.get? || request.head?
+        yield
+      else
+        with_existing_session_mutation_fence { yield }
+      end
+    end
+
+    def with_existing_session_mutation_fence
+      user_id = session_user_id_by_cookie
+      if user_id
+        User::MutationFence.with(user_id) { yield }
+      else
+        yield
+      end
+    end
+
+    def with_administrator_roster_mutation_fence(&block)
+      User::MutationFence.with_administrator_roster(&block)
+    end
+
+    # An earlier cookie copy cannot inherit proof added to this encrypted browser session later.
+    def record_password_reauthentication!(user = Current.user)
+      session[PASSWORD_REAUTHENTICATION_SESSION_KEY] = {
+        "session_id" => Current.session.id,
+        "verified_at" => Time.current.to_i,
+        "password_digest" => password_reauthentication_fingerprint(user)
+      }
+    end
+
+    def clear_password_reauthentication!
+      session.delete PASSWORD_REAUTHENTICATION_SESSION_KEY
+    end
+
+    def password_reauthentication_expires_at(user = Current.user)
+      proof = session[PASSWORD_REAUTHENTICATION_SESSION_KEY]
+      unless proof.is_a?(Hash)
+        clear_password_reauthentication!
+        return
+      end
+
+      now = Time.current.to_i
+      verified_at = proof.fetch("verified_at", 0).to_i
+      valid = Current.session &&
+        proof.fetch("session_id", 0).to_i == Current.session.id &&
+        verified_at.between?(now - PASSWORD_REAUTHENTICATION_LIFETIME.to_i + 1, now) &&
+        ActiveSupport::SecurityUtils.secure_compare(
+          proof.fetch("password_digest", "").to_s,
+          password_reauthentication_fingerprint(user)
+        )
+      return verified_at + PASSWORD_REAUTHENTICATION_LIFETIME.to_i if valid
+
+      clear_password_reauthentication!
+      nil
+    end
+
+    def password_reauthentication_rate_limited?(user = Current.user)
+      key = [ "password-reauthentication", user.id ].join(":")
+      attempts = begin
+        Rails.cache.increment(
+          key, 1, expires_in: PASSWORD_REAUTHENTICATION_ATTEMPT_WINDOW
+        )
+      rescue StandardError => error
+        raise Oidc::PolicyUnavailable.new(Oidc::POLICY_UNAVAILABLE_MESSAGE), cause: error
+      end
+      unless attempts.is_a?(Integer)
+        raise Oidc::PolicyUnavailable, Oidc::POLICY_UNAVAILABLE_MESSAGE
+      end
+      attempts > PASSWORD_REAUTHENTICATION_ATTEMPT_LIMIT
+    end
+
+    def password_reauthentication_fingerprint(user)
+      Digest::SHA256.hexdigest user.password_digest.to_s
+    end
+
     def signed_in?
       Current.user.present?
     end
@@ -41,34 +122,55 @@ module Authentication
     end
 
     def bot_authentication
-      if params[:bot_key].present? && bot = User.authenticate_bot(params[:bot_key].strip)
+      bot_key, = ActionController::HttpAuthentication::Token.token_and_options(request)
+      presented_bot_key = bot_key&.strip
+      if presented_bot_key.present? && bot = User.authenticate_bot(presented_bot_key)
         Current.user = bot
+        @authenticated_bot_key = presented_bot_key.dup.freeze
         set_authenticated_by(:bot_key)
       end
     end
 
     def request_authentication
-      session[:return_to_after_authenticating] = request.url
-      redirect_to new_session_url
+      if request.get? || request.head?
+        session[:return_to_after_authenticating] = canonical_request_url
+        redirect_to new_session_url
+      else
+        head :unauthorized
+      end
     end
 
     def redirect_signed_in_user_to_root
       redirect_to root_url if signed_in?
     end
 
-    def start_new_session_for(user)
-      user.sessions.start!(user_agent: request.user_agent, ip_address: request.remote_ip).tap do |session|
-        authenticated_as session
+    def start_new_session_for(user, identity: nil, authentication_method: nil)
+      authenticated_as create_new_session_for(user, identity:, authentication_method:)
+    end
+
+    def create_new_session_for(user, identity: nil, authentication_method: nil)
+      previous_session = find_session_by_cookie
+      Session.prune_expired! unless Account.connection.transaction_open?
+      Account.transaction do
+        account = Account.lock.sole
+        if account.oidc_transition_state == "rollback_prepared"
+          raise Oidc::Activation::Error, "rollback preparation is active"
+        end
+
+        user.sessions.start!(user_agent: request.user_agent, ip_address: request.remote_ip, identity:, authentication_method:).tap do
+          previous_session&.revoke!
+        end
       end
     end
 
     def resume_session(session)
       session.resume user_agent: request.user_agent, ip_address: request.remote_ip
-      authenticated_as session
+      Current.session = session
+      set_authenticated_by(:session)
     end
 
     def terminate_current_session
-      Current.session&.destroy!
+      Current.session&.revoke!
       reset_session
       remove_authentication_cookie
     end
@@ -84,15 +186,27 @@ module Authentication
     end
 
     def set_authentication_cookie(session)
-      cookies.signed.permanent[:session_token] = { value: session.token, httponly: true, same_site: :lax }
+      cookies.signed.permanent[:session_token] = {
+        value: session.token, httponly: true, same_site: :lax,
+        secure: secure_authentication_cookie?
+      }
     end
 
     def remove_authentication_cookie
-      cookies.delete(:session_token)
+      cookies.delete(:session_token, secure: secure_authentication_cookie?)
+    end
+
+    def secure_authentication_cookie?
+      Oidc.production_https? ||
+        (request.ssl? && (Oidc.built_in_tls? || Oidc.trusted_external_https?))
     end
 
     def deny_bots
       head :forbidden if authenticated_by.bot_key?
+    end
+
+    def require_bot_key_authentication
+      head :forbidden unless authenticated_by.bot_key?
     end
 
     def set_authenticated_by(method)
@@ -101,5 +215,9 @@ module Authentication
 
     def authenticated_by
       @authenticated_by ||= "".inquiry
+    end
+
+    def authenticated_bot_key
+      @authenticated_bot_key
     end
 end

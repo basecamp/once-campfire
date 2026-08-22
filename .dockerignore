@@ -50,3 +50,18 @@
 
 # Ignore test files
 /test/
+
+# Ignore host-built native extension artifacts.
+/vendor/extensions/
+/vendor/campfire_sqlite_native/*.gem
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/Makefile
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/*.bundle
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/*.o
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/mkmf.log
+/vendor/campfire_sqlite_native/lib/campfire_sqlite_native/
+
+# Keep repository-only build, CI, and operator material out of the runtime image.
+/.github/
+/docs/
+/script/ci/
+/Dockerfile*

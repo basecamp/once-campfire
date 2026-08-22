@@ -9,14 +9,16 @@ class Messages::BoostsController < ApplicationController
   end
 
   def create
-    @boost = @message.boosts.create!(boost_params)
+    @boost = Boost.create_by!(
+      message: @message, actor: Current.user, attributes: boost_params, authenticated_bot_key:
+    )
 
     broadcast_create
     redirect_to message_boosts_url(@message)
   end
 
   def destroy
-    @boost.destroy!
+    @boost = Boost.destroy_by!(id: @boost.id, actor: Current.user, authenticated_bot_key:)
 
     broadcast_remove
   end
@@ -36,7 +38,8 @@ class Messages::BoostsController < ApplicationController
 
     def broadcast_create
       @boost.broadcast_append_to @boost.message.room, :messages,
-        target: "boosts_message_#{@boost.message.client_message_id}", partial: "messages/boosts/boost", attributes: { maintain_scroll: true }
+        target: ActionView::RecordIdentifier.dom_id(@boost.message, :boosts),
+        partial: "messages/boosts/boost", attributes: { maintain_scroll: true }
     end
 
     def broadcast_remove

@@ -30,6 +30,13 @@
 !/tmp/storage/.keep
 
 /public/assets
+/vendor/extensions/
+/vendor/campfire_sqlite_native/*.gem
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/Makefile
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/*.bundle
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/*.o
+/vendor/campfire_sqlite_native/ext/campfire_sqlite_native/mkmf.log
+/vendor/campfire_sqlite_native/lib/campfire_sqlite_native/
 
 # Ignore master key for decrypting credentials and more.
 /config/master.key
