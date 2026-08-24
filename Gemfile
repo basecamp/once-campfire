@@ -28,6 +28,7 @@ gem "stimulus-rails"
 
 # Media handling
 gem "image_processing", ">= 1.2"
+gem "streamio-ffmpeg"
 
 # Telemetry
 gem "sentry-ruby"
