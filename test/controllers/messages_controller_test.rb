@@ -150,6 +150,7 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
 
   test "creating a message with a video attachment transcodes it to mp4" do
     movie = mock("movie")
+    movie.stubs(:duration).returns(0)
     movie.stubs(:transcode).with do |output_path, _options|
       File.binwrite(output_path, File.binread(Rails.root.join("test/fixtures/files/alpha-centuri.mov")))
       true
@@ -166,6 +167,7 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
 
   test "creating a message with a video attachment that fails to transcode redirects with an alert" do
     movie = mock("movie")
+    movie.stubs(:duration).returns(0)
     movie.stubs(:transcode).raises(RuntimeError, "ffmpeg exploded")
     FFMPEG::Movie.stubs(:new).returns(movie)
 

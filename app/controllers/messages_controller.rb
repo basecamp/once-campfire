@@ -19,7 +19,8 @@ class MessagesController < ApplicationController
 
   def create
     set_room
-    @message = @room.messages.create_with_attachment!(transcoded_message_params)
+    attributes = transcoded_message_params
+    @message = @room.messages.create_with_attachment!(attributes)
 
     @message.broadcast_create
     deliver_webhooks_to_bots
@@ -31,6 +32,8 @@ class MessagesController < ApplicationController
     end
   rescue ActiveRecord::RecordNotFound
     render action: :room_not_found
+  ensure
+    VideoTranscoder.cleanup(attributes&.[](:attachment))
   end
 
   def show

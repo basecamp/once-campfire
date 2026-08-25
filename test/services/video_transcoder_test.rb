@@ -33,11 +33,11 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     movie = stub_movie(video_codec: "hevc", audio_codec: "aac")
     stub_transcode_success(movie, output_data: "transcoded mp4 data")
 
-    result = VideoTranscoder.call(upload)
-
-    assert_equal "clip.mp4", result[:filename]
-    assert_equal "video/mp4", result[:content_type]
-    assert_equal "transcoded mp4 data", result[:io].read
+    with_transcoded_result(upload) do |result|
+      assert_equal "clip.mp4", result[:filename]
+      assert_equal "video/mp4", result[:content_type]
+      assert_equal "transcoded mp4 data", result[:io].read
+    end
   end
 
   test "transcodes mp4 uploads with an incompatible audio codec" do
@@ -46,16 +46,31 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     movie = stub_movie(video_codec: "h264", audio_codec: "opus")
     stub_transcode_success(movie, output_data: "transcoded mp4 data")
 
-    assert_equal "video/mp4", VideoTranscoder.call(upload)[:content_type]
+    with_transcoded_result(upload) do |result|
+      assert_equal "video/mp4", result[:content_type]
+    end
   end
 
   test "transcodes mp4 uploads with an incompatible container" do
     upload = fake_upload(content_type: "video/mp4")
 
-    movie = stub_movie(video_codec: "h264", audio_codec: "aac", container: "matroska,webm")
+    movie = stub_movie(video_codec: "h264", audio_codec: "aac", format_tags: { major_brand: "webm" })
     stub_transcode_success(movie, output_data: "transcoded mp4 data")
 
-    assert_equal "video/mp4", VideoTranscoder.call(upload)[:content_type]
+    with_transcoded_result(upload) do |result|
+      assert_equal "video/mp4", result[:content_type]
+    end
+  end
+
+  test "transcodes MP4-declared MOV uploads" do
+    upload = fake_upload(content_type: "video/mp4")
+
+    movie = stub_movie(video_codec: "h264", audio_codec: "aac", format_tags: { major_brand: "qt  " })
+    stub_transcode_success(movie, output_data: "transcoded mp4 data")
+
+    with_transcoded_result(upload) do |result|
+      assert_equal "video/mp4", result[:content_type]
+    end
   end
 
   test "transcodes mp4 uploads with an incompatible pixel format" do
@@ -64,7 +79,9 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     movie = stub_movie(video_codec: "h264", audio_codec: "aac", colorspace: "yuv444p")
     stub_transcode_success(movie, output_data: "transcoded mp4 data")
 
-    assert_equal "video/mp4", VideoTranscoder.call(upload)[:content_type]
+    with_transcoded_result(upload) do |result|
+      assert_equal "video/mp4", result[:content_type]
+    end
   end
 
   test "transcodes mp4 uploads that cannot be probed" do
@@ -73,7 +90,9 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     movie = stub_movie(valid: false)
     stub_transcode_success(movie, output_data: "transcoded mp4 data")
 
-    assert_equal "video/mp4", VideoTranscoder.call(upload)[:content_type]
+    with_transcoded_result(upload) do |result|
+      assert_equal "video/mp4", result[:content_type]
+    end
   end
 
   test "raises TranscodeError when the upload cannot be probed at all" do
@@ -99,9 +118,18 @@ class VideoTranscoderTest < ActiveSupport::TestCase
   end
 
   test "skips transcoding videos larger than the maximum input size" do
-    upload = fake_upload(content_type: "video/quicktime", size: VideoTranscoder::MAX_INPUT_SIZE + 1)
+    upload = fake_upload(content_type: "video/mp4", size: VideoTranscoder::MAX_INPUT_SIZE + 1)
 
     FFMPEG::Movie.expects(:new).never
+
+    assert_same upload, VideoTranscoder.call(upload)
+  end
+
+  test "skips transcoding videos longer than the maximum duration" do
+    upload = fake_upload(content_type: "video/quicktime")
+
+    movie = stub_movie(duration: VideoTranscoder::MAX_DURATION + 1)
+    movie.expects(:transcode).never
 
     assert_same upload, VideoTranscoder.call(upload)
   end
@@ -121,11 +149,12 @@ class VideoTranscoderTest < ActiveSupport::TestCase
       true
     end
 
-    result = VideoTranscoder.call(upload)
-
-    assert_equal "clip.mp4", result[:filename]
-    assert_equal "video/mp4", result[:content_type]
-    assert_equal "transcoded mp4 data", result[:io].read
+    with_transcoded_result(upload) do |result|
+      assert_instance_of Tempfile, result[:io]
+      assert_equal "clip.mp4", result[:filename]
+      assert_equal "video/mp4", result[:content_type]
+      assert_equal "transcoded mp4 data", result[:io].read
+    end
   end
 
   test "falls back to a generic filename when the upload has none" do
@@ -134,7 +163,21 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     movie = stub_movie
     stub_transcode_success(movie, output_data: "transcoded mp4 data")
 
-    assert_equal "video.mp4", VideoTranscoder.call(upload)[:filename]
+    with_transcoded_result(upload) do |result|
+      assert_equal "video.mp4", result[:filename]
+    end
+  end
+
+  test "applies a hard timeout to transcoding" do
+    upload = fake_upload(content_type: "video/quicktime")
+
+    movie = stub_movie
+    stub_transcode_success(movie, output_data: "transcoded mp4 data")
+    Timeout.expects(:timeout).with(VideoTranscoder::MAX_TRANSCODE_TIME).yields
+
+    with_transcoded_result(upload) do |result|
+      assert_equal "transcoded mp4 data", result[:io].read
+    end
   end
 
   test "raises TranscodeError and leaves no temp files behind when transcoding fails" do
@@ -152,6 +195,13 @@ class VideoTranscoderTest < ActiveSupport::TestCase
 
 
   private
+    def with_transcoded_result(upload)
+      result = VideoTranscoder.call(upload)
+      yield result
+    ensure
+      VideoTranscoder.cleanup(result)
+    end
+
     def fake_upload(content_type:, data: "video data", original_filename: "clip.mov", size: data.bytesize)
       StringIO.new(data).tap do |io|
         io.define_singleton_method(:content_type) { content_type }
@@ -161,10 +211,12 @@ class VideoTranscoderTest < ActiveSupport::TestCase
       end
     end
 
-    def stub_movie(video_codec: nil, audio_codec: nil, container: "mov,mp4,m4a,3gp,3g2,mj2", colorspace: "yuv420p", valid: true)
+    def stub_movie(video_codec: nil, audio_codec: nil, duration: 0, container: "mov,mp4,m4a,3gp,3g2,mj2", format_tags: { major_brand: "isom" }, colorspace: "yuv420p", valid: true)
       movie = mock("movie")
       movie.stubs(valid?: valid)
+      movie.stubs(duration: duration)
       movie.stubs(container: container)
+      movie.stubs(format_tags: format_tags)
       movie.stubs(video_codec: video_codec)
       movie.stubs(colorspace: colorspace)
       movie.stubs(audio_codec: audio_codec)

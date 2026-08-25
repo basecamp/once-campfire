@@ -28,6 +28,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "create video returns unprocessable content when transcoding fails" do
     movie = mock("movie")
+    movie.stubs(:duration).returns(0)
     movie.stubs(:transcode).raises(RuntimeError, "ffmpeg exploded")
     FFMPEG::Movie.stubs(:new).returns(movie)
 

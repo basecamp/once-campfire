@@ -1,8 +1,13 @@
 require "streamio-ffmpeg"
+require "tempfile"
+require "timeout"
 
 class VideoTranscoder
   # Videos larger than this are attached as-is to avoid tying up request workers with long transcodes.
   MAX_INPUT_SIZE = 200.megabytes
+  MAX_DURATION = 1.hour
+  MAX_TRANSCODE_TIME = 5.minutes
+  MP4_MAJOR_BRANDS = %w[ isom iso2 iso3 iso4 iso5 iso6 iso8 iso9 mp41 mp42 ].freeze
 
   # Raised when a video upload fails to transcode.
   class TranscodeError < StandardError; end
@@ -11,20 +16,24 @@ class VideoTranscoder
     new(io).call
   end
 
+  def self.cleanup(attachment)
+    io = attachment[:io] if attachment.is_a?(Hash)
+    io.close! if io.respond_to?(:close!)
+  end
+
   def initialize(io)
     @io = io
   end
 
   def call
     return io unless video?
-    return io if compatible_encoding?
+    return io if too_large?
 
-    if too_large?
-      Rails.logger.info "Skipping video transcoding: input exceeds #{MAX_INPUT_SIZE} bytes"
-      io
-    else
-      transcoded_io
-    end
+    movie = probe_movie
+    return io if compatible_encoding?(movie)
+    return io if too_long?(movie)
+
+    transcoded_io(movie)
   end
 
   private
@@ -36,27 +45,39 @@ class VideoTranscoder
 
     # Only mp4 uploads can be attached as-is, and only when their encoding is
     # already browser-compatible: h264 video and aac (or no) audio.
-    def compatible_encoding?
+    def probe_movie
+      FFMPEG::Movie.new(io.path)
+    rescue FFMPEG::Error, Errno::ENOENT, RuntimeError => error
+      raise TranscodeError, error.message
+    end
+
+    def compatible_encoding?(movie)
       return false unless io.content_type == "video/mp4"
 
-      movie = FFMPEG::Movie.new(io.path)
       movie.valid? &&
-        movie.container.to_s.split(",").include?("mp4") &&
+        MP4_MAJOR_BRANDS.include?(movie.format_tags&.[](:major_brand).to_s.strip.downcase) &&
         movie.video_codec == "h264" &&
         movie.colorspace == "yuv420p" &&
         (movie.audio_codec.nil? || movie.audio_codec == "aac")
-    rescue FFMPEG::Error, Errno::ENOENT, RuntimeError
-      false # unprovable input falls through to transcoding, which fails cleanly
     end
 
     def too_large?
-      io.size > MAX_INPUT_SIZE
+      if io.size > MAX_INPUT_SIZE
+        Rails.logger.info "Skipping video transcoding: input exceeds #{MAX_INPUT_SIZE} bytes"
+        true
+      end
     end
 
-    def transcoded_io
-      output_path = File.join(Dir.tmpdir, "transcoded_#{SecureRandom.hex}.mp4")
+    def too_long?(movie)
+      if movie.duration > MAX_DURATION
+        Rails.logger.info "Skipping video transcoding: duration exceeds #{MAX_DURATION} seconds"
+        true
+      end
+    end
 
-      movie = FFMPEG::Movie.new(io.path)
+    def transcoded_io(movie)
+      output = Tempfile.new([ "transcoded_", ".mp4" ])
+      output.binmode
 
       options = {
         video_codec: "libx264",
@@ -65,20 +86,25 @@ class VideoTranscoder
         custom: [ "-movflags", "+faststart", "-crf", 23, "-pix_fmt", "yuv420p" ]
       }
 
-      movie.transcode(output_path, options) do |progress|
-        Rails.logger.info "Transcoding progress: #{(progress * 100).round}%"
+      Timeout.timeout(MAX_TRANSCODE_TIME) do
+        movie.transcode(output.path, options) do |progress|
+          Rails.logger.info "Transcoding progress: #{(progress * 100).round}%"
+        end
       end
+      output.rewind
 
-      {
-        io: StringIO.new(File.binread(output_path)),
+      result = {
+        io: output,
         filename: "#{original_basename}.mp4",
         content_type: "video/mp4"
       }
+      output = nil
+      result
     rescue => error
       Rails.logger.error "Video transcoding failed: #{error.message}"
       raise TranscodeError, error.message
     ensure
-      File.delete(output_path) if output_path && File.exist?(output_path)
+      output&.close!
     end
 
     def original_basename
