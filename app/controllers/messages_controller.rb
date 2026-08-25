@@ -24,7 +24,11 @@ class MessagesController < ApplicationController
     @message.broadcast_create
     deliver_webhooks_to_bots
   rescue VideoTranscoder::TranscodeError
-    redirect_to root_url, alert: "Video attachment could not be processed"
+    if request.format.json?
+      head :unprocessable_content
+    else
+      redirect_to root_url, alert: "Video attachment could not be processed"
+    end
   rescue ActiveRecord::RecordNotFound
     render action: :room_not_found
   end

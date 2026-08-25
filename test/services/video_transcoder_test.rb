@@ -49,6 +49,24 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     assert_equal "video/mp4", VideoTranscoder.call(upload)[:content_type]
   end
 
+  test "transcodes mp4 uploads with an incompatible container" do
+    upload = fake_upload(content_type: "video/mp4")
+
+    movie = stub_movie(video_codec: "h264", audio_codec: "aac", container: "matroska,webm")
+    stub_transcode_success(movie, output_data: "transcoded mp4 data")
+
+    assert_equal "video/mp4", VideoTranscoder.call(upload)[:content_type]
+  end
+
+  test "transcodes mp4 uploads with an incompatible pixel format" do
+    upload = fake_upload(content_type: "video/mp4")
+
+    movie = stub_movie(video_codec: "h264", audio_codec: "aac", colorspace: "yuv444p")
+    stub_transcode_success(movie, output_data: "transcoded mp4 data")
+
+    assert_equal "video/mp4", VideoTranscoder.call(upload)[:content_type]
+  end
+
   test "transcodes mp4 uploads that cannot be probed" do
     upload = fake_upload(content_type: "video/mp4")
 
@@ -69,6 +87,17 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     FFMPEG::Movie.unstub(:new)
   end
 
+  test "raises TranscodeError when ffprobe output cannot be parsed" do
+    upload = fake_upload(content_type: "video/mp4")
+
+    FFMPEG::Movie.stubs(:new).raises(RuntimeError, "Could not parse output from FFProbe")
+
+    error = assert_raises(VideoTranscoder::TranscodeError) { VideoTranscoder.call(upload) }
+    assert_equal "Could not parse output from FFProbe", error.message
+  ensure
+    FFMPEG::Movie.unstub(:new)
+  end
+
   test "skips transcoding videos larger than the maximum input size" do
     upload = fake_upload(content_type: "video/quicktime", size: VideoTranscoder::MAX_INPUT_SIZE + 1)
 
@@ -81,7 +110,16 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     upload = fake_upload(content_type: "video/quicktime", original_filename: "clip.mov")
 
     movie = stub_movie
-    stub_transcode_success(movie, output_data: "transcoded mp4 data")
+    movie.expects(:transcode).with do |output_path, options|
+      assert_equal({
+        video_codec: "libx264",
+        audio_codec: "aac",
+        x264_preset: "medium",
+        custom: [ "-movflags", "+faststart", "-crf", 23, "-pix_fmt", "yuv420p" ]
+      }, options)
+      File.binwrite(output_path, "transcoded mp4 data")
+      true
+    end
 
     result = VideoTranscoder.call(upload)
 
@@ -123,10 +161,12 @@ class VideoTranscoderTest < ActiveSupport::TestCase
       end
     end
 
-    def stub_movie(video_codec: nil, audio_codec: nil, valid: true)
+    def stub_movie(video_codec: nil, audio_codec: nil, container: "mov,mp4,m4a,3gp,3g2,mj2", colorspace: "yuv420p", valid: true)
       movie = mock("movie")
       movie.stubs(valid?: valid)
+      movie.stubs(container: container)
       movie.stubs(video_codec: video_codec)
+      movie.stubs(colorspace: colorspace)
       movie.stubs(audio_codec: audio_codec)
       FFMPEG::Movie.stubs(:new).returns(movie)
       movie

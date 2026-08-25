@@ -41,9 +41,11 @@ class VideoTranscoder
 
       movie = FFMPEG::Movie.new(io.path)
       movie.valid? &&
+        movie.container.to_s.split(",").include?("mp4") &&
         movie.video_codec == "h264" &&
+        movie.colorspace == "yuv420p" &&
         (movie.audio_codec.nil? || movie.audio_codec == "aac")
-    rescue FFMPEG::Error, Errno::ENOENT
+    rescue FFMPEG::Error, Errno::ENOENT, RuntimeError
       false # unprovable input falls through to transcoding, which fails cleanly
     end
 
@@ -59,9 +61,8 @@ class VideoTranscoder
       options = {
         video_codec: "libx264",
         audio_codec: "aac",
-        movflags: "+faststart",
-        preset: "medium",
-        crf: 23
+        x264_preset: "medium",
+        custom: [ "-movflags", "+faststart", "-crf", 23, "-pix_fmt", "yuv420p" ]
       }
 
       movie.transcode(output_path, options) do |progress|

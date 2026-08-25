@@ -26,6 +26,22 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "create video returns unprocessable content when transcoding fails" do
+    movie = mock("movie")
+    movie.stubs(:transcode).raises(RuntimeError, "ffmpeg exploded")
+    FFMPEG::Movie.stubs(:new).returns(movie)
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room, users(:bender).bot_key), params: {
+        attachment: fixture_file_upload("alpha-centuri.mov", "video/quicktime")
+      }
+    end
+
+    assert_response :unprocessable_content
+  ensure
+    FFMPEG::Movie.unstub(:new)
+  end
+
   test "create does not trigger a webhook to the sending bot if it mentions itself" do
     body = "<div>Hey #{mention_attachment_for(:bender)}</div>"
 
