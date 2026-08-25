@@ -1,0 +1,28 @@
+<% @page_title = "Reset password" %>
+<% turbo_page_requires_reload %>
+
+<section class="txt-align-center">
+  <div class="panel <%= "shake" if flash[:alert] %>">
+    <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
+
+    <%= form_with url: session_password_resets_url, class: "flex flex-column gap" do |form| %>
+      <fieldset class="flex flex-column gap center-block upad">
+        <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
+        <p>Reset link has been sent to your email.</p>
+
+        <br>
+
+        <div> Didn't receive an email?</div>
+
+        <div>
+          <%= link_to session_password_resets_path, class: "btn flex-item-justify-end" do %>
+            <div> Return to the reset password page </div>
+            <span class="for-screen-reader">Return to the reset password page</span>
+          <% end %>
+        </div>
+      </fieldset>
+    <% end %>
+  </div>
+
+  <%= render "accounts/help_contact" %>
+</section>

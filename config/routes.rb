@@ -6,6 +6,8 @@ Rails.application.routes.draw do
   resource :session do
     scope module: "sessions" do
       resources :transfers, only: %i[ show update ]
+
+      resources :password_resets, only: %i[ new show create update index]
     end
   end
 
