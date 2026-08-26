@@ -1,8 +1,12 @@
+require "restricted_http/private_network_guard"
+
 class Push::Subscription < ApplicationRecord
   # Web push endpoints only ever point at a browser vendor's push service. An
   # allowlist keeps a user-supplied endpoint from turning delivery into an SSRF
   # sink, and pinning the resolved public IP on every delivery closes the
-  # DNS-rebinding gap the way Opengraph::Fetch does for unfurls.
+  # DNS-rebinding gap. The private-network check itself is the shared
+  # RestrictedHTTP::PrivateNetworkGuard (surfguard) -- the same hostname-in,
+  # address-out guard Opengraph::Fetch pins its unfurls to.
   PERMITTED_ENDPOINT_HOSTS = %w[
     jmt17.google.com
     fcm.googleapis.com
@@ -24,14 +28,16 @@ class Push::Subscription < ApplicationRecord
   # permitted push service or doesn't resolve to a public IP. Enforced here, not
   # only at save time, so a row that predates validation (or was inserted around
   # it) still can't drive delivery at a non-allowlisted or private target.
-  # Re-resolved on every call so each delivery pins a freshly looked-up address
-  # rather than trusting the host to still resolve the way it did at sign-up.
+  # Re-resolved on every call, through the shared guard, so each delivery pins a
+  # freshly looked-up public address rather than trusting the host to still
+  # resolve the way it did at sign-up.
   def resolved_endpoint_ip
-    Surfguard.resolve_public_ips(endpoint_uri.host).first if permitted_endpoint_uri?
-  rescue Surfguard::Unresolvable
-    # A host that resolves to nothing has no usable public IP -- the same outcome
-    # as one whose only addresses are blocked: no endpoint IP to pin, which fails
-    # endpoint validation. Push has no lookup-failed surface to distinguish.
+    RestrictedHTTP::PrivateNetworkGuard.resolve(endpoint_uri.host) if permitted_endpoint_uri?
+  rescue RestrictedHTTP::Violation, Surfguard::Unresolvable
+    # No usable public address: the host resolves only to blocked (private)
+    # addresses (Violation) or to nothing at all (Unresolvable). Either way there
+    # is no endpoint IP to pin, which fails endpoint validation. Push has no
+    # lookup-failed surface to distinguish the two.
     nil
   end
 
