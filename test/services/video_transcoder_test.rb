@@ -27,6 +27,24 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     assert_same upload, VideoTranscoder.call(upload)
   end
 
+  test "passes through MP4 uploads with the avc1 brand" do
+    upload = fake_upload(content_type: "video/mp4")
+
+    movie = stub_movie(video_codec: "h264", audio_codec: "aac", format_tags: { major_brand: "avc1" })
+    movie.expects(:transcode).never
+
+    assert_same upload, VideoTranscoder.call(upload)
+  end
+
+  test "passes through MP4 uploads with the M4V brand" do
+    upload = fake_upload(content_type: "video/mp4")
+
+    movie = stub_movie(video_codec: "h264", audio_codec: "aac", format_tags: { major_brand: "M4V " })
+    movie.expects(:transcode).never
+
+    assert_same upload, VideoTranscoder.call(upload)
+  end
+
   test "transcodes mp4 uploads with an incompatible video codec" do
     upload = fake_upload(content_type: "video/mp4", original_filename: "clip.mp4")
 
@@ -125,13 +143,14 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     assert_same upload, VideoTranscoder.call(upload)
   end
 
-  test "skips transcoding videos longer than the maximum duration" do
+  test "rejects transcoding videos longer than the maximum duration" do
     upload = fake_upload(content_type: "video/quicktime")
 
     movie = stub_movie(duration: VideoTranscoder::MAX_DURATION + 1)
     movie.expects(:transcode).never
 
-    assert_same upload, VideoTranscoder.call(upload)
+    error = assert_raises(VideoTranscoder::TranscodeError) { VideoTranscoder.call(upload) }
+    assert_equal "Video exceeds maximum duration of #{VideoTranscoder::MAX_DURATION} seconds", error.message
   end
 
   test "transcodes video uploads to an h264 mp4 and preserves the original filename" do
@@ -186,11 +205,15 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     movie = stub_movie
     stub_transcode_failure(movie, message: "ffmpeg exploded")
 
-    temp_files_before = Dir.glob(temp_transcode_files).length
+    output = Tempfile.new([ "transcoded_", ".mp4" ])
+    output_path = output.path
+    Tempfile.expects(:new).with([ "transcoded_", ".mp4" ]).returns(output)
 
     error = assert_raises(VideoTranscoder::TranscodeError) { VideoTranscoder.call(upload) }
     assert_equal "ffmpeg exploded", error.message
-    assert_equal temp_files_before, Dir.glob(temp_transcode_files).length
+    assert_not File.exist?(output_path)
+  ensure
+    output&.close!
   end
 
 
@@ -211,11 +234,10 @@ class VideoTranscoderTest < ActiveSupport::TestCase
       end
     end
 
-    def stub_movie(video_codec: nil, audio_codec: nil, duration: 0, container: "mov,mp4,m4a,3gp,3g2,mj2", format_tags: { major_brand: "isom" }, colorspace: "yuv420p", valid: true)
+    def stub_movie(video_codec: nil, audio_codec: nil, duration: 0, format_tags: { major_brand: "isom" }, colorspace: "yuv420p", valid: true)
       movie = mock("movie")
       movie.stubs(valid?: valid)
       movie.stubs(duration: duration)
-      movie.stubs(container: container)
       movie.stubs(format_tags: format_tags)
       movie.stubs(video_codec: video_codec)
       movie.stubs(colorspace: colorspace)
@@ -233,9 +255,5 @@ class VideoTranscoderTest < ActiveSupport::TestCase
 
     def stub_transcode_failure(movie, message:)
       movie.stubs(:transcode).raises(RuntimeError, message)
-    end
-
-    def temp_transcode_files
-      File.join(Dir.tmpdir, "transcoded_*")
     end
 end
