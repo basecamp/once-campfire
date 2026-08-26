@@ -3,6 +3,10 @@ require "test_helper"
 class Room::PushTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
+  setup do
+    stub_web_push_dns_resolution
+  end
+
   test "deliver new message to other room users with push subscriptions" do
     task_count = Push::Subscription.count - users(:david).push_subscriptions.count
     perform_enqueued_jobs only: Room::PushMessageJob do
