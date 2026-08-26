@@ -51,6 +51,23 @@ class Users::PushSubscriptionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
+  test "re-registering a legacy invalid subscription is rejected with 422" do
+    # A row that predates endpoint validation (saved without validation, as a
+    # sink planted before this shipped could be). Re-POSTing its params must hit
+    # the same 422 as a fresh create, not be kept alive by touch.
+    legacy = users(:david).push_subscriptions.build \
+      endpoint: "https://attacker.example.com/steal", p256dh_key: "123", auth_key: "456"
+    legacy.save!(validate: false)
+
+    assert_no_difference -> { Push::Subscription.count } do
+      post user_push_subscriptions_url, params: {
+        push_subscription: { endpoint: "https://attacker.example.com/steal", p256dh_key: "123", auth_key: "456" }
+      }
+    end
+
+    assert_response :unprocessable_entity
+  end
+
   test "destroy a push subscription via dev mode" do
     assert_difference -> { Push::Subscription.count }, -1 do
       delete user_push_subscription_url(push_subscriptions(:david_chrome))

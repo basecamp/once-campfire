@@ -83,11 +83,18 @@ class Push::SubscriptionTest < ActiveSupport::TestCase
     assert_equal DnsTestHelper::WEB_PUSH_PUBLIC_TEST_IP, subscription.resolved_endpoint_ip
   end
 
-  test "notification carries the resolved endpoint IP for delivery pinning" do
+  test "endpoint resolution is deferred from the enqueue path to the delivery worker" do
+    lookups = 0
+    # A side-effecting matcher lets us count resolver calls without a real lookup.
+    Resolv.stubs(:getaddresses).with { |*| lookups += 1; true }.returns([ DnsTestHelper::WEB_PUSH_PUBLIC_TEST_IP ])
+
     subscription = build_subscription(endpoint: "https://fcm.googleapis.com/fcm/send/abc123")
     notification = subscription.notification(title: "t", body: "b", path: "/")
+    assert_equal 0, lookups, "building the notification must not resolve DNS on the serial enqueue path"
 
-    assert_equal DnsTestHelper::WEB_PUSH_PUBLIC_TEST_IP, notification.instance_variable_get(:@endpoint_ip)
+    WebPush.stubs(:payload_send)
+    notification.deliver
+    assert_operator lookups, :>, 0, "delivery must resolve and pin the endpoint IP on the worker"
   end
 
   test "delivery is skipped when the endpoint no longer resolves to a public IP" do

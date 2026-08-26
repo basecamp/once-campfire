@@ -23,4 +23,31 @@ class WebPush::PersistentRequestTest < ActiveSupport::TestCase
         urgency: "high"
     end
   end
+
+  # An egress proxy would open the TCP connection itself and re-resolve the
+  # endpoint host, defeating the ipaddr pin. The pinned path must ignore
+  # http_proxy/https_proxy and connect straight to the resolved public IP.
+  test "ignores proxy env so the pin can't be routed through a re-resolving proxy" do
+    host = URI(ENDPOINT).host
+
+    saved = ENV.slice("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
+    %w[ http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ].each { |k| ENV[k] = "http://proxy.internal:3128" }
+
+    WebMock.disable_net_connect! allow: [ host ]
+
+    TCPSocket.expects(:open).with { |*args, **| args.first == "proxy.internal" }.never
+    TCPSocket.expects(:open).with { |*args, **| args.first == DnsTestHelper::WEB_PUSH_PUBLIC_TEST_IP && args[1] == 443 }.throws(:pinned_to_ip)
+
+    assert_throws :pinned_to_ip do
+      WebPush.payload_send \
+        message: "",
+        endpoint: ENDPOINT,
+        endpoint_ip: DnsTestHelper::WEB_PUSH_PUBLIC_TEST_IP,
+        p256dh: "", auth: "", vapid: {},
+        urgency: "high"
+    end
+  ensure
+    %w[ http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ].each { |k| ENV.delete(k) }
+    saved.each { |k, v| ENV[k] = v }
+  end
 end

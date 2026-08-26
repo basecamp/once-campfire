@@ -21,7 +21,12 @@ class Push::Subscription < ApplicationRecord
   validate :validate_endpoint_url
 
   def notification(**params)
-    WebPush::Notification.new(**params, badge: user.memberships.unread.count, endpoint: endpoint, endpoint_ip: resolved_endpoint_ip, p256dh_key: p256dh_key, auth_key: auth_key)
+    # Pass the guarded-resolution as a callable, not an already-resolved IP: the
+    # notification is built here on the serial enqueue path (for the unread badge
+    # count and other AR reads), but the DNS lookup must happen later, on the
+    # bounded delivery worker. resolved_endpoint_ip only reads the already-loaded
+    # endpoint attribute, so invoking it off-thread needs no AR connection.
+    WebPush::Notification.new(**params, badge: user.memberships.unread.count, endpoint: endpoint, endpoint_ip_resolver: method(:resolved_endpoint_ip), p256dh_key: p256dh_key, auth_key: auth_key)
   end
 
   # The public address to pin this delivery to, or nil when the endpoint is not a
