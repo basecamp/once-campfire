@@ -3,11 +3,6 @@ class WebPush::Pool
   attr_reader :delivery_pool, :invalidation_pool, :connection, :invalid_subscription_handler
 
   def initialize(invalid_subscription_handler:)
-    # max_queue (not queue_size, which ThreadPoolExecutor silently ignores) caps
-    # the delivery backlog: an unbounded queue lets a flood of subscriptions
-    # accumulate without limit, more so now that each task also resolves DNS.
-    # Overflow raises RejectedExecutionError under the default :abort policy,
-    # which deliver_later rescues -- push is best-effort and retried next message.
     @delivery_pool = Concurrent::ThreadPoolExecutor.new(max_threads: 50, max_queue: 10000)
     @invalidation_pool = Concurrent::FixedThreadPool.new(1)
     @connection = Net::HTTP::Persistent.new(name: "web_push", pool_size: 150)

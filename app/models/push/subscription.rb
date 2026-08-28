@@ -1,12 +1,6 @@
 require "restricted_http/private_network_guard"
 
 class Push::Subscription < ApplicationRecord
-  # Web push endpoints only ever point at a browser vendor's push service. An
-  # allowlist keeps a user-supplied endpoint from turning delivery into an SSRF
-  # sink, and pinning the resolved public IP on every delivery closes the
-  # DNS-rebinding gap. The private-network check itself is the shared
-  # RestrictedHTTP::PrivateNetworkGuard (surfguard) -- the same hostname-in,
-  # address-out guard Opengraph::Fetch pins its unfurls to.
   PERMITTED_ENDPOINT_HOSTS = %w[
     jmt17.google.com
     fcm.googleapis.com
@@ -21,36 +15,19 @@ class Push::Subscription < ApplicationRecord
   validate :validate_endpoint_url
 
   def notification(**params)
-    # Pass the guarded-resolution as a callable, not an already-resolved IP: the
-    # notification is built here on the serial enqueue path (for the unread badge
-    # count and other AR reads), but the DNS lookup must happen later, on the
-    # bounded delivery worker. resolved_endpoint_ip only reads the already-loaded
-    # endpoint attribute, so invoking it off-thread needs no AR connection.
+    # Defer DNS lookup to the delivery worker to prevent rebinding
     WebPush::Notification.new(**params, badge: user.memberships.unread.count, endpoint: endpoint, endpoint_ip_resolver: method(:resolved_endpoint_ip), p256dh_key: p256dh_key, auth_key: auth_key)
   end
 
-  # The public address to pin this delivery to, or nil when the endpoint is not a
-  # permitted push service or doesn't resolve to a public IP. Enforced here, not
-  # only at save time, so a row that predates validation (or was inserted around
-  # it) still can't drive delivery at a non-allowlisted or private target.
-  # Re-resolved on every call, through the shared guard, so each delivery pins a
-  # freshly looked-up public address rather than trusting the host to still
-  # resolve the way it did at sign-up.
+  # Validate at point of use, not just when saved.
   def resolved_endpoint_ip
     RestrictedHTTP::PrivateNetworkGuard.resolve(endpoint_uri.host) if permitted_endpoint_uri?
   rescue RestrictedHTTP::Violation, Surfguard::Unresolvable
-    # No usable public address: the host resolves only to blocked (private)
-    # addresses (Violation) or to nothing at all (Unresolvable). Either way there
-    # is no endpoint IP to pin, which fails endpoint validation. Push has no
-    # lookup-failed surface to distinguish the two.
     nil
   end
 
   private
-    # The full shape a deliverable endpoint must have: HTTPS on the default port,
-    # pointing at a permitted push service. Gating resolution on this (not just
-    # the host) keeps a row that slipped past save-time validation from driving
-    # delivery to an odd port or scheme on a permitted vendor's address.
+    # Validate endpoint shape. Belt & suspenders.
     def permitted_endpoint_uri?
       endpoint_uri&.scheme == "https" && endpoint_uri.port == 443 && permitted_endpoint_host?
     end

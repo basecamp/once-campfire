@@ -6,10 +6,7 @@ class Users::PushSubscriptionsController < ApplicationController
 
   def create
     if subscription = @push_subscriptions.find_by(push_subscription_params)
-      # Re-validate on re-registration: a row that predates endpoint validation
-      # (or was inserted around it) must get the same 422 as a fresh create
-      # rather than being kept alive by touch. Delivery already fails closed for
-      # such a row; this keeps both create paths on one contract.
+      # Existing endpoints must pass current validations
       if subscription.valid?
         subscription.touch
         head :ok
