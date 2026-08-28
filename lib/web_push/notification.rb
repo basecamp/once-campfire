@@ -1,16 +1,18 @@
 class WebPush::Notification
-  def initialize(title:, body:, path:, badge:, endpoint:, p256dh_key:, auth_key:)
+  def initialize(title:, body:, path:, badge:, endpoint:, endpoint_ip_resolver:, p256dh_key:, auth_key:)
     @title, @body, @path, @badge = title, body, path, badge
-    @endpoint, @p256dh_key, @auth_key = endpoint, p256dh_key, auth_key
+    @endpoint, @endpoint_ip_resolver, @p256dh_key, @auth_key = endpoint, endpoint_ip_resolver, p256dh_key, auth_key
   end
 
   def deliver(connection: nil)
-    WebPush.payload_send \
-      message: encoded_message,
-      endpoint: @endpoint, p256dh: @p256dh_key, auth: @auth_key,
-      vapid: vapid_identification,
-      connection: connection,
-      urgency: "high"
+    if endpoint_ip = @endpoint_ip_resolver.call
+      WebPush.payload_send \
+        message: encoded_message,
+        endpoint: @endpoint, endpoint_ip: endpoint_ip, p256dh: @p256dh_key, auth: @auth_key,
+        vapid: vapid_identification,
+        connection: connection,
+        urgency: "high"
+    end
   end
 
   private
