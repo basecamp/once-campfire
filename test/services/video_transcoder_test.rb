@@ -143,16 +143,6 @@ class VideoTranscoderTest < ActiveSupport::TestCase
     assert_same upload, VideoTranscoder.call(upload)
   end
 
-  test "rejects transcoding videos longer than the maximum duration" do
-    upload = fake_upload(content_type: "video/quicktime")
-
-    movie = stub_movie(duration: VideoTranscoder::MAX_DURATION + 1)
-    movie.expects(:transcode).never
-
-    error = assert_raises(VideoTranscoder::TranscodeError) { VideoTranscoder.call(upload) }
-    assert_equal "Video exceeds maximum duration of #{VideoTranscoder::MAX_DURATION} seconds", error.message
-  end
-
   test "transcodes video uploads to an h264 mp4 and preserves the original filename" do
     upload = fake_upload(content_type: "video/quicktime", original_filename: "clip.mov")
 

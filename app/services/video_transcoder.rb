@@ -5,7 +5,6 @@ require "timeout"
 class VideoTranscoder
   # Videos larger than this are attached as-is to avoid tying up request workers with long transcodes.
   MAX_INPUT_SIZE = 200.megabytes
-  MAX_DURATION = 1.hour
   MAX_TRANSCODE_TIME = 5.minutes
   MP4_MAJOR_BRANDS = %w[ isom iso2 iso3 iso4 iso5 iso6 iso8 iso9 mp41 mp42 mp71 avc1 avc2 avc3 avc4 m4v dash cmfc cmff ].freeze
 
@@ -31,7 +30,6 @@ class VideoTranscoder
 
     movie = probe_movie
     return io if compatible_encoding?(movie)
-    ensure_duration_supported!(movie)
 
     transcoded_io(movie)
   end
@@ -66,13 +64,6 @@ class VideoTranscoder
         Rails.logger.info "Skipping video transcoding: input exceeds #{MAX_INPUT_SIZE} bytes"
         true
       end
-    end
-
-    def ensure_duration_supported!(movie)
-      return unless movie.duration > MAX_DURATION
-
-      Rails.logger.info "Rejecting video transcoding: duration exceeds #{MAX_DURATION} seconds"
-      raise TranscodeError, "Video exceeds maximum duration of #{MAX_DURATION} seconds"
     end
 
     def transcoded_io(movie)
