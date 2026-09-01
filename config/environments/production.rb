@@ -1,5 +1,6 @@
 require "active_support/core_ext/integer/time"
 require "active_support/core_ext/numeric/bytes"
+require_relative "../../lib/rails_ext/log_scrubbing_formatter"
 
 Rails.application.configure do
   # Settings specified here will take precedence over those in config/application.rb.
@@ -50,7 +51,7 @@ Rails.application.configure do
 
   # Log to STDOUT by default
   config.logger = ActiveSupport::Logger.new(STDOUT)
-    .tap  { |logger| logger.formatter = ::Logger::Formatter.new }
+    .tap  { |logger| logger.formatter = LogScrubbingFormatter.new }
     .then { |logger| ActiveSupport::TaggedLogging.new(logger) }
 
   # Prepend all log lines with the following tags.
