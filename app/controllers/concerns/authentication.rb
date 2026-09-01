@@ -71,6 +71,13 @@ module Authentication
       Current.session&.destroy!
       reset_session
       remove_authentication_cookie
+      disconnect_remote_connections
+    end
+
+    def disconnect_remote_connections
+      Current.user&.reset_remote_connections
+    rescue => error
+      Rails.logger.warn "Could not disconnect remote connections on sign out: #{error.class}"
     end
 
     def authenticated_as(session)

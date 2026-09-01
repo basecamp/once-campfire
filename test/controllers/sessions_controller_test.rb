@@ -56,6 +56,30 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil Session.find_by(id: session.id)
   end
 
+  test "destroy closes the signed-out user's live connections" do
+    sign_in :david
+
+    remote_connections = mock
+    remote_connections.expects(:disconnect).with(reconnect: true)
+    ActionCable.server.stubs(:remote_connections).returns(mock.tap { |m| m.expects(:where).with(current_user: users(:david)).returns(remote_connections) })
+
+    delete session_url
+
+    assert_redirected_to root_url
+  end
+
+  test "destroy still signs out when the realtime service is unreachable" do
+    sign_in :david
+    session = users(:david).sessions.last
+    ActionCable.server.stubs(:remote_connections).raises(RuntimeError.new("cable down"))
+
+    delete session_url
+
+    assert_redirected_to root_url
+    assert_not cookies[:session_token].present?
+    assert_nil Session.find_by(id: session.id)
+  end
+
   test "destroy removes the push subscription for the device" do
     sign_in :david
 
