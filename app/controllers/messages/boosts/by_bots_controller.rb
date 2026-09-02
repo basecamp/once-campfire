@@ -12,6 +12,10 @@ class Messages::Boosts::ByBotsController < Messages::BoostsController
     render :show, status: :created
   end
 
+  rescue_from ActiveRecord::RecordInvalid do |error|
+    render json: { errors: error.record.errors.to_hash }, status: :unprocessable_content
+  end
+
   private
     def set_message
       if room = Current.user.rooms.find_by(id: params[:room_id])

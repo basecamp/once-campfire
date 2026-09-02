@@ -1,8 +1,19 @@
 require "net/http"
+require "openssl"
 require "uri"
+require "zlib"
 
 class Webhook < ApplicationRecord
+  class DeliveryError < StandardError; end
+
   ENDPOINT_TIMEOUT = 7.seconds
+
+  # Everything Net::HTTP can raise for a request that never produced a usable
+  # response. All of it is worth retrying, so it's wrapped in DeliveryError.
+  TRANSPORT_ERRORS = [
+    IOError, SocketError, SystemCallError, Timeout::Error, OpenSSL::SSL::SSLError,
+    Net::HTTPBadResponse, Net::ProtocolError, Zlib::Error
+  ].freeze
 
   belongs_to :user
 
@@ -16,6 +27,14 @@ class Webhook < ApplicationRecord
     end
   rescue Net::OpenTimeout, Net::ReadTimeout
     receive_text_reply_to message.room, text: "Failed to respond within #{ENDPOINT_TIMEOUT} seconds"
+  end
+
+  def deliver_action(message, acting_user, value, selected, event_id:)
+    post(action_payload(message, acting_user, value, selected, event_id:)).tap do |response|
+      raise DeliveryError, "Webhook responded with HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+    end
+  rescue *TRANSPORT_ERRORS => error
+    raise DeliveryError, "#{error.class}: #{error.message}"
   end
 
   private
@@ -40,9 +59,21 @@ class Webhook < ApplicationRecord
 
     def payload(message)
       {
+        type:    "message",
         user:    { id: message.creator.id, name: message.creator.name },
         room:    { id: message.room.id, name: message.room.name, path: room_bot_messages_path(message) },
         message: { id: message.id, body: { html: message.body.body, plain: without_recipient_mentions(message.plain_text_body) }, path: message_path(message) }
+      }.to_json
+    end
+
+    def action_payload(message, acting_user, value, selected, event_id:)
+      {
+        type: "action",
+        id: event_id,
+        room: { id: message.room.id, name: message.room.name, path: room_bot_messages_path(message) },
+        user: { id: acting_user.id, name: acting_user.name },
+        message: { id: message.id, path: message_path(message) },
+        action: { value: value, selected: selected }
       }.to_json
     end
 
