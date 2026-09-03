@@ -6,9 +6,9 @@ GIT
 
 GIT
   remote: https://github.com/hotwired/turbo-rails.git
-  revision: 30cd8fcc6f82c1ad4edd1ed6069ba878f21f02b3
+  revision: 37530c08780fa6f6dbb56a633de4b81169bdd174
   specs:
-    turbo-rails (2.0.16)
+    turbo-rails (2.0.23)
       actionpack (>= 7.1.0)
       railties (>= 7.1.0)
 
@@ -142,7 +142,7 @@ GEM
     base64 (0.3.0)
     bcrypt (3.1.22)
     benchmark (0.5.0)
-    bigdecimal (3.3.1)
+    bigdecimal (4.1.2)
     brakeman (8.0.6)
       racc
     builder (3.3.0)
@@ -159,7 +159,7 @@ GEM
       regexp_parser (>= 1.5, < 3.0)
       xpath (~> 3.2)
     chunky_png (1.4.0)
-    concurrent-ruby (1.3.7)
+    concurrent-ruby (1.3.8)
     connection_pool (2.5.5)
     crack (1.0.0)
       bigdecimal
@@ -170,7 +170,7 @@ GEM
       irb (~> 1.10)
       reline (>= 0.3.8)
     drb (2.2.3)
-    erb (6.0.4)
+    erb (6.0.7)
     erubi (1.13.1)
     faker (3.5.2)
       i18n (>= 1.8.11, < 2)
@@ -184,14 +184,15 @@ GEM
     globalid (1.3.0)
       activesupport (>= 6.1)
     hashdiff (1.2.0)
-    i18n (1.14.7)
+    i18n (1.15.2)
       concurrent-ruby (~> 1.0)
     image_processing (1.14.0)
       mini_magick (>= 4.9.5, < 6)
       ruby-vips (>= 2.0.17, < 3)
-    io-console (0.8.1)
-    irb (1.15.3)
+    io-console (0.9.2)
+    irb (1.18.0)
       pp (>= 0.6.0)
+      prism (>= 1.3.0)
       rdoc (>= 4.0.0)
       reline (>= 0.4.2)
     jbuilder (2.14.1)
@@ -221,7 +222,9 @@ GEM
     mini_magick (5.3.1)
       logger
     mini_mime (1.1.5)
-    minitest (5.26.2)
+    minitest (6.0.6)
+      drb (~> 2.0)
+      prism (~> 1.5)
     mocha (2.7.1)
       ruby2_keywords (>= 0.0.5)
     mono_logger (1.1.2)
@@ -257,18 +260,15 @@ GEM
     platform_agent (1.0.1)
       activesupport (>= 5.2.0)
       useragent (~> 0.16.3)
-    pp (0.6.3)
+    pp (0.6.4)
       prettyprint
     prettyprint (0.2.0)
-    prism (1.4.0)
-    psych (5.2.6)
-      date
-      stringio
+    prism (1.9.0)
     public_suffix (6.0.2)
     puma (7.2.1)
       nio4r (~> 2.0)
     racc (1.8.1)
-    rack (3.2.6)
+    rack (3.2.7)
     rack-protection (4.2.1)
       base64 (>= 0.1.0)
       logger (>= 1.6.0)
@@ -278,7 +278,7 @@ GEM
       rack (>= 3.0.0)
     rack-test (2.2.0)
       rack (>= 1.3)
-    rackup (2.2.1)
+    rackup (2.3.1)
       rack (>= 3)
     rails-dom-testing (2.3.0)
       activesupport (>= 5.0.0)
@@ -292,10 +292,15 @@ GEM
       activesupport (> 3.1)
       railties (> 3.1)
     rainbow (3.1.1)
-    rake (13.3.1)
-    rdoc (6.16.1)
+    rake (13.4.2)
+    rbs (4.1.3)
+      logger
+      prism (>= 1.6.0)
+      tsort
+    rdoc (8.0.0)
       erb
-      psych (>= 4.0.0)
+      prism (>= 1.6.0)
+      rbs (>= 4.0.0)
       tsort
     redis (5.4.1)
       redis-client (>= 0.22.0)
@@ -304,7 +309,7 @@ GEM
     redis-namespace (1.11.0)
       redis (>= 4)
     regexp_parser (2.11.2)
-    reline (0.6.3)
+    reline (0.7.0)
       io-console (~> 0.5)
     resque (2.7.0)
       mono_logger (~> 1)
@@ -379,8 +384,7 @@ GEM
     sqlite3 (2.9.6-x86_64-linux-gnu)
     stimulus-rails (1.3.4)
       railties (>= 6.0.0)
-    stringio (3.1.8)
-    thor (1.4.0)
+    thor (1.5.0)
     thruster (0.1.23-aarch64-linux)
     thruster (0.1.23-arm64-darwin)
     thruster (0.1.23-x86_64-darwin)
@@ -409,7 +413,7 @@ GEM
     websocket-extensions (0.1.5)
     xpath (3.2.0)
       nokogiri (~> 1.8)
-    zeitwerk (2.7.3)
+    zeitwerk (2.8.3)
 
 PLATFORMS
   aarch64-linux
