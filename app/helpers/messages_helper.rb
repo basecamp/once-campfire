@@ -57,7 +57,9 @@ module MessagesHelper
     when "sound"
       message_sound_presentation(message)
     else
-      auto_link h(ContentFilters::TextMessagePresentationFilters.apply(message.body.body)), html: { target: "_blank" }
+      # Render the full ActionText content to preserve unfurled links and other attachments
+      # Use ActionText's built-in rendering
+      message.body.to_s.html_safe
     end
   rescue Exception => e
     Sentry.capture_exception(e, extra: { message: message })
