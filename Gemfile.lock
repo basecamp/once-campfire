@@ -205,7 +205,7 @@ GEM
       activesupport (>= 6.0.0)
       redis (>= 4.2, < 6)
     language_server-protocol (3.17.0.5)
-    lexxy (0.9.24)
+    lexxy (0.9.31)
       rails (>= 8.0.2)
     lint_roller (1.1.0)
     logger (1.7.0)
@@ -354,7 +354,7 @@ GEM
       ffi (~> 1.12)
       logger
     ruby2_keywords (0.0.5)
-    rubyzip (3.0.2)
+    rubyzip (3.4.0)
     securerandom (0.4.1)
     selenium-webdriver (4.35.0)
       base64 (~> 0.2)
