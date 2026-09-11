@@ -38,12 +38,20 @@ class ActionText::Attachment::OpengraphEmbedTest < ActiveSupport::TestCase
 
   test "drops a link and an image on a bare address rather than a domain name" do
     [ "http://127.0.0.1/rooms/1", "http://2130706433/rooms/1", "http://0177.0.0.1/rooms/1",
-      "http://[::1]/rooms/1", "http://localhost/rooms/1", "https://203.0.113.10/image.png" ].each do |value|
+      "http://0x7f.0.0.1/rooms/1", "http://1.2.3.0xff/rooms/1", "http://[::1]/rooms/1",
+      "http://localhost/rooms/1", "https://203.0.113.10/image.png" ].each do |value|
       embed = embed_from href: value, url: value
 
       assert_nil embed.href, "expected #{value.inspect} to be dropped as a link"
       assert_nil embed.url, "expected #{value.inspect} to be dropped as an image"
     end
+  end
+
+  test "keeps an internationalized domain written in punycode" do
+    embed = embed_from href: "https://xn--80aswg.xn--p1ai/page", url: "https://xn--80aswg.xn--p1ai/image.png"
+
+    assert_equal "https://xn--80aswg.xn--p1ai/page", embed.href
+    assert_equal "https://xn--80aswg.xn--p1ai/image.png", embed.url
   end
 
   test "renders the image and the link when both are web URLs" do

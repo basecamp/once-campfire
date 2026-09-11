@@ -48,11 +48,17 @@ class ActionText::Attachment::OpengraphEmbed
       end
 
       # A preview names a page on the public internet, so its host is a domain
-      # name: it has a dot and a letter in it, and no escapes. A bare address is
-      # not one, and a browser rewrites the many spellings of an address into a
+      # name, written plainly. A bare address is not one, and a browser rewrites
+      # the many spellings of an address ("2130706433", "0x7f.0.0.1") into a
       # single one before it fetches, which is a race a comparison here loses.
       def named_host?(host)
-        host.present? && host.exclude?("%") && host.include?(".") && host.match?(/[a-z]/i)
+        host.present? && host.exclude?("%") && host.include?(".") && domain_ending?(host.split(".").last)
+      end
+
+      # What keeps a name from reading as an address is its last label, which is
+      # a word: never a number, and never the hexadecimal spelling of one.
+      def domain_ending?(label)
+        label.match?(/[a-z]/i) && !label.match?(/\A0x/i)
       end
 
       def canonical_host(host)
