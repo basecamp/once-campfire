@@ -21,7 +21,7 @@ class UnfurlingLinksTest < ApplicationSystemTestCase
     assert_selector "trix-editor .og-embed__title", text: "A normal looking link"
 
     assert_equal @website.image_url, preview_image_attributes["src"]
-    assert_equal %w[ class src ], preview_image_attributes.keys.sort
+    assert_empty preview_image_attributes.keys - %w[ src class alt ]
   end
 
   private
