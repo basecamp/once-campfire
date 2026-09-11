@@ -16,11 +16,21 @@ class ActionText::Attachment::OpengraphEmbed
     private
       def attributes_from_node(node)
         {
-          href: node["href"],
-          url: node["url"],
+          href: web_url(node["href"]),
+          url: web_url(node["url"]),
           filename: node["filename"],
           description: node["caption"]
         }
+      end
+
+      # A link preview points at what we unfurled, which is always an absolute
+      # http or https URL. Drop anything else the message body asks for, so a
+      # body written by hand can't aim the preview's link or its image at another
+      # scheme or at a path on this Campfire.
+      def web_url(value)
+        value if value.present? && URI.parse(value).is_a?(URI::HTTP)
+      rescue URI::InvalidURIError
+        nil
       end
   end
 
