@@ -42,9 +42,17 @@ class ActionText::Attachment::OpengraphEmbed
       # while a browser still unescapes it back to us, so an escaped host is out
       # too, and neither case is anything an unfurl could have produced.
       def elsewhere?(host)
-        return false if host.blank? || host.include?("%")
+        return false unless named_host?(host)
 
         canonical_host(host) != canonical_host(Current.request_host.to_s)
+      end
+
+      # A preview names a page on the public internet, so its host is a domain
+      # name: it has a dot and a letter in it, and no escapes. A bare address is
+      # not one, and a browser rewrites the many spellings of an address into a
+      # single one before it fetches, which is a race a comparison here loses.
+      def named_host?(host)
+        host.present? && host.exclude?("%") && host.include?(".") && host.match?(/[a-z]/i)
       end
 
       def canonical_host(host)
