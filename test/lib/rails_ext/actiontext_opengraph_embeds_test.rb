@@ -10,7 +10,8 @@ class ActionText::Attachment::OpengraphEmbedTest < ActiveSupport::TestCase
 
   test "drops a link and an image that aren't web URLs" do
     [ "javascript:alert(1)", "data:text/html,pwned", "vbscript:msgbox(1)", "//example.com/image.png",
-      "/rooms/1", "rooms/1", "", "http://exa mple.com/ " ].each do |value|
+      "/rooms/1", "rooms/1", "", "http://exa mple.com/ ",
+      "https:/rooms/1", "https:rooms/1", "http:/rooms/1", "https://", "http://:80/rooms/1" ].each do |value|
       embed = embed_from href: value, url: value
 
       assert_nil embed.href, "expected #{value.inspect} to be dropped as a link"

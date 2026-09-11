@@ -24,11 +24,16 @@ class ActionText::Attachment::OpengraphEmbed
       end
 
       # A link preview points at what we unfurled, which is always an absolute
-      # http or https URL. Drop anything else the message body asks for, so a
-      # body written by hand can't aim the preview's link or its image at another
-      # scheme or at a path on this Campfire.
+      # http or https URL naming a host. Drop anything else the message body asks
+      # for, so a body written by hand can't aim the preview's link or its image at
+      # another scheme or at a path on this Campfire. A URL like "https:/rooms/1"
+      # needs the host check as well as the scheme one: Ruby parses it as HTTPS,
+      # and a browser resolves it against whatever origin Campfire is served from.
       def web_url(value)
-        value if value.present? && URI.parse(value).is_a?(URI::HTTP)
+        return if value.blank?
+
+        parsed = URI.parse(value)
+        value if parsed.is_a?(URI::HTTP) && parsed.host.present?
       rescue URI::InvalidURIError
         nil
       end
