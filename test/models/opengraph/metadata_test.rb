@@ -147,6 +147,29 @@ class Opengraph::MetadataTest < ActiveSupport::TestCase
     assert_equal "Hello", metadata.description
   end
 
+  test "a title or description that is entirely a markup tag is stripped to blank and rejected" do
+    body = <<~HTML
+      <html>
+        <head>
+          <meta property="og:title" content="<img src='x' onerror='alert(document.domain)'/>">
+          <meta property="og:description" content="<img src='x' onerror='alert(document.domain)'/>">
+          <meta property="og:image" content="https://example.com/image.png">
+        </head>
+      </html>
+    HTML
+
+    WebMock.stub_request(:get, "https://www.example.com/").to_return(status: 200, body: body, headers: { content_type: "text/html" })
+    WebMock.stub_request(:head, "https://example.com/image.png").to_return(status: 200, headers: { content_type: "image/png" })
+
+    metadata = Opengraph::Metadata.from_url("https://www.example.com")
+
+    assert_not metadata.valid?
+    assert_equal "", metadata.title
+    assert_equal "", metadata.description
+    assert_includes metadata.errors.full_messages, "Title can't be blank"
+    assert_includes metadata.errors.full_messages, "Description can't be blank"
+  end
+
   test "does not allow SVG content type for preview image" do
     body = <<~HTML
       <html>

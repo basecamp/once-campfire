@@ -25,6 +25,21 @@ class UnfurlLinksControllerTest < ActionDispatch::IntegrationTest
     assert_response :no_content
   end
 
+  test "create returns no content when the title and description are only a markup tag" do
+    image_tag = "<img src='x' onerror='alert(document.domain)'/>"
+    body = "<html><head>" \
+      "<meta property=\"og:url\" content=\"https://example.com\">" \
+      "<meta property=\"og:title\" content=\"#{image_tag}\">" \
+      "<meta property=\"og:description\" content=\"#{image_tag}\">" \
+      "<meta property=\"og:image\" content=\"https://example.com/image.png\">" \
+      "</head></html>"
+    WebMock.stub_request(:get, "https://www.example.com/").to_return(status: 200, body: body, headers: { content_type: "text/html" })
+    WebMock.stub_request(:head, "https://example.com/image.png").to_return(status: 200, headers: { content_type: "image/png" })
+
+    post unfurl_link_url, params: { url: "https://www.example.com" }
+    assert_response :no_content
+  end
+
   test "create with a missing URL" do
     assert_raise ActionController::ParameterMissing do
       post unfurl_link_url, params: { url: "" }
