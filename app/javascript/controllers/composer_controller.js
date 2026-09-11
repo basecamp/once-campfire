@@ -1,7 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 import FileUploader from "models/file_uploader"
 import { onNextEventLoopTick, nextFrame } from "helpers/timing_helpers"
-import { escapeHTML } from "helpers/dom_helpers"
+import { escapeHTML } from "helpers/string_helpers"
 
 export default class extends Controller {
   static classes = ["toolbar"]

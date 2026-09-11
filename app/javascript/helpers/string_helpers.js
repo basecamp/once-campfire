@@ -9,5 +9,5 @@ export function truncateString(string, length, omission = "…") {
 }
 
 export function escapeHTML(string) {
-  return String(string).replace(/[&<>"']/g, character => HTML_ESCAPES[character])
+  return String(string ?? "").replace(/[&<>"']/g, character => HTML_ESCAPES[character])
 }
