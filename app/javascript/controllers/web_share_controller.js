@@ -13,25 +13,34 @@ export default class extends Controller {
   static values = { title: String, text: String, url: String, files: String }
 
   #file = null
+  #fileUrl = null
   #fetch = null
 
   connect() {
     this.element.hidden = !this.#shareable
 
-    if (this.filesValue) {
-      this.element.addEventListener("pointerenter", this.#prepare)
-      this.element.addEventListener("pointerdown", this.#prepare)
-    }
+    // Registered unconditionally: the lightbox reuses one button and only fills
+    // in filesValue when an attachment opens, so gating on it here would mean
+    // the listeners are never attached there. #prepare ignores an empty value.
+    this.element.addEventListener("pointerenter", this.#prepare)
+    this.element.addEventListener("pointerdown", this.#prepare)
   }
 
   disconnect() {
     this.element.removeEventListener("pointerenter", this.#prepare)
     this.element.removeEventListener("pointerdown", this.#prepare)
-    this.#file = this.#fetch = null
+    this.#discard()
+  }
+
+  // Same reuse, sharper edge: the lightbox reassigns filesValue for every image
+  // it opens on that one button, so a file cached for the previous attachment
+  // would be shared for the next one. Tie the cache to the URL it came from.
+  filesValueChanged() {
+    if (this.#fileUrl !== this.filesValue) this.#discard()
   }
 
   share() {
-    if (this.filesValue && !this.#file) {
+    if (this.filesValue && !this.#ready) {
       this.#prepare()
       this.#busy = true
       return
@@ -60,18 +69,34 @@ export default class extends Controller {
       data.url = this.urlValue
     }
 
-    if (this.#file) {
+    if (this.#ready) {
       data.files = [ this.#file ]
     }
 
     return data
   }
 
-  #prepare = () => {
-    if (!this.filesValue || this.#file || this.#fetch) return
+  get #ready() {
+    return this.#file && this.#fileUrl === this.filesValue
+  }
 
-    this.#fetch = this.#fetchFile()
-      .then(file => this.#file = file)
+  #discard() {
+    this.#file = this.#fileUrl = null
+  }
+
+  #prepare = () => {
+    const url = this.filesValue
+    if (!url || this.#ready || this.#fetch) return
+
+    this.#fetch = this.#fetchFile(url)
+      .then(file => {
+        // The lightbox may have moved on to another attachment while this was
+        // in flight; that file is not the one to share now.
+        if (this.filesValue === url) {
+          this.#file = file
+          this.#fileUrl = url
+        }
+      })
       .catch(error => console.error("Share preparation failed:", error))
       .finally(() => {
         this.#fetch = null
@@ -89,8 +114,8 @@ export default class extends Controller {
     }
   }
 
-  async #fetchFile() {
-    const response = await fetch(this.filesValue)
+  async #fetchFile(url) {
+    const response = await fetch(url)
     const blob = await response.blob()
     const randomPrefix = `Campfire_${Math.random().toString(36).slice(2)}`
     const fileName = `${randomPrefix}.${blob.type.split('/').pop()}`
