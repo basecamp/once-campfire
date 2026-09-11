@@ -35,6 +35,22 @@ class RoomsControllerTest < ActionDispatch::IntegrationTest
     assert_match "Free cookies", response.body
   end
 
+  test "show renders a link preview written by hand without its image pointed at this Campfire" do
+    room = rooms(:watercooler)
+    own_url = room_url(room, host: "www.example.com")
+    post room_messages_url(room, format: :turbo_stream), params: { message: {
+      body: link_preview_body(href: own_url, url: own_url),
+      client_message_id: "same-host-preview" } }
+    assert_response :success
+
+    get room_url(room)
+
+    assert_response :success
+    assert_no_match %r{<img src="#{Regexp.escape(own_url)}"}, response.body
+    assert_no_match %r{<a rel="noreferrer" target="_blank" href="#{Regexp.escape(own_url)}"}, response.body
+    assert_match "Free cookies", response.body
+  end
+
   test "show renders an unfurled link preview" do
     room = rooms(:watercooler)
     post room_messages_url(room, format: :turbo_stream), params: { message: {

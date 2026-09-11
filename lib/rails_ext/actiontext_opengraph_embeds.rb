@@ -23,19 +23,24 @@ class ActionText::Attachment::OpengraphEmbed
         }
       end
 
-      # A link preview points at what we unfurled, which is always an absolute
-      # http or https URL naming a host. Drop anything else the message body asks
-      # for, so a body written by hand can't aim the preview's link or its image at
-      # another scheme or at a path on this Campfire. A URL like "https:/rooms/1"
-      # needs the host check as well as the scheme one: Ruby parses it as HTTPS,
-      # and a browser resolves it against whatever origin Campfire is served from.
+      # A link preview points at what we unfurled: an absolute http or https URL
+      # on some other host. Drop anything else a message body asks for, so it
+      # can't aim the preview's link or its image at this Campfire and have every
+      # reader's browser fetch it with their session attached.
       def web_url(value)
         return if value.blank?
 
         parsed = URI.parse(value)
-        value if parsed.is_a?(URI::HTTP) && parsed.host.present?
+        value if parsed.is_a?(URI::HTTP) && elsewhere?(parsed.host)
       rescue URI::InvalidURIError
         nil
+      end
+
+      # "https:/rooms/1" parses as HTTPS with no host at all, and a browser
+      # resolves both that and our own hostname against the origin Campfire is
+      # served from.
+      def elsewhere?(host)
+        host.present? && !host.casecmp?(Current.request_host.to_s)
       end
   end
 
