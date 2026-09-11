@@ -1,5 +1,5 @@
 import { post } from "@rails/request.js"
-import { truncateString } from "helpers/string_helpers"
+import { escapeHTML, truncateString } from "helpers/string_helpers"
 
 const UNFURLED_TWITTER_AVATAR_CSS_CLASS = "cf-twitter-avatar"
 const TWITTER_AVATAR_URL_PREFIX = "https://pbs.twimg.com/profile_images"
@@ -68,7 +68,7 @@ export default class OpengraphEmbedOperation {
           <div class="og-embed__description">${truncateString(embed.description, 560)}</div>
         </div>
         <div class="og-embed__image">
-          <img src="${embed.image}" class="image" alt="" />
+          <img src="${escapeHTML(embed.image)}" class="image" alt="" />
         </div>
       </div>
     </actiontext-opengraph-embed>`
