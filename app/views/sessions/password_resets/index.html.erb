@@ -1,0 +1,30 @@
+<% @page_title = "Reset password" %>
+<% turbo_page_requires_reload %>
+
+<section class="txt-align-center">
+  <div class="panel <%= "shake" if flash[:alert] %>">
+    <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
+
+    <%= form_with url: session_password_resets_url, class: "flex flex-column gap" do |form| %>
+      <fieldset class="flex flex-column gap center-block upad">
+        <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
+
+        <div>Enter your email to receive reset password link</div>
+
+        <div class="flex align-center gap">
+          <%= translation_button(:email_address) %>
+          <label class="flex align-center gap input input--actor txt-large">
+            <%= form.email_field :email_address, required: true, class: "input", autofocus: true, autocomplete: "username", placeholder: "Enter your email address", value: params[:email_address] %>
+            <%= image_tag "email.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+          </label>
+        </div>
+        <%= form.button class: "btn btn--reversed center txt-large", type: "submit", name: "reset_password_email" do %>
+          <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
+          <span class="for-screen-reader">Email reset password link</span>
+        <% end %>
+      </fieldset>
+    <% end %>
+  </div>
+
+  <%= render "accounts/help_contact" %>
+</section>

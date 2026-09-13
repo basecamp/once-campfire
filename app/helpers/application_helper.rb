@@ -35,6 +35,17 @@ module ApplicationHelper
     end
   end
 
+  def smtp_enabled?
+    Rails.application.config.respond_to?(:feature_enable_smtp) &&
+    Rails.application.config.feature_enable_smtp.present? &&
+    Rails.application.config.action_mailer.smtp_settings.present? &&
+    Rails.application.config.action_mailer.smtp_settings[:address].present? &&
+    Rails.application.config.action_mailer.smtp_settings[:port].present? &&
+    Rails.application.config.action_mailer.smtp_settings[:domain].present? &&
+    Rails.application.config.action_mailer.smtp_settings[:user_name].present? &&
+    Rails.application.config.action_mailer.smtp_settings[:password].present?
+  end
+
   private
     def admin_body_class
       "admin" if Current.user&.can_administer?
