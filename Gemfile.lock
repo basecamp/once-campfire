@@ -379,6 +379,8 @@ GEM
     sqlite3 (2.9.6-x86_64-linux-gnu)
     stimulus-rails (1.3.4)
       railties (>= 6.0.0)
+    streamio-ffmpeg (3.0.2)
+      multi_json (~> 1.8)
     stringio (3.1.8)
     thor (1.4.0)
     thruster (0.1.23-aarch64-linux)
@@ -448,6 +450,7 @@ DEPENDENCIES
   sentry-ruby
   sqlite3
   stimulus-rails
+  streamio-ffmpeg
   surfguard!
   thruster
   turbo-rails!
