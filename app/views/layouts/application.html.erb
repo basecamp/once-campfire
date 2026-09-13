@@ -22,7 +22,7 @@
     <%= tag.link rel: "apple-touch-icon", href: fresh_account_logo_path %>
 
     <%= stylesheet_link_tag :all, "data-turbo-track": "reload" %>
-    <%= custom_styles_tag %>
+    <%= tag.link rel: "stylesheet", href: fresh_custom_styles_path, data: { turbo_track: "reload" } %>
 
     <%= javascript_importmap_tags %>
 
