@@ -1,8 +1,8 @@
 GIT
   remote: https://github.com/basecamp/surfguard.git
-  revision: 910be917fd0ab782c5ea939698d44f26694a501d
+  revision: 59e278c01a537755f22791429051891949231ead
   specs:
-    surfguard (0.1.0)
+    surfguard (0.2.0)
 
 GIT
   remote: https://github.com/hotwired/turbo-rails.git
