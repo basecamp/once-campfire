@@ -8,7 +8,7 @@
           <span class="for-screen-reader"><%= Current.user.name %></span>
         </figure>
 
-        <%= form.text_field :content, id: nil, autofocus: true, autocomplete: "off", autocorrect: "off", maxlength: 16,
+        <%= form.text_field :content, id: nil, autofocus: true, autocomplete: "off", autocorrect: "off", maxlength: Boost::MAX_CONTENT_LENGTH,
               required: true, pattern: /\S+.*/, data: { boost_form_target: "input" }, class: "input input--boost txt-small" %>
       </label>
 
