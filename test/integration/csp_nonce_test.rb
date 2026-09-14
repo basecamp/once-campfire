@@ -81,6 +81,29 @@ class CspNonceTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "public cacheable responses carry neither the policy nor the nonce cookie" do
+    sign_in :david
+    blob = ActiveStorage::Blob.create_and_upload!(io: file_fixture("moon.jpg").open, filename: "moon.jpg", content_type: "image/jpeg")
+    get rails_blob_path(blob)
+    disk_blob_url = response.location
+
+    [
+      qr_code_path(Base64.urlsafe_encode64("http://example.com")),
+      account_logo_path,
+      user_avatar_path(users(:kevin).avatar_token),
+      disk_blob_url
+    ].each do |path|
+      cookies.delete CSP::Nonce::COOKIE
+
+      get path
+
+      assert_response :success
+      assert response.cache_control[:public], "#{path} is expected to be publicly cacheable"
+      assert_nil response.headers["Content-Security-Policy-Report-Only"], "#{path} must not carry the policy"
+      assert_nil cookies[CSP::Nonce::COOKIE], "#{path} must not set the nonce cookie"
+    end
+  end
+
   test "directives default to :self only when no ENV extras are set" do
     with_env "CSP_EXTRA_FRAME_SRC" => nil, "CSP_EXTRA_IMG_SRC" => nil do
       header = ActionDispatch::ContentSecurityPolicy.new { |p| CSP.apply(p) }.build

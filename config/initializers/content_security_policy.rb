@@ -20,6 +20,12 @@
 # Campfire sets no per-session verification cookie, so the lightweight
 # nonce_id cookie — set on first visit, present for every session including
 # unauthenticated ones — is the sole identifier.
+#
+# The generator runs for every response that carries the policy, so the cookie
+# write would otherwise land on public, shared-cacheable responses (QR codes,
+# logos, avatars, disk-served blobs) where a cache could replay one client's
+# identifier and nonce to others. Those endpoints opt out of the policy with
+# `content_security_policy false`; the nonce is only meaningful on documents.
 module CSP
   module Nonce
     COOKIE = "campfire_csp_nonce_id"
