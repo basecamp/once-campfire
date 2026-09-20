@@ -24,10 +24,10 @@ class ActionTextAttachmentTest < ActiveSupport::TestCase
   end
 
   test "lookup invalid sgid for an attachable requiring a valid sgid" do
-    # Make room instance attachable for testing purposes
-    room = rooms(:pets).tap { |r| r.extend ActionText::Attachable }
-
-    message, signature = rooms(:pets).attachable_sgid.split("--")
+    # A Room is not attachable; mint the sgid an attachable would carry
+    # (`ActionText::Attachable#attachable_sgid` is exactly this call) so
+    # the lookup is exercised on a signature that does not verify.
+    message, signature = rooms(:pets).to_sgid(expires_in: nil, for: ActionText::Attachable::LOCATOR_NAME).to_s.split("--")
 
     html = %Q(<action-text-attachment sgid="#{message}--invalid"></action-text-attachment>)
     node = ActionText::Fragment.wrap(html).find_all(ActionText::Attachment.tag_name).first
