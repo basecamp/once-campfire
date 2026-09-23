@@ -28,9 +28,11 @@ class ActionText::AttachmentTest < ActiveSupport::TestCase
   end
 
   test "from_node with an invalid SGID" do
-    room = rooms(:pets).tap { |r| r.extend ActionText::Attachable }
+    # A Room is not attachable; mint the sgid an attachable would carry
+    # (`ActionText::Attachable#attachable_sgid` is exactly this call).
+    sgid = rooms(:pets).to_sgid(expires_in: nil, for: ActionText::Attachable::LOCATOR_NAME).to_s
 
-    html = %Q(<action-text-attachment sgid="#{room.attachable_sgid}invalid"></action-text-attachment>)
+    html = %Q(<action-text-attachment sgid="#{sgid}invalid"></action-text-attachment>)
     node = ActionText::Fragment.wrap(html).find_all(ActionText::Attachment.tag_name).first
 
     attachment = ActionText::Attachment.from_node(node)
