@@ -19,12 +19,21 @@ class MessagesController < ApplicationController
 
   def create
     set_room
-    @message = @room.messages.create_with_attachment!(message_params)
+    attributes = transcoded_message_params
+    @message = @room.messages.create_with_attachment!(attributes)
 
     @message.broadcast_create
     deliver_webhooks_to_bots
+  rescue VideoTranscoder::TranscodeError
+    if request.format.json?
+      head :unprocessable_content
+    else
+      redirect_to root_url, alert: "Video attachment could not be processed"
+    end
   rescue ActiveRecord::RecordNotFound
     render action: :room_not_found
+  ensure
+    VideoTranscoder.cleanup(attributes&.[](:attachment))
   end
 
   def show
@@ -73,6 +82,14 @@ class MessagesController < ApplicationController
 
     def message_params
       params.require(:message).permit(:body, :attachment, :client_message_id)
+    end
+
+    def transcoded_message_params
+      attributes = message_params
+      if attributes[:attachment]
+        attributes[:attachment] = VideoTranscoder.call(attributes[:attachment])
+      end
+      attributes
     end
 
 
