@@ -2,6 +2,7 @@ class Accounts::LogosController < ApplicationController
   include ActiveStorage::Streaming, ActionView::Helpers::AssetUrlHelper
 
   allow_unauthenticated_access only: :show
+  content_security_policy false, only: :show
   before_action :ensure_can_administer, only: :destroy
 
   def show
