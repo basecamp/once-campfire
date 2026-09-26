@@ -196,13 +196,14 @@ action-text-attachment[content-type~="application/vnd.actiontext.opengraph-embed
     color: var(--color-link);
   }
 
-  ul,
+  /* The composer's mention menu is a list inside the editor too, and keeps Lexxy's own spacing */
+  ul:not(.lexxy-prompt-menu),
   ol {
     margin: 0 !important;
     padding: 0 !important;
   }
 
-  li {
+  li:not(.lexxy-prompt-menu__item) {
     margin: 0 0 0 var(--inline-space-double) !important;
     padding: 0 !important;
   }
