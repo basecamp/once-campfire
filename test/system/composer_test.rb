@@ -29,6 +29,27 @@ class ComposerTest < ApplicationSystemTestCase
     assert_composer_empty
   end
 
+  test "an unsent message is kept as a draft while hopping between rooms" do
+    type_in_composer "Still writing this"
+
+    join_room rooms(:hq)
+    assert_composer_empty
+
+    type_in_composer "And this one too"
+
+    join_room rooms(:designers)
+    assert_composer_text "Still writing this"
+
+    press_in_composer :enter
+    assert_message_text "Still writing this"
+
+    join_room rooms(:hq)
+    assert_composer_text "And this one too"
+
+    join_room rooms(:designers)
+    assert_composer_empty
+  end
+
   test "markdown strikethrough survives sanitization" do
     type_in_composer "Hello ~~Claude~~ World"
     press_in_composer :enter
