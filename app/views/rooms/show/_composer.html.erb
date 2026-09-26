@@ -25,7 +25,7 @@
                         "permitted-attachment-types": "application/vnd.campfire.mention application/vnd.actiontext.opengraph-embed",
                         data: {
                           controller: "unfurl",
-                          action: "#{rich_text_data_actions} lexxy:insert-link->unfurl#unfurl",
+                          action: "#{rich_text_data_actions} lexxy:change->composer#saveDraft lexxy:insert-link->unfurl#unfurl",
                           composer_target: "text" } do %>
                     <%= mention_prompt_tag room %>
                   <% end %>

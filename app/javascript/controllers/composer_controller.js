@@ -12,8 +12,18 @@ export default class extends Controller {
   #files = []
 
   connect() {
+    this.#restoreDraft()
+
     if (!this.#usingTouchDevice) {
       onNextEventLoopTick(() => this.textTarget.focus())
+    }
+  }
+
+  saveDraft() {
+    if (this.textTarget.isBlank) {
+      localStorage.removeItem(this.#draftKey)
+    } else {
+      localStorage.setItem(this.#draftKey, this.textTarget.value)
     }
   }
 
@@ -107,6 +117,19 @@ export default class extends Controller {
     this.fieldsTarget.disabled = true
   }
 
+  #restoreDraft() {
+    const draft = localStorage.getItem(this.#draftKey)
+
+    if (draft) {
+      this.textTarget.value = draft
+      this.textTarget.selection.placeCursorAtTheEnd()
+    }
+  }
+
+  get #draftKey() {
+    return `composer-draft-${this.roomIdValue}`
+  }
+
   get #usingTouchDevice() {
     return 'ontouchstart' in window || navigator.maxTouchPoints > 0 || navigator.msMaxTouchPoints > 0;
   }
@@ -158,6 +181,7 @@ export default class extends Controller {
 
   #reset() {
     this.textTarget.value = ""
+    localStorage.removeItem(this.#draftKey)
   }
 
   #updateFileList() {
