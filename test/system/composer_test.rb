@@ -103,15 +103,15 @@ class ComposerTest < ApplicationSystemTestCase
     assert_equal [ users(:jason) ], message.reload.mentionees
   end
 
-  test "pasting a table keeps its text" do
+  test "pasting a table sends it as a table" do
     paste_in_composer "Name Points\nJason 10", html: "<table><tr><th>Name</th><th>Points</th></tr><tr><td>Jason</td><td>10</td></tr></table>"
 
     assert_selector "#composer lexxy-editor table"
 
     click_send_button
 
-    assert_message_text /Name Points\s*Jason 10/
-    assert_no_selector last_message_selector("table")
+    assert_selector last_message_selector("table th"), text: "Name"
+    assert_selector last_message_selector("table td"), text: "10"
   end
 
   test "replying quotes the original message with attribution" do

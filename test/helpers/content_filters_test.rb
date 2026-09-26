@@ -158,6 +158,16 @@ class ContentFiltersTest < ActionView::TestCase
     assert_match /<action-text-attachment sgid="#{users(:david).attachable_sgid}"/, filtered
   end
 
+  test "message with a table keeps the table" do
+    body = "<figure class=\"lexxy-content__table-wrapper\"><table><tbody><tr><th><p>Name</p></th></tr><tr><td><p>Jason</p></td></tr></tbody></table></figure>"
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0016", creator: users(:jason)
+
+    filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body).to_html
+
+    assert_equal body, filtered
+    assert_match %r{<table>.*<th><p>Name</p></th>.*<td><p>Jason</p></td>}m, message_presentation(message)
+  end
+
   test "message with a mention attachment" do
     message = Message.create! room: rooms(:pets), body: "<div>Hey #{mention_attachment_for(:david)}</div>", creator: users(:jason)
 
