@@ -18,7 +18,8 @@ GIT_SHA = `git rev-parse HEAD`.strip
 MANUAL_NOTES = ARGV.delete("--notes")
 VERSION = ARGV[0]
 
-DOCKER_IMAGE_NAME = "registry.once.com/campfire"
+DOCKER_REGISTRY = "registry.once.com"
+DOCKER_IMAGE_NAME = "#{DOCKER_REGISTRY}/campfire"
 DOCKER_LATEST_IMAGE_NAME = [ DOCKER_IMAGE_NAME, :latest ].join(":")
 DOCKER_TAGGED_IMAGE_NAME = [ DOCKER_IMAGE_NAME, GIT_SHA ].join(":")
 
@@ -45,6 +46,18 @@ end
 def announcing(message)
   puts "\n\e[1;36m#{message}\e[0m"
   yield
+end
+
+announcing "Checking #{DOCKER_REGISTRY} login..." do
+  unless system "docker", "manifest", "inspect", DOCKER_LATEST_IMAGE_NAME, out: File::NULL, err: File::NULL
+    abort <<~MESSAGE
+      Not logged in to #{DOCKER_REGISTRY}. Run:
+
+        docker login #{DOCKER_REGISTRY}
+
+      The credentials are in the "chatinabox" entry in 1Password.
+    MESSAGE
+  end
 end
 
 on(:local) do
