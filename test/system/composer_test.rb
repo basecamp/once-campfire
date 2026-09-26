@@ -86,6 +86,31 @@ class ComposerTest < ApplicationSystemTestCase
     assert_equal [ users(:jason) ], message.reload.mentionees
   end
 
+  test "editing a formatted trix message keeps its formatting" do
+    body = %(<div>Hello <strong>bold</strong> <em>italic</em> <del>gone</del> <a href="https://example.com/">link</a><br>second line</div><h1>Heading</h1><blockquote>quoted</blockquote><pre>line 1\nline 2</pre><ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>)
+    message = Message.create! room: rooms(:designers), body: body, client_message_id: "trix-formatted", creator: users(:jz)
+
+    join_room rooms(:designers)
+
+    within_message message do
+      reveal_message_actions
+      find(".message__edit-btn").click
+      assert_edit_editor_text "Heading"
+      click_on "Save changes"
+    end
+
+    assert_selector last_message_selector("strong"), text: "bold"
+    assert_selector last_message_selector("em"), text: "italic"
+    assert_selector last_message_selector("s, del"), text: "gone"
+    assert_selector last_message_selector(%(a[href="https://example.com/"])), text: "link"
+    assert_selector last_message_selector("h1"), text: "Heading"
+    assert_selector last_message_selector("blockquote"), text: "quoted"
+    assert_selector last_message_selector("pre"), text: /line 1\s*line 2/
+    assert_selector last_message_selector("ul li"), text: "two"
+    assert_selector last_message_selector("ol li"), text: "first"
+    assert_message_text /Hello bold italic gone link\s*second line/
+  end
+
   test "editing a message whose mention was saved under Trix keeps the mention" do
     body = %(<div>Hey <action-text-attachment sgid="#{users(:jason).attachable_sgid}" content-type="application/octet-stream"></action-text-attachment></div>)
     message = Message.create! room: rooms(:designers), body: body, client_message_id: "trix-edited", creator: users(:jz)

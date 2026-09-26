@@ -158,6 +158,14 @@ class ContentFiltersTest < ActionView::TestCase
     assert_match /<action-text-attachment sgid="#{users(:david).attachable_sgid}"/, filtered
   end
 
+  test "message with formatting saved under Trix renders unchanged" do
+    body = %(<div>Hello <strong>bold</strong> <em>it</em> <del>gone</del> <a href="https://example.com/">link</a><br>second line</div><h1>Heading</h1><blockquote>quoted</blockquote><pre>line 1\nline 2</pre><ul><li>one</li></ul><ol><li>first</li></ol>)
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0021", creator: users(:jason)
+
+    assert_equal body, ContentFilters::TextMessagePresentationFilters.apply(message.body.body).to_html
+    assert_includes message_presentation(message), body
+  end
+
   test "message with a table keeps the table" do
     body = "<figure class=\"lexxy-content__table-wrapper\"><table><tbody><tr><th><p>Name</p></th></tr><tr><td><p>Jason</p></td></tr></tbody></table></figure>"
     message = Message.create! room: rooms(:pets), body: body, client_message_id: "0016", creator: users(:jason)
