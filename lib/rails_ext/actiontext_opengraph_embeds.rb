@@ -20,7 +20,7 @@ class ActionText::Attachment::OpengraphEmbed
       # and content-type, so newer attachments carry the details in their
       # content markup instead.
       def attributes_from_node(node)
-        if node["href"].present?
+        if node["filename"].present?
           {
             href: web_url(node["href"]),
             url: web_url(node["url"]),

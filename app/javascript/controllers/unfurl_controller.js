@@ -1,7 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { post } from "@rails/request.js"
-import { truncateString } from "helpers/string_helpers"
-import { escapeHTML } from "helpers/dom_helpers"
+import { escapeHTML, truncateString } from "helpers/string_helpers"
 
 const OPENGRAPH_EMBED_CONTENT_TYPE = "application/vnd.actiontext.opengraph-embed"
 
