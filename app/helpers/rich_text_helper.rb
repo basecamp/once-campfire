@@ -1,6 +1,4 @@
 module RichTextHelper
-  LEGACY_EMBED_SELECTOR = "action-text-attachment[content-type='#{ActionText::Attachment::OpengraphEmbed::OPENGRAPH_EMBED_CONTENT_TYPE}'][href]"
-
   def rich_text_data_actions
     # submitByKeyboard runs in the capture phase so it can submit on Enter
     # before the editor turns the keystroke into a newline
@@ -12,14 +10,22 @@ module RichTextHelper
       "remote-filtering": true, "empty-results": "No matches"
   end
 
-  # Trix-era opengraph embeds carry their details as node attributes, which
-  # the editor doesn't round-trip. Rendering them into the content attribute
-  # lets the editor preserve them like any embed it created itself.
+  # The editor keeps an attachment's content as it finds it, so every
+  # attachment is rebuilt from its attachable before editing: a Trix-era
+  # embed carries its details as node attributes the editor doesn't
+  # round-trip, a mention edited under Trix carries the generic content type
+  # the editor doesn't permit, and a hand-written embed carries whatever
+  # markup the author put there.
   def editable_body(message)
     fragment = ActionText::Fragment.wrap(message.body.body_before_type_cast)
 
-    transformed = fragment.replace(LEGACY_EMBED_SELECTOR) do |node|
-      node.tap { |n| n["content"] = render_action_text_attachment(ActionText::Attachment.from_node(n)) }
+    transformed = fragment.replace(ActionText::Attachment.tag_name) do |node|
+      attachment = ActionText::Attachment.from_node(node)
+
+      node.tap do |n|
+        n["content-type"] = attachment.attachable.attachable_content_type
+        n["content"] = render_action_text_attachment(attachment)
+      end
     end
 
     ActionText::RichText.new(body: transformed.to_html)

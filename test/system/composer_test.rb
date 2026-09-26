@@ -86,6 +86,34 @@ class ComposerTest < ApplicationSystemTestCase
     assert_equal [ users(:jason) ], message.reload.mentionees
   end
 
+  test "editing a message whose mention was saved under Trix keeps the mention" do
+    body = %(<div>Hey <action-text-attachment sgid="#{users(:jason).attachable_sgid}" content-type="application/octet-stream"></action-text-attachment></div>)
+    message = Message.create! room: rooms(:designers), body: body, client_message_id: "trix-edited", creator: users(:jz)
+
+    join_room rooms(:designers)
+
+    within_message message do
+      reveal_message_actions
+      find(".message__edit-btn").click
+      assert_edit_editor_text "Jason"
+      click_on "Save changes"
+    end
+
+    assert_selector last_message_selector(".mention"), text: "Jason"
+    assert_equal [ users(:jason) ], message.reload.mentionees
+  end
+
+  test "pasting a table keeps its text" do
+    paste_in_composer "Name Points\nJason 10", html: "<table><tr><th>Name</th><th>Points</th></tr><tr><td>Jason</td><td>10</td></tr></table>"
+
+    assert_selector "#composer lexxy-editor table"
+
+    click_send_button
+
+    assert_message_text /Name Points\s*Jason 10/
+    assert_no_selector last_message_selector("table")
+  end
+
   test "replying quotes the original message with attribution" do
     within_message messages(:third) do
       reveal_message_actions

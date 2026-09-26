@@ -31,13 +31,14 @@ module RichTextEditorHelper
     composer_editor.send_keys :tab
   end
 
-  def paste_in_composer(text)
+  def paste_in_composer(text, html: nil)
     composer_editor.click
 
-    page.execute_script(<<~JS, text)
+    page.execute_script(<<~JS, text, html)
       const content = document.querySelector("#composer lexxy-editor .lexxy-editor__content")
       const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: new DataTransfer() })
       event.clipboardData.setData("text/plain", arguments[0])
+      if (arguments[1]) event.clipboardData.setData("text/html", arguments[1])
       content.dispatchEvent(event)
     JS
   end
