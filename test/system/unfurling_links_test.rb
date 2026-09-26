@@ -16,29 +16,18 @@ class UnfurlingLinksTest < ApplicationSystemTestCase
   end
 
   test "a quote in the opengraph image URL cannot add attributes to the preview" do
-    paste_into_composer @website.page_url
+    paste_in_composer @website.page_url
 
-    assert_selector "trix-editor .og-embed__title", text: "A normal looking link"
+    assert_selector "#composer lexxy-editor .og-embed__title", text: "A normal looking link"
 
     assert_equal @website.image_url, preview_image_attributes["src"]
     assert_empty preview_image_attributes.keys - %w[ src class alt ]
   end
 
   private
-    def paste_into_composer(url)
-      page.execute_script(<<~JS, url)
-        const editor = document.querySelector("trix-editor")
-        editor.focus()
-
-        const clipboardData = new DataTransfer()
-        clipboardData.setData("text/plain", arguments[0])
-        editor.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }))
-      JS
-    end
-
     def preview_image_attributes
       page.evaluate_script(<<~JS)
-        Object.fromEntries(Array.from(document.querySelector("trix-editor .og-embed__image img").attributes, attribute => [ attribute.name, attribute.value ]))
+        Object.fromEntries(Array.from(document.querySelector("#composer lexxy-editor .og-embed__image img").attributes, attribute => [ attribute.name, attribute.value ]))
       JS
     end
 
