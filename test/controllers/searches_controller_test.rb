@@ -20,6 +20,24 @@ class SearchesControllerTest < ActionDispatch::IntegrationTest
     assert_select ".message", text: /Hello world!/
   end
 
+  test "operator words are searched for as words" do
+    rooms(:designers).messages.create! body: "Salt and pepper", client_message_id: "operators", creator: users(:david)
+
+    get searches_url, params: { q: "salt AND" }
+
+    assert_response :success
+    assert_select ".message", text: /Salt and pepper/
+  end
+
+  test "searching for an operator word alone doesn't fail" do
+    %w[ AND OR NOT ].each do |word|
+      get searches_url, params: { q: word }
+
+      assert_response :success
+      assert_select ".message", count: 0
+    end
+  end
+
   test "unreachable messages are not found" do
     memberships(:david_designers).destroy!
 
