@@ -1,0 +1,170 @@
+{
+  "room_1": {
+    "avg_bytes": 463654,
+    "conc": 1,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 39.327,
+      "mean_ms": 7.88,
+      "n": 380,
+      "p50_ms": 7.379,
+      "p90_ms": 8.839,
+      "p99_ms": 17.183
+    },
+    "ok": 380,
+    "path": "/rooms/486777696",
+    "rps": 126.5,
+    "secs": 3.0,
+    "statuses": {
+      "200": 380
+    }
+  },
+  "room_16": {
+    "avg_bytes": 463654,
+    "conc": 16,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 244.223,
+      "mean_ms": 176.13,
+      "n": 283,
+      "p50_ms": 184.831,
+      "p90_ms": 199.807,
+      "p99_ms": 224.255
+    },
+    "ok": 283,
+    "path": "/rooms/486777696",
+    "rps": 89.1,
+    "secs": 3.18,
+    "statuses": {
+      "200": 283
+    }
+  },
+  "messages_1": {
+    "avg_bytes": 430965,
+    "conc": 1,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 7.603,
+      "mean_ms": 3.87,
+      "n": 773,
+      "p50_ms": 3.621,
+      "p90_ms": 4.847,
+      "p99_ms": 5.731
+    },
+    "ok": 773,
+    "path": "/rooms/486777696/messages?before=933434569",
+    "rps": 257.6,
+    "secs": 3.0,
+    "statuses": {
+      "200": 773
+    }
+  },
+  "messages_16": {
+    "avg_bytes": 430965,
+    "conc": 16,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 86.143,
+      "mean_ms": 59.34,
+      "n": 816,
+      "p50_ms": 56.703,
+      "p90_ms": 72.831,
+      "p99_ms": 76.159
+    },
+    "ok": 816,
+    "path": "/rooms/486777696/messages?before=933434569",
+    "rps": 267.6,
+    "secs": 3.05,
+    "statuses": {
+      "200": 816
+    }
+  },
+  "sidebar_1": {
+    "avg_bytes": 31328,
+    "conc": 1,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 8.823,
+      "mean_ms": 3.87,
+      "n": 776,
+      "p50_ms": 3.813,
+      "p90_ms": 4.515,
+      "p99_ms": 5.335
+    },
+    "ok": 776,
+    "path": "/users/me/sidebar",
+    "rps": 258.5,
+    "secs": 3.0,
+    "statuses": {
+      "200": 776
+    }
+  },
+  "sidebar_16": {
+    "avg_bytes": 31328,
+    "conc": 16,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 157.311,
+      "mean_ms": 107.55,
+      "n": 456,
+      "p50_ms": 128.703,
+      "p90_ms": 140.543,
+      "p99_ms": 152.575
+    },
+    "ok": 456,
+    "path": "/users/me/sidebar",
+    "rps": 147.3,
+    "secs": 3.1,
+    "statuses": {
+      "200": 456
+    }
+  },
+  "search_1": {
+    "avg_bytes": 165435,
+    "conc": 1,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 8.535,
+      "mean_ms": 4.74,
+      "n": 633,
+      "p50_ms": 4.591,
+      "p90_ms": 5.467,
+      "p99_ms": 7.335
+    },
+    "ok": 633,
+    "path": "/searches?q=coffee",
+    "rps": 211.0,
+    "secs": 3.0,
+    "statuses": {
+      "200": 633
+    }
+  },
+  "search_16": {
+    "avg_bytes": 165435,
+    "conc": 16,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 168.319,
+      "mean_ms": 112.33,
+      "n": 436,
+      "p50_ms": 121.919,
+      "p90_ms": 153.727,
+      "p99_ms": 164.223
+    },
+    "ok": 436,
+    "path": "/searches?q=coffee",
+    "rps": 140.9,
+    "secs": 3.1,
+    "statuses": {
+      "200": 436
+    }
+  }
+}

@@ -54,7 +54,7 @@
   </div>
 
   <%= search_results_tag do %>
-    <%= render @messages %>
+    <%= render partial: "messages/message", collection: @messages, cached: true %>
   <% end %>
 </div>
 

@@ -1,0 +1,44 @@
+{
+  "sidebar_16": {
+    "avg_bytes": 31328,
+    "conc": 16,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 144.639,
+      "mean_ms": 89.29,
+      "n": 1797,
+      "p50_ms": 73.791,
+      "p90_ms": 129.791,
+      "p99_ms": 137.343
+    },
+    "ok": 1797,
+    "path": "/users/me/sidebar",
+    "rps": 178.7,
+    "secs": 10.06,
+    "statuses": {
+      "200": 1797
+    }
+  },
+  "search_16": {
+    "avg_bytes": 165435,
+    "conc": 16,
+    "errors": 0,
+    "gzip": false,
+    "latency": {
+      "max_ms": 173.183,
+      "mean_ms": 100.01,
+      "n": 1606,
+      "p50_ms": 84.415,
+      "p90_ms": 146.303,
+      "p99_ms": 163.071
+    },
+    "ok": 1606,
+    "path": "/searches?q=coffee",
+    "rps": 159.5,
+    "secs": 10.07,
+    "statuses": {
+      "200": 1606
+    }
+  }
+}
