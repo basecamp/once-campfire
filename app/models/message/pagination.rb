@@ -49,7 +49,7 @@ module Message::Pagination
     end
 
     def paged?
-      count > PAGE_SIZE
+      offset(PAGE_SIZE).exists?
     end
   end
 end
