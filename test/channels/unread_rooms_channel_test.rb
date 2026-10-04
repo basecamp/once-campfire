@@ -16,7 +16,9 @@ class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
     assert_not direct.users.include?(users(:jz)), "jz must be an outsider for this test to mean anything"
 
     broadcasts = capture_unread_broadcasts_for(users(:jz)) do
-      direct.messages.create!(body: "Private", creator: users(:kevin), client_message_id: "outsider").broadcast_create
+      perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
+        direct.messages.create!(body: "Private", creator: users(:kevin), client_message_id: "outsider").broadcast_create
+      end
     end
 
     assert_empty broadcasts
@@ -26,7 +28,9 @@ class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
     direct = rooms(:bender_and_kevin)
 
     broadcasts = capture_unread_broadcasts_for(users(:kevin)) do
-      direct.messages.create!(body: "Private", creator: users(:bender), client_message_id: "member").broadcast_create
+      perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
+        direct.messages.create!(body: "Private", creator: users(:bender), client_message_id: "member").broadcast_create
+      end
     end
 
     assert_equal [ direct.id ], broadcasts.collect { |broadcast| broadcast["roomId"] }

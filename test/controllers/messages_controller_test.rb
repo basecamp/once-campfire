@@ -60,9 +60,21 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
   test "creating a message broadcasts unread room to each member" do
     @room.users.each do |member|
       assert_broadcasts UnreadRoomsChannel.stream_name_for(member.id), 1 do
-        post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one #{member.id}", client_message_id: member.id } }
+        perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
+          post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one #{member.id}", client_message_id: member.id } }
+        end
       end
     end
+  end
+
+  test "creating a message leaves the unread fanout to a job" do
+    member = @room.users.excluding(users(:david)).first
+
+    assert_no_broadcasts UnreadRoomsChannel.stream_name_for(member.id) do
+      post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+    end
+
+    assert_enqueued_with job: Message::BroadcastUnreadRoomJob, args: [ Message.last ]
   end
 
   test "creating a message doesn't broadcast unread room to non-members" do
@@ -71,7 +83,9 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
 
     outsiders.each do |outsider|
       assert_no_broadcasts UnreadRoomsChannel.stream_name_for(outsider.id) do
-        post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+        perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
+          post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+        end
       end
     end
   end

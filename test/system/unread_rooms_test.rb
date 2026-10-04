@@ -15,8 +15,11 @@ class UnreadRoomsTest < ApplicationSystemTestCase
     using_session("Kevin") do
       sign_in "kevin@37signals.com"
       join_room designers_room
-      send_message("Hello!!")
-      send_message("Talking to myself?")
+
+      perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
+        send_message("Hello!!")
+        send_message("Talking to myself?")
+      end
     end
 
     assert_room_unread designers_room
