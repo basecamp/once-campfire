@@ -14,11 +14,11 @@ class Message < ApplicationRecord
   scope :ordered, -> { order(:created_at) }
   scope :with_creator, -> { preload(creator: :avatar_attachment) }
   scope :with_attachment_details, -> {
-    with_rich_text_body_and_embeds
-    with_attached_attachment
+    with_rich_text_body_and_embeds.with_attached_attachment
       .includes(attachment_blob: :variant_records)
   }
-  scope :with_boosts, -> { includes(boosts: :booster) }
+  scope :with_boosts, -> { includes(boosts: { booster: :avatar_attachment }) }
+  scope :with_presentation, -> { with_creator.with_attachment_details.with_boosts.preload(:room) }
 
   def plain_text_body
     body.to_plain_text.presence || attachment&.filename&.to_s || ""

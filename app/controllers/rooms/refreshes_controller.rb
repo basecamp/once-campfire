@@ -4,8 +4,8 @@ class Rooms::RefreshesController < ApplicationController
   before_action :set_last_updated_at
 
   def show
-    @new_messages = @room.messages.with_creator.page_created_since(@last_updated_at)
-    @updated_messages = @room.messages.without(@new_messages).with_creator.page_updated_since(@last_updated_at)
+    @new_messages = @room.messages.with_presentation.page_created_since(@last_updated_at)
+    @updated_messages = @room.messages.without(@new_messages).with_presentation.page_updated_since(@last_updated_at)
   end
 
   private
