@@ -49,6 +49,25 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 > that people have someone to contact if they need help with their account. If that bothers you, put in any
 > email address you want and create yourself a new admin account.
 
+## Other implementations
+
+Campfire also has implementations in Elixir, Go and Rust:
+
+| HTTP workload (requests/sec) | Ruby (Rails) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
+|---|---:|---:|---:|---:|
+| Room page | 216 | 722 | 3,860 | 36,260 |
+| Messages page | 384 | 1,053 | 5,573 | 40,872 |
+| Sidebar | 503 | 1,275 | 19,753 | 34,672 |
+| Search | 380 | 1,156 | 7,053 | 33,299 |
+| Post a message | 267 | 801 | 4,767 | 6,896 |
+
+Medians of two runs per implementation on October 4, 2026: production images, gzip,
+identical seed data, 16 concurrent clients and four pinned hardware threads per app on an
+AMD Ryzen AI MAX+ 395. Versions were measured in separate sessions; Ruby was measured
+before the recent rendering optimizations. Results apply to these implementations on this
+machine. See the [full report](https://github.com/basecamp/once-campfire-elixir/blob/main/bench/results/ruby-elixir-go-rust-20261004/report.md)
+for revisions, ranges, memory and WebSocket benchmarks.
+
 ## Development
 
 You are welcome - and encouraged - to modify Campfire to your liking.
