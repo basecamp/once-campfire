@@ -1,4 +1,4 @@
-# Run through compare_message_hot_paths.py against isolated production fixtures.
+# Run through compare_message_hot_paths.rb against isolated production fixtures.
 require "json"
 require "digest"
 require "active_support/testing/time_helpers"
