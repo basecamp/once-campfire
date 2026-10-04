@@ -51,15 +51,15 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 
 ## Other implementations
 
-Campfire also has implementations in Elixir, Go and Rust:
+Campfire also has implementations in Django, Laravel, Elixir, Go and Rust:
 
-| HTTP workload (requests/sec) | Ruby (Rails) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
-|---|---:|---:|---:|---:|
-| Room page | 244 | 722 | 3,860 | 36,260 |
-| Messages page | 424 | 1,053 | 5,573 | 40,872 |
-| Sidebar | 556 | 1,275 | 19,753 | 34,672 |
-| Search | 432 | 1,156 | 7,053 | 33,299 |
-| Post a message | 258 | 801 | 4,767 | 6,896 |
+| HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
+|---|---:|---:|---:|---:|---:|---:|
+| Room page | 242 | 170 | 164 | 722 | 3,860 | 36,260 |
+| Messages page | 402 | 196 | 175 | 1,053 | 5,573 | 40,872 |
+| Sidebar | 541 | 615 | 715 | 1,275 | 19,753 | 34,672 |
+| Search | 424 | 315 | 305 | 1,156 | 7,053 | 33,299 |
+| Post a message | 225 | 154 | 137 | 801 | 4,767 | 6,896 |
 
 Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395,
 with four hardware threads allocated to each app.
