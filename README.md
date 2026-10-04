@@ -61,13 +61,8 @@ Campfire also has implementations in Elixir, Go and Rust:
 | Search | 432 | 1,156 | 7,053 | 33,299 |
 | Post a message | 258 | 801 | 4,767 | 6,896 |
 
-Medians of two runs per implementation on October 4, 2026: production images, gzip,
-identical seed data, 16 concurrent clients and four pinned hardware threads per app on an
-AMD Ryzen AI MAX+ 395. Versions were measured in separate sessions; Ruby was remeasured at
-[`659f957`](https://github.com/basecamp/once-campfire/commit/659f95748a115a360a37db9bf80a5361a560e14f) with the latest rendering optimizations.
-Results apply to these implementations on this machine. See the
-[other implementations' report](https://github.com/basecamp/once-campfire-elixir/blob/main/bench/results/ruby-elixir-go-rust-20261004/report.md)
-for their revisions, ranges, memory and WebSocket benchmarks.
+Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395,
+with four hardware threads allocated to each app.
 
 ## Development
 
