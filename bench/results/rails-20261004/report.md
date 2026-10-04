@@ -31,8 +31,8 @@ These are backend request measurements, not the earlier full deployment comparis
 
 Short three-second sidebar/search contention samples showed regressions. Repeating
 those cases with a three-second warmup and ten-second measurements reversed that
-result; both variants vary with process/JIT/GC scheduling. The raw short and longer
-runs are retained. Treat these percentages as local observations, not capacity promises.
+result; both variants vary with process/JIT/GC scheduling. Treat these percentages
+as local observations, not capacity promises.
 
 ## Request and serialization probes
 
@@ -78,5 +78,5 @@ python3 bench/compare_http.py --baseline PATH --seed SEED --loadgen LOADGEN --pa
 The probes use the cached `campfire-reference:app` image; override `--image` for a
 matching locally built image. Run the request probe first to extract the shared
 compiled assets. The fixture directories are disposable and separate from the seed.
-Raw measurements and metadata are in `balanced/`, `http/`, `http-contention/`
-and `http-summary.json`. Test output is in `tests.txt`.
+The scripts write raw measurements and metadata to the selected output directory.
+Test output is in `tests.txt`.
