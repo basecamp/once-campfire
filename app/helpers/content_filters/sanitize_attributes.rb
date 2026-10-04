@@ -12,8 +12,9 @@ class ContentFilters::SanitizeAttributes < ActionText::Content::Filter
   end
 
   private
-    # Presentation styling relies on class attributes (e.g. unfurled link embeds),
-    # which the standard ActionText set doesn't include.
+    # Presentation styling relies on class attributes (e.g. unfurled link embeds).
+    # The sanitizer's default safe list already permits it, but ActionText lets an
+    # app replace that list wholesale, so keep it explicit.
     EXTRA_ALLOWED_ATTRIBUTES = %w[ class ]
 
     # ActionText::ContentHelper.sanitizer is a single process-wide instance, and

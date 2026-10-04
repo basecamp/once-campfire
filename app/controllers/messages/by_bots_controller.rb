@@ -15,12 +15,16 @@ class Messages::ByBotsController < MessagesController
 
   def create
     super
-    head :created, location: message_url(@message)
+    render :show, status: :created, location: message_url(@message)
   end
 
   def destroy
     super
     head :no_content
+  end
+
+  rescue_from ActiveRecord::RecordInvalid do |error|
+    render json: { errors: error.record.errors.to_hash }, status: :unprocessable_content
   end
 
   private
@@ -54,11 +58,33 @@ class Messages::ByBotsController < MessagesController
       end
     end
 
+    BOT_ACTION_FIELDS = %i[ label value url style background_color text_color icon emoji icon_position icon_only disabled ]
+
     def message_params
       if params[:attachment]
         params.permit(:attachment)
+      elsif request.media_type == "application/json"
+        json_message_params
       else
         { body: raw_request_body }
+      end
+    end
+
+    def json_message_params
+      params.permit(:body).to_h.tap do |attributes|
+        attributes["bot_actions"] = bot_actions_attribute if params.key?(:actions)
+        attributes["bot_action_selection_mode"] = params[:selection_mode] if params.key?(:selection_mode)
+      end
+    end
+
+    # Permitting the whole array would quietly drop anything that isn't a hash of
+    # scalars, so a malformed action would look like a successful edit. Filter each
+    # entry instead and let anything else through to fail validation.
+    def bot_actions_attribute
+      return params[:actions] unless params[:actions].is_a?(Array)
+
+      params[:actions].map do |action|
+        action.is_a?(ActionController::Parameters) ? action.permit(*BOT_ACTION_FIELDS).to_h : action
       end
     end
 end

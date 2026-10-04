@@ -1,4 +1,5 @@
-json.cache! message do
+# The creator is rendered inside this cache, so its own fragment can never bust it. Key on both.
+json.cache! [ message, message.creator ] do
   json.(message, :id)
 
   json.created_at message.created_at.utc
@@ -7,6 +8,9 @@ json.cache! message do
     json.plain_text message.plain_text_body
     json.html message.body.to_s
   end
+
+  json.selection_mode message.bot_action_selection_mode
+  json.actions message.bot_actions
 
   json.creator message.creator, partial: "users/user", as: :user
 

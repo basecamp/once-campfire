@@ -1,6 +1,45 @@
 require "test_helper"
 
 class WebhookTest < ActiveSupport::TestCase
+  test "deliver action" do
+    message = messages(:fourth)
+    message_path = Rails.application.routes.url_helpers.room_at_message_path(message.room, message)
+    bot_messages_path = Rails.application.routes.url_helpers.room_bot_messages_path(message.room, users(:bender).bot_key)
+    request = WebMock.stub_request(:post, webhooks(:bender).url).with do |request|
+      JSON.parse(request.body) == {
+        "type" => "action",
+        "id" => "event-123",
+        "room" => { "id" => message.room.id, "name" => message.room.name, "path" => bot_messages_path },
+        "user" => { "id" => users(:kevin).id, "name" => users(:kevin).name },
+        "message" => { "id" => message.id, "path" => message_path },
+        "action" => { "value" => "deploy:a1b2c3", "selected" => true }
+      }
+    end.to_return(status: 200)
+
+    webhooks(:bender).deliver_action(message, users(:kevin), "deploy:a1b2c3", true, event_id: "event-123")
+
+    assert_requested request
+  end
+
+  test "action delivery raises on an error response" do
+    WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 503)
+
+    assert_raises Webhook::DeliveryError do
+      webhooks(:bender).deliver_action(messages(:fourth), users(:kevin), "deploy", false, event_id: "event-123")
+    end
+  end
+
+  test "action delivery wraps network errors for retry" do
+    [ Errno::ECONNREFUSED, EOFError, SocketError, Net::ReadTimeout, OpenSSL::SSL::SSLError,
+      Net::HTTPBadResponse, Net::ProtocolError, Zlib::BufError ].each do |error|
+      Webhook.any_instance.stubs(:post).raises(error)
+
+      assert_raises Webhook::DeliveryError, "#{error} must be retryable" do
+        webhooks(:bender).deliver_action(messages(:fourth), users(:kevin), "deploy", false, event_id: "event-123")
+      end
+    end
+  end
+
   test "payload" do
     message = messages(:first)
     message_path = Rails.application.routes.url_helpers.room_at_message_path(message.room, message)
@@ -8,6 +47,7 @@ class WebhookTest < ActiveSupport::TestCase
 
     WebMock.stub_request(:post, webhooks(:bender).url).
       with(body: hash_including(
+        type: "message",
         user: { id: message.creator.id, name: message.creator.name },
         room: { id: message.room.id, name: message.room.name, path: bot_messages_path },
         message: { id: message.id, body: { html: "First post!", plain: "First post!" }, path: message_path },
