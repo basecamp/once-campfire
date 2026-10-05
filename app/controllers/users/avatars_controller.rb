@@ -1,6 +1,8 @@
 class Users::AvatarsController < ApplicationController
   include ActiveStorage::Streaming
 
+  content_security_policy false, only: :show
+
   rescue_from(ActiveSupport::MessageVerifier::InvalidSignature) { head :not_found }
 
   def show

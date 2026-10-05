@@ -1,5 +1,6 @@
 class QrCodeController < ApplicationController
   allow_unauthenticated_access
+  content_security_policy false
 
   def show
     url = Base64.urlsafe_decode64(params[:id])
