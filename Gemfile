@@ -60,6 +60,7 @@ end
 group :test do
   gem "capybara"
   gem "mocha"
+  gem "minitest", "< 6"
   gem "selenium-webdriver"
   gem "webmock", require: false
 end
