@@ -102,11 +102,11 @@
       <turbo-frame id="account_users">
         <%= render partial: "accounts/users/user", collection: @administrators, as: :user %>
 
-        <% if @administrators.any? && @members.any? %>
+        <% if @administrators.any? && @page.records.any? %>
           <hr class="separator full-width" style="--border-style: solid">
         <% end %>
 
-        <%= render partial: "accounts/users/user", collection: @members, as: :user %>
+        <%= render partial: "accounts/users/user", collection: @page.records, as: :user %>
         <%= render "accounts/users/next_page_container", page: @page.next_param unless @page.last? %>
       </turbo-frame>
     </menu>
