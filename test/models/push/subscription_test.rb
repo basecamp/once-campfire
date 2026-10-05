@@ -125,6 +125,15 @@ class Push::SubscriptionTest < ActiveSupport::TestCase
     subscription.notification(title: "t", body: "b", path: "/").deliver
   end
 
+  test "the badge defaults to the subscriber's unread room count" do
+    memberships(:david_pets).update! unread_at: Time.current
+    memberships(:david_hq).update! unread_at: Time.current
+    subscription = build_subscription(endpoint: "https://fcm.googleapis.com/fcm/send/abc123")
+
+    WebPush.expects(:payload_send).with { |options| JSON.parse(options[:message]).dig("options", "data", "badge") == 2 }
+    subscription.notification(title: "t", body: "b", path: "/").deliver
+  end
+
   test "delivery sends with the pinned endpoint_ip" do
     subscription = build_subscription(endpoint: "https://fcm.googleapis.com/fcm/send/abc123")
 

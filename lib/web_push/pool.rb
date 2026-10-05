@@ -10,8 +10,12 @@ class WebPush::Pool
   end
 
   def queue(payload, subscriptions)
-    subscriptions.find_each do |subscription|
-      deliver_later(payload, subscription)
+    subscriptions.find_in_batches do |batch|
+      unread_counts = Membership.unread.where(user_id: batch.map(&:user_id)).group(:user_id).count
+
+      batch.each do |subscription|
+        deliver_later(payload, subscription, badge: unread_counts.fetch(subscription.user_id, 0))
+      end
     end
   end
 
@@ -22,9 +26,9 @@ class WebPush::Pool
   end
 
   private
-    def deliver_later(payload, subscription)
+    def deliver_later(payload, subscription, badge:)
       # Ensure any AR operations happen before we post to the thread pool
-      notification = subscription.notification(**payload)
+      notification = subscription.notification(**payload, badge: badge)
       subscription_id = subscription.id
 
       delivery_pool.post do
