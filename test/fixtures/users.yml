@@ -1,4 +1,4 @@
-<% password_digest = BCrypt::Password.create("secret123456") %>
+<% password_digest = BCrypt::Password.create("secret123456", cost: BCrypt::Engine::MIN_COST) %>
 
 david:
   name: David
