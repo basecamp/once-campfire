@@ -10,6 +10,7 @@ class Membership < ApplicationRecord
 
   scope :with_ordered_room, -> { includes(:room).joins(:room).order("LOWER(rooms.name)") }
   scope :with_direct_rooms, -> { includes(:room).joins(:room).where(rooms: { type: "Rooms::Direct" }).order(rooms: { updated_at: :desc }) }
+  scope :with_ordered_shared_rooms, -> { includes(:room).joins(:room).where.not(rooms: { type: "Rooms::Direct" }).order("LOWER(rooms.name)") }
   scope :without_direct_rooms, -> { joins(:room).where.not(room: { type: "Rooms::Direct" }) }
 
   scope :visible, -> { where.not(involvement: :invisible) }
