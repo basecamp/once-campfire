@@ -39,11 +39,25 @@ class SqliteWalCheckpoint
       Thread.current.name = "sqlite-wal-checkpoint"
 
       loop do
-        checkpoint
-        sleep @interval
+        run_with_connection
       rescue => error
         Rails.logger.warn "SQLite WAL checkpoint failed: #{error.class}: #{error.message}"
         sleep @interval
+      end
+    end
+
+    def run_with_connection
+      path = self.class.database_path
+      unless path && File.exist?(path)
+        sleep @interval
+        return
+      end
+
+      SQLite3::Database.new(path) do |database|
+        loop do
+          database.wal_checkpoint = "PASSIVE"
+          sleep @interval
+        end
       end
     end
 end
