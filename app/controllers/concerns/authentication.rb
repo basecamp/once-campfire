@@ -41,10 +41,14 @@ module Authentication
     end
 
     def bot_authentication
-      if params[:bot_key].present? && bot = User.authenticate_bot(params[:bot_key].strip)
+      if bot_key.present? && bot = User.authenticate_bot(bot_key.strip)
         Current.user = bot
         set_authenticated_by(:bot_key)
       end
+    end
+
+    def bot_key
+      authenticate_with_http_token { |token| token } || params[:bot_key]
     end
 
     def request_authentication

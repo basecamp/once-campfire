@@ -40,7 +40,7 @@ class Messages::ByBotsController < MessagesController
       headers["X-Total-Count"] = @room.messages_count.to_s
 
       if next_page = next_page_params
-        headers["Link"] = %(<#{room_bot_messages_url(@room, params[:bot_key], **next_page)}>; rel="next")
+        headers["Link"] = %(<#{url_for(next_page)}>; rel="next")
       end
     end
 
