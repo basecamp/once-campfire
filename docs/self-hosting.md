@@ -222,3 +222,6 @@ Prefer `/rooms/:id/bot/messages` with `X-Campfire-Bot-Key` (or `Authorization: B
 The account bots page copies curl commands in that form. The old path still works
 for existing integrations; treat those container logs as secret-bearing.
 
+Webhook payloads keep `room.path` as the old URL so existing bots keep working.
+They also send `room.api_path` (no key) and `room.bot_key` for header auth.
+

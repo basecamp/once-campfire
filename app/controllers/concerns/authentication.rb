@@ -104,7 +104,10 @@ module Authentication
 
     def bearer_bot_key
       authorization = request.authorization
-      authorization.delete_prefix("Bearer ").presence if authorization&.start_with?("Bearer ")
+      return unless authorization
+
+      scheme, token = authorization.split(" ", 2)
+      token.presence if scheme&.casecmp("Bearer")&.zero?
     end
 
     def deny_bots

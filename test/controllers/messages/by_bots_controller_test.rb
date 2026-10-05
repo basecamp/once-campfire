@@ -243,6 +243,11 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "index accepts a lowercase bearer scheme" do
+    get room_bot_api_messages_url(@room), headers: { "Authorization" => "bearer #{users(:bender).bot_key}" }
+    assert_response :success
+  end
+
   test "header pagination links do not embed the bot key" do
     (Message::PAGE_SIZE - @room.messages.count + 1).times do |i|
       @room.messages.create!(body: "Header filler #{i}", creator: users(:jason), client_message_id: "header-filler-#{i}")
