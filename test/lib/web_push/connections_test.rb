@@ -68,6 +68,35 @@ class WebPush::ConnectionsTest < ActiveSupport::TestCase
     end
   end
 
+  test "a push the service may have received on a new connection isn't reported as a TLS failure either" do
+    with_push_service(drop_request: ->(number) { number == 1 }) do |server|
+      error = assert_raises(WebPush::Connections::ConnectionLost) { @connections.request(pinned_connection(server), push_request) }
+      assert_not_kind_of OpenSSL::OpenSSLError, error
+      assert_equal 1, server.requests.size
+    end
+  end
+
+  test "a TLS failure on a new connection before the push is written is reported as it is" do
+    failing_check = Module.new { private def begin_transport(*) = raise(OpenSSL::SSL::SSLError, "alert right after the handshake") }
+
+    with_push_service do |server|
+      assert_raises(OpenSSL::SSL::SSLError) { @connections.request(pinned_connection(server).extend(failing_check), push_request) }
+      assert_empty server.requests
+    end
+  end
+
+  test "a certificate for another name when reconnecting a cleanly closed connection is reported, even if a new one would work" do
+    certificates = { 2 => "other.test" }
+    with_push_service(hang_up_after_response: :close_notify, certificate: ->(connection) { certificates.fetch(connection, HOST) }) do |server|
+      @connections.request(pinned_connection(server), push_request)
+      assert server.hung_up?
+
+      assert_raises(OpenSSL::SSL::SSLError) { @connections.request(pinned_connection(server), push_request) }
+      assert_equal 1, server.requests.size
+      assert_equal 2, server.connections
+    end
+  end
+
   test "only new, direct TLS connections pinned to an address are pooled" do
     with_push_service do |server|
       unpinned = Net::HTTP.new(HOST, server.port, nil).tap { it.use_ssl = true }

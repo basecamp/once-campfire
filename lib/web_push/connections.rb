@@ -6,16 +6,24 @@
 # same address for the same host. Net::HTTP reconnects to its pinned address, never to a new lookup of the host.
 class WebPush::Connections
   class ConnectionLost < StandardError; end
+  class StaleConnection < StandardError; end
 
-  # Net::HTTP checks an idle connection, and reconnects if the push service closed it, just before writing the
-  # request. Until then a dead connection can be replaced without sending the push twice.
-  module WriteTracking
-    attr_reader :request_written
+  # Where a request failed. Before writing it, Net::HTTP checks an idle connection (:checking) and connects again
+  # if the push service closed it (:connecting); then it writes (:sent). Only a failed check means a dead idle
+  # connection that a new one can replace without sending the push twice.
+  module Stages
+    attr_reader :stage
 
-    private def begin_transport(...)
-      @request_written = false
-      super.tap { @request_written = true }
-    end
+    private
+      def begin_transport(...)
+        @stage = :checking
+        super.tap { @stage = :sent }
+      end
+
+      def connect(...)
+        @stage = :connecting if @stage == :checking
+        super
+      end
   end
 
   def initialize(keep_alive_timeout: 30)
@@ -32,20 +40,17 @@ class WebPush::Connections
     address = [ http.address, http.port, http.ipaddr ]
 
     if idle = checkout(address)
-      response = begin
-        idle.request(request)
-      rescue IOError, SystemCallError, OpenSSL::SSL::SSLError => error
-        close(idle)
-        # The push service may have it: don't send it twice, and don't report a closed connection as a TLS failure
-        raise ConnectionLost, "#{error.class}: #{error.message}" if idle.request_written
+      begin
+        return send_over(idle, request, reused: true).tap { checkin(address, idle) }
+      rescue StaleConnection
+        # The push service had closed it: a new connection takes the push
       end
-      return response.tap { checkin(address, idle) } if response
     end
 
-    http.extend WriteTracking
+    http.extend Stages
     http.keep_alive_timeout = @keep_alive_timeout
     http.start
-    http.request(request).tap { checkin(address, http) }
+    send_over(http, request, reused: false).tap { checkin(address, http) }
   end
 
   def shutdown
@@ -58,6 +63,17 @@ class WebPush::Connections
   end
 
   private
+    def send_over(http, request, reused:)
+      http.request(request)
+    rescue IOError, SystemCallError, OpenSSL::SSL::SSLError => error
+      close(http)
+      # Only a connection that was idle can have been dead already: on a new one the error is the push service's
+      raise StaleConnection if reused && http.stage == :checking
+      # The push service may have it: don't send it twice, and don't report a dropped connection as a TLS failure
+      raise ConnectionLost, "#{error.class}: #{error.message}" if http.stage == :sent
+      raise
+    end
+
     def checkout(address)
       @mutex.synchronize do
         forget_after_fork
