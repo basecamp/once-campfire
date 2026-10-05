@@ -12,14 +12,13 @@ module SqliteWalCheckpoint
       @mutex ||= Mutex.new
       @mutex.synchronize do
         return if @thread&.alive?
-        return unless acquire_lock
 
         @thread = Thread.new { run(interval) }
       end
     end
 
     def checkpoint
-      with_database { |database| database.wal_checkpoint = "PASSIVE" }
+      with_database { |database| database.execute("PRAGMA wal_checkpoint(PASSIVE)") }
     end
 
     private
@@ -34,14 +33,21 @@ module SqliteWalCheckpoint
         Thread.current.name = "sqlite-wal-checkpoint"
 
         loop do
-          with_database do |database|
-            loop do
-              database.wal_checkpoint = "PASSIVE"
-              sleep interval
-            end
+          unless acquire_lock
+            sleep interval
+            next
           end
 
-          sleep interval
+          begin
+            with_database do |database|
+              loop do
+                database.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                sleep interval
+              end
+            end
+          ensure
+            release_lock
+          end
         rescue => error
           Rails.logger.warn "SQLite WAL checkpoint failed: #{error.class}: #{error.message}"
           sleep interval
@@ -60,8 +66,21 @@ module SqliteWalCheckpoint
 
       def acquire_lock
         FileUtils.mkdir_p(File.dirname(LOCK_PATH))
-        @lock_file = File.open(LOCK_PATH, File::RDWR | File::CREAT, 0644)
-        @lock_file.flock(File::LOCK_EX | File::LOCK_NB)
+        file = File.open(LOCK_PATH, File::RDWR | File::CREAT, 0644)
+        if file.flock(File::LOCK_EX | File::LOCK_NB)
+          @lock_file = file
+          true
+        else
+          file.close
+          false
+        end
+      end
+
+      def release_lock
+        @lock_file&.flock(File::LOCK_UN)
+        @lock_file&.close
+      ensure
+        @lock_file = nil
       end
   end
 end
