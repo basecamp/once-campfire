@@ -41,7 +41,7 @@ module Authentication
     end
 
     def bot_authentication
-      if params[:bot_key].present? && bot = User.authenticate_bot(params[:bot_key].strip)
+      if (bot_key = bot_key_from_request) && bot = User.authenticate_bot(bot_key.strip)
         Current.user = bot
         set_authenticated_by(:bot_key)
       end
@@ -96,6 +96,15 @@ module Authentication
 
     def remove_authentication_cookie
       cookies.delete(:session_token)
+    end
+
+    def bot_key_from_request
+      params[:bot_key].presence || request.headers["X-Campfire-Bot-Key"].presence || bearer_bot_key
+    end
+
+    def bearer_bot_key
+      authorization = request.authorization
+      authorization.delete_prefix("Bearer ").presence if authorization&.start_with?("Bearer ")
     end
 
     def deny_bots

@@ -227,6 +227,38 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   end
 
+  test "index and create accept the bot key as a header on a path that does not contain it" do
+    assert_difference -> { Message.count }, +1 do
+      post room_bot_api_messages_url(@room), params: +"Hello from a header", headers: { "X-Campfire-Bot-Key" => users(:bender).bot_key }
+    end
+    assert_response :created
+
+    get room_bot_api_messages_url(@room), headers: { "X-Campfire-Bot-Key" => users(:bender).bot_key }
+    assert_response :success
+    assert_includes JSON.parse(response.body).map { it["body"]["plain_text"] }, "Hello from a header"
+  end
+
+  test "index accepts a Bearer token" do
+    get room_bot_api_messages_url(@room), headers: { "Authorization" => "Bearer #{users(:bender).bot_key}" }
+    assert_response :success
+  end
+
+  test "header pagination links do not embed the bot key" do
+    (Message::PAGE_SIZE - @room.messages.count + 1).times do |i|
+      @room.messages.create!(body: "Header filler #{i}", creator: users(:jason), client_message_id: "header-filler-#{i}")
+    end
+
+    get room_bot_api_messages_url(@room), headers: { "X-Campfire-Bot-Key" => users(:bender).bot_key }
+    assert_response :success
+    assert_includes response.headers["Link"], "/rooms/#{@room.id}/bot/messages"
+    assert_not_includes response.headers["Link"], users(:bender).bot_key
+  end
+
+  test "the path form still authenticates" do
+    get room_bot_messages_url(@room, users(:bender).bot_key)
+    assert_response :success
+  end
+
   private
     def post_bot_message(body)
       post room_bot_messages_url(@room, users(:bender).bot_key), params: +body
