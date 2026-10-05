@@ -109,4 +109,11 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :redirect
   end
+
+  test "create accepts the bot key as a header on a path that does not contain it" do
+    assert_difference -> { @message.boosts.count }, +1 do
+      post room_bot_api_message_boosts_url(@room, @message), params: +"🙌", headers: { "X-Campfire-Bot-Key" => @bot.bot_key }
+    end
+    assert_response :created
+  end
 end
