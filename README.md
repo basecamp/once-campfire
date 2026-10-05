@@ -51,15 +51,15 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 
 ## Other implementations
 
-Campfire also has implementations in Django, Laravel, Elixir, Go and Rust:
+Campfire also has implementations in Django, Laravel, Express, Elixir, Go and Rust:
 
-| HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
-|---|---:|---:|---:|---:|---:|---:|
-| Room page | 242 | 170 | 164 | 722 | 3,860 | 36,260 |
-| Messages page | 402 | 196 | 175 | 1,053 | 5,573 | 40,872 |
-| Sidebar | 541 | 615 | 715 | 1,275 | 19,753 | 34,672 |
-| Search | 424 | 315 | 305 | 1,156 | 7,053 | 33,299 |
-| Post a message | 225 | 154 | 137 | 801 | 4,767 | 6,896 |
+| HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Room page | 241 | 170 | 164 | 559 | 722 | 3,860 | 36,260 |
+| Messages page | 413 | 196 | 175 | 777 | 1,053 | 5,573 | 40,872 |
+| Sidebar | 552 | 615 | 715 | 4,125 | 1,275 | 19,753 | 34,672 |
+| Search | 435 | 315 | 305 | 1,294 | 1,156 | 7,053 | 33,299 |
+| Post a message | 273 | 154 | 137 | 256 | 801 | 4,767 | 6,896 |
 
 Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395,
 with four hardware threads allocated to each app.
