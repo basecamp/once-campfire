@@ -83,9 +83,21 @@ class RoomsControllerTest < ActionDispatch::IntegrationTest
   test "destroy" do
     assert_turbo_stream_broadcasts :rooms, count: 1 do
       assert_difference -> { Room.count }, -1 do
-        delete room_url(rooms(:designers))
+        perform_enqueued_jobs { delete room_url(rooms(:designers)) }
       end
     end
+  end
+
+  test "destroy takes the room away from its members at once and leaves its messages to a job" do
+    room = rooms(:designers)
+
+    assert_enqueued_with(job: Room::DestroyJob, args: [ room ]) do
+      assert_no_difference -> { Message.count } do
+        delete room_url(room)
+        assert_redirected_to root_url
+      end
+    end
+    assert_empty room.memberships.reload
   end
 
   test "destroy only allowed for creators or those who can administer" do
@@ -99,7 +111,7 @@ class RoomsControllerTest < ActionDispatch::IntegrationTest
     rooms(:designers).update! creator: users(:jz)
 
     assert_difference -> { Room.count }, -1 do
-      delete room_url(rooms(:designers))
+      perform_enqueued_jobs { delete room_url(rooms(:designers)) }
     end
   end
 

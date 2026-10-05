@@ -12,7 +12,7 @@ class RoomsController < ApplicationController
   end
 
   def destroy
-    @room.destroy
+    @room.destroy_later
 
     broadcast_remove_room
     redirect_to root_url
