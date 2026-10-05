@@ -6,7 +6,15 @@ module Message::Searchable
     after_update_commit  :update_in_index
     after_destroy_commit :remove_from_index
 
-    scope :search, ->(query) { joins("join message_search_index idx on messages.id = idx.rowid").where("idx.body match ?", query).ordered }
+    scope :search, ->(query) { joins("join message_search_index idx on messages.id = idx.rowid").where("idx.body match ?", match_terms(query)).ordered }
+  end
+
+  class_methods do
+    # Quotes each word, so that FTS5 searches for AND, OR, NOT and NEAR rather than
+    # parsing them as operators, which fails on a query like "AND" or "salt AND".
+    def match_terms(query)
+      query.split.map { |word| %("#{word.gsub('"', '""')}") }.join(" ")
+    end
   end
 
   private

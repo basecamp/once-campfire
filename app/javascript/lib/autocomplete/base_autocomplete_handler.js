@@ -120,7 +120,7 @@ export default class BaseAutocompleteHandler {
 
   #fetchAutocompletables(url) {
     if (url) {
-      return fetch(url, { as: "json" }).then(response => response.json())
+      return fetch(url, { headers: { Accept: "application/json" } }).then(response => response.json())
     } else {
       return Promise.resolve()
     }

@@ -76,6 +76,12 @@ class MessageTest < ActiveSupport::TestCase
       assert room.messages.paged?
     end
   end
+  
+  test "search reads quotes and operator words in the query as text" do
+    message = rooms(:designers).messages.create!(body: "Say hi, NOT bye", client_message_id: "quoted", creator: users(:david))
+
+    assert_equal [ message ], Message.search(%(say "hi NOT)).to_a
+  end
 
   private
     def create_new_message_in(room)
