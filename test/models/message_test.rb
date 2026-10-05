@@ -65,6 +65,24 @@ class MessageTest < ActiveSupport::TestCase
     assert_equal room.messages.ordered.first(Message::Pagination::PAGE_SIZE).map(&:id), room.messages.first_page.map(&:id)
   end
 
+  test "paged? tells whether a room has more than a page of messages without counting them all" do
+    room = Rooms::Closed.create!(name: "Paging", creator: users(:david))
+    Message.insert_all Array.new(Message::Pagination::PAGE_SIZE) { |i| { room_id: room.id, creator_id: users(:david).id, client_message_id: "paging-#{i}" } }
+
+    assert_no_queries_match(/COUNT/i) do
+      assert_not room.messages.paged?
+
+      Message.insert_all [ { room_id: room.id, creator_id: users(:david).id, client_message_id: "paging-next" } ]
+      assert room.messages.paged?
+    end
+  end
+
+  test "search reads quotes and operator words in the query as text" do
+    message = rooms(:designers).messages.create!(body: "Say hi, NOT bye", client_message_id: "quoted", creator: users(:david))
+
+    assert_equal [ message ], Message.search(%(say "hi NOT)).to_a
+  end
+
   private
     def create_new_message_in(room)
       room.messages.create!(creator: users(:jason), body: "Hello", client_message_id: "123")

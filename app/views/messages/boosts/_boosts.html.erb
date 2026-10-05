@@ -7,7 +7,7 @@
 
     <%= turbo_frame_tag message, :new_boost do %>
       <div class="flex-inline message__boost-inline" data-controller="soft-keyboard">
-        <%= link_to new_message_boost_path(message), class: "boost__action txt-small btn", action: "soft-keyboard#open" do %>
+        <%= link_to new_message_boost_path(message), class: "boost__action txt-small btn", data: { action: "soft-keyboard#open" } do %>
           <%= image_tag "boost.svg", size: 20, aria: { hidden: "true" } %>
           <span class="for-screen-reader">Add a boost</span>
         <% end %>
