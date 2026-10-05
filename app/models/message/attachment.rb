@@ -30,6 +30,7 @@ module Message::Attachment
       attachment&.analyze
     end
 
+    # A file that ffmpeg or libvips can't decode is still the message: post it without a preview.
     def process_attachment_thumbnail
       case
       when attachment.video?
@@ -37,5 +38,7 @@ module Message::Attachment
       when attachment.representable?
         attachment.representation(:thumb).processed
       end
+    rescue ActiveStorage::PreviewError, Vips::Error => error
+      Rails.logger.warn "Posted #{attachment.filename} without a preview: #{error.class}: #{error.message.lines.first&.chomp}"
     end
 end
