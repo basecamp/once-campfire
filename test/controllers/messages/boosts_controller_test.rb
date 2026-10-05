@@ -6,6 +6,13 @@ class Messages::BoostsControllerTest < ActionDispatch::IntegrationTest
     @message = messages(:first)
   end
 
+  test "index wires the new boost link to the soft keyboard" do
+    get message_boosts_url(@message)
+
+    assert_response :success
+    assert_select ".message__boost-inline a.boost__action[data-action='soft-keyboard#open']"
+  end
+
   test "create" do
     assert_turbo_stream_broadcasts [ @message.room, :messages ], count: 1 do
       assert_difference -> { @message.boosts.count }, 1 do
