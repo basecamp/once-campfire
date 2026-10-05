@@ -58,6 +58,8 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "creating a message broadcasts unread room to each member" do
+    memberships(:david_watercooler).present # the poster is in the room
+
     @room.users.each do |member|
       assert_broadcasts UnreadRoomsChannel.stream_name_for(member.id), 1 do
         perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
@@ -75,6 +77,20 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_enqueued_with job: Message::BroadcastUnreadRoomJob, args: [ Message.last ]
+  end
+
+  test "the unread fanout skips a member who has opened the room since" do
+    membership = memberships(:jason_watercooler)
+
+    post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+    assert membership.reload.unread?
+
+    membership.present
+    membership.reload.disconnected
+
+    assert_no_broadcasts UnreadRoomsChannel.stream_name_for(membership.user_id) do
+      perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob
+    end
   end
 
   test "creating a message doesn't broadcast unread room to non-members" do

@@ -9,11 +9,13 @@ module Message::Broadcasts
   end
 
   # Fanned out to the room's members rather than published on one global stream, so
-  # that the timing of activity in a room only reaches people who are in it.
+  # that the timing of activity in a room only reaches people who are in it. Of those,
+  # only the ones who still have it unread or are in it now: by the time this runs,
+  # someone may have opened the room and moved on, and would see it marked unread again.
   def broadcast_unread_room
     payload = ActiveSupport::JSON.encode(roomId: room.id)
 
-    room.memberships.pluck(:user_id).each do |user_id|
+    room.memberships.unread.or(room.memberships.connected).pluck(:user_id).each do |user_id|
       ActionCable.server.broadcast UnreadRoomsChannel.stream_name_for(user_id), payload, coder: nil
     end
   end
