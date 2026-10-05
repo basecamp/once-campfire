@@ -16,5 +16,8 @@ module Campfire
 
     # Fallback to English if translation key is missing
     config.i18n.fallbacks = true
+
+    # Checkpoint SQLite's WAL off the request thread. Tests skip the background loop.
+    config.x.sqlite_wal_checkpoint = !Rails.env.test?
   end
 end

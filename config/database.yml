@@ -9,6 +9,8 @@ default: &default
   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 10 } %>
   timeout: 5000
   default_transaction_mode: immediate
+  pragmas:
+    wal_autocheckpoint: 0
 
 development:
   primary:
