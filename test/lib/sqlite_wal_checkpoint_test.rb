@@ -6,10 +6,11 @@ class SqliteWalCheckpointTest < ActiveSupport::TestCase
   end
 
   test "a passive checkpoint against the primary database does not raise" do
-    assert_nothing_raised { SqliteWalCheckpoint.new.checkpoint }
+    assert_nothing_raised { SqliteWalCheckpoint.checkpoint }
   end
 
-  test "the background loop is off in test" do
-    assert_not Rails.application.config.x.sqlite_wal_checkpoint
+  test "does not start a background thread in test" do
+    assert_nil SqliteWalCheckpoint.start
+    assert_empty Thread.list.select { |thread| thread.name == "sqlite-wal-checkpoint" }
   end
 end

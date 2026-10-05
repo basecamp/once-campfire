@@ -33,7 +33,8 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 # processes).
 #
 worker_count = (Concurrent.processor_count * 0.666).ceil
-workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
+configured_workers = ENV.fetch("WEB_CONCURRENCY") { worker_count }
+workers configured_workers
 
 ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
 
@@ -49,6 +50,12 @@ plugin :tmp_restart
 
 # Reset all membership connections
 Membership.disconnect_all
+
+if configured_workers.to_i > 0
+  on_worker_boot { SqliteWalCheckpoint.start }
+else
+  SqliteWalCheckpoint.start
+end
 
 Signal.trap :SIGPROF do
   Thread.list.each do |t|

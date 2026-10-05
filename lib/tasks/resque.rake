@@ -8,5 +8,6 @@ task "resque:pool:setup" do
   Resque::Pool.after_prefork do |job|
     ActiveRecord::Base.establish_connection
     Resque.redis.client.close
+    SqliteWalCheckpoint.start
   end
 end
