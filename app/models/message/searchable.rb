@@ -9,6 +9,14 @@ module Message::Searchable
     scope :search, ->(query) { joins("join message_search_index idx on messages.id = idx.rowid").where("idx.body match ?", query).ordered }
   end
 
+  class_methods do
+    # Orders by the index's rowid, which is the message id, so SQLite walks the full-text index
+    # newest first and stops at the page. Ordering by created_at sorted every match before paging.
+    def last_page_of_matches(size)
+      Message::Pagination::Page.load(reorder("idx.rowid"), :last, size)
+    end
+  end
+
   private
     def create_in_index
       execute_sql_with_binds "insert into message_search_index(rowid, body) values (?, ?)", id, plain_text_body
