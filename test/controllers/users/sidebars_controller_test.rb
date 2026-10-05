@@ -28,7 +28,7 @@ class Users::SidebarsControllerTest < ActionDispatch::IntegrationTest
     assert_select ".unread", count: users(:david).memberships.reject { |m| m.room.direct? || !m.unread? }.count
   end
 
-  test "directs are queried separately and ordered by room recency, not name" do
+  test "directs are ordered by room recency, not name" do
     older = rooms(:david_and_jason)
     newer = rooms(:david_and_kevin)
     older.update_column :updated_at, 2.days.ago
