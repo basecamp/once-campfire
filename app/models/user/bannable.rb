@@ -1,6 +1,11 @@
 module User::Bannable
   extend ActiveSupport::Concern
 
+  included do
+    # Administrators still see banned users, so they can lift the ban.
+    scope :visible_to, ->(user) { user.can_administer? ? where(status: %i[ active banned ]) : active }
+  end
+
   def ban
     transaction do
       create_bans_from_sessions

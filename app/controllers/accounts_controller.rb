@@ -3,7 +3,7 @@ class AccountsController < ApplicationController
   before_action :set_account
 
   def edit
-    users = account_users.ordered
+    users = User.visible_to(Current.user).ordered
     @administrators = users.administrator
     set_page_and_extract_portion_from users.member, per_page: 500
   end
@@ -20,13 +20,5 @@ class AccountsController < ApplicationController
 
     def account_params
       params.require(:account).permit(:name, :logo, settings: {})
-    end
-
-    def account_users
-      if Current.user.can_administer?
-        User.where(status: [ :active, :banned ])
-      else
-        User.active
-      end
     end
 end
