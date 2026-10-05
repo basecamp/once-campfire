@@ -41,7 +41,7 @@ class WebhookTest < ActiveSupport::TestCase
 
   test "delivery with error reply" do
     assert_no_difference -> { Message.count } do
-      WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 500, body: "Internal Error!", headers: {})
+      WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 500, body: "<h1>Internal Error!</h1>", headers: { "Content-Type" => "text/html" })
       response = webhooks(:bender).deliver(messages(:first))
     end
   end
