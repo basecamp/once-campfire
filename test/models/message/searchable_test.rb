@@ -37,6 +37,14 @@ class Message::SearchableTest < ActiveSupport::TestCase
     assert_equal [], rooms(:designers).messages.search("sharks")
   end
 
+  test "a new attachment replaces the old file name in the index" do
+    message = rooms(:designers).messages.create! attachment: fixture_file_upload("moon.jpg", "image/jpeg"), client_message_id: "moon", creator: users(:david)
+
+    Message.find(message.id).update! attachment: fixture_file_upload("pixel.bmp", "image/bmp")
+    assert_equal [ message ], rooms(:designers).messages.search("pixel")
+    assert_equal [], rooms(:designers).messages.search("moon")
+  end
+
   test "search results are returned in message order" do
     messages = [ "first cat", "second cat", "third cat", "cat cat cat" ].map do |body|
       rooms(:designers).messages.create! body: body, client_message_id: body, creator: users(:david)
