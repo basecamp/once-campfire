@@ -7,12 +7,15 @@ class Rooms::Direct < Room
     end
 
     private
-      # FIXME: Find a more performant algorithm that won't be a problem on accounts with 10K+ direct rooms,
-      # which could be to store the membership id list as a hash on the room, and use that for lookup.
+      # Among the first user's rooms, the one whose members are exactly these users: as many
+      # memberships as users, and all of them theirs.
       def find_for(users)
-        all.joins(:users).detect do |room|
-          Set.new(room.user_ids) == Set.new(users.pluck(:id))
-        end
+        user_ids = users.pluck(:id).uniq
+
+        where(id: Membership.where(user_id: user_ids.first).select(:room_id))
+          .joins(:memberships).group(:id)
+          .having("COUNT(*) = :size AND COUNT(CASE WHEN memberships.user_id IN (:user_ids) THEN 1 END) = :size", size: user_ids.size, user_ids: user_ids)
+          .first
       end
   end
 
