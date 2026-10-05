@@ -36,7 +36,10 @@ module Message::Pagination
     scope :page_after, ->(message) { after(message).first_page }
 
     scope :page_created_since, ->(time) { where("created_at > ?", time).first_page }
-    scope :page_updated_since, ->(time) { where("updated_at > ?", time).last_page }
+    # Sorting on +created_at, which no index covers, has SQLite find the few messages updated since
+    # through (room_id, updated_at) and sort just those, instead of walking the whole room by
+    # (room_id, created_at) looking for them.
+    scope :page_updated_since, ->(time) { Page.load(where("updated_at > ?", time).reorder(Arel.sql("+messages.created_at")), :last, PAGE_SIZE) }
   end
 
   class_methods do
