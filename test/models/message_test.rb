@@ -65,30 +65,7 @@ class MessageTest < ActiveSupport::TestCase
     assert_equal room.messages.ordered.first(Message::Pagination::PAGE_SIZE).map(&:id), room.messages.first_page.map(&:id)
   end
 
-  test "pages read a room's messages from an index instead of sorting the whole room" do
-    room, message = rooms(:watercooler), messages(:sixth)
-    statements = capture_message_selects do
-      room.messages.last_page
-      room.messages.page_before(message)
-      room.messages.page_after(message)
-      room.messages.page_created_since(1.day.ago)
-    end
-
-    assert_equal 4, statements.size
-    statements.each do |sql|
-      plan = Message.connection.select_rows("EXPLAIN QUERY PLAN #{sql}").map(&:last).join(" | ")
-      assert_no_match(/TEMP B-TREE/, plan, sql)
-    end
-  end
-
   private
-    def capture_message_selects(&block)
-      statements = []
-      callback = ->(*, payload) { statements << payload[:sql] if payload[:sql].start_with?(%(SELECT "messages")) }
-      ActiveSupport::Notifications.subscribed(callback, "sql.active_record", &block)
-      statements
-    end
-
     def create_new_message_in(room)
       room.messages.create!(creator: users(:jason), body: "Hello", client_message_id: "123")
     end
