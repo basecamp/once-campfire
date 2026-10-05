@@ -76,10 +76,9 @@
         <% end %>
 
         <label class="switch">
-          <input type="checkbox"
-                class="switch__input"
-                <%= "checked" if Current.account.settings.restrict_room_creation_to_administrators? %>
-                data-action="change->form#submit">
+          <%= tag.input type: "checkbox", class: "switch__input",
+                checked: Current.account.settings.restrict_room_creation_to_administrators?,
+                data: { action: "change->form#submit" } %>
           <span class="switch__btn round"></span>
           <span class="for-screen-reader">
             Must be admin to create new rooms

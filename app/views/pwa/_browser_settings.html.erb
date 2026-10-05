@@ -6,8 +6,8 @@
       <%= image_tag "disclosure.svg", aria: { hidden: "true" }, size: 10, class: "disclosure" %>
     </summary>
 
-    <% case
-      when platform.firefox? && platform.android? %>
+    <% case %>
+      <% when platform.firefox? && platform.android? %>
         <ol>
           <li>Tap <em><%= image_tag "lock.svg", alt: "the View site information button", size: 20 %></em> in the address bar.</li>
           <li>Tap <em>Notification</em> to change to <em>Allowed</em>.</li>
