@@ -2,7 +2,7 @@
   <div class="boosts flex flex-wrap align-center gap full-width" style="--column-gap: 0.4ch; --row-gap: 0"
       data-controller="turbo-streaming" data-action="turbo:submit-start->turbo-streaming#unsubscribe">
     <div class="flex-inline flex-wrap gap" id="<%= dom_id(message, :boosts) %>" data-turbo-streaming-target="container">
-      <%= render partial: "messages/boosts/boost", collection: message.boosts.ordered, cached: true %>
+      <%= render partial: "messages/boosts/boost", collection: message.boosts.ordered.includes(:booster) %>
     </div>
 
     <%= turbo_frame_tag message, :new_boost do %>

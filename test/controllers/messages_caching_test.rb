@@ -27,6 +27,32 @@ class MessagesCachingTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "boosts are cached inside their message instead of one fragment each" do
+    with_memory_cache do
+      cache_keys = []
+      subscriber = ActiveSupport::Notifications.subscribe(/\Acache_(read|read_multi|write|write_multi)\.active_support\z/) do |*, payload|
+        cache_keys.concat(payload[:key].is_a?(Hash) ? payload[:key].keys : Array(payload[:key]))
+      end
+
+      get room_messages_url(rooms(:watercooler))
+      assert_response :success
+      assert_select "#" + dom_id(boosts(:fourth_by_bender))
+      assert_select "#" + dom_id(boosts(:thirteenth))
+      assert_empty cache_keys.grep(%r{messages/boosts/_boost})
+
+      boost = messages(:fourth).boosts.create! booster: users(:jason), content: "🎉"
+      get room_messages_url(rooms(:watercooler))
+      refreshed = response.body
+
+      Rails.cache.clear
+      get room_messages_url(rooms(:watercooler))
+      assert_equal refreshed, response.body
+      assert_select "##{dom_id(messages(:fourth))} ##{dom_id(boost)}", text: /🎉/
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+  end
+
   private
     def with_memory_cache
       old_cache = Rails.cache
