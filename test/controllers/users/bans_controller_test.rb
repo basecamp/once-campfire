@@ -19,6 +19,21 @@ class Users::BansControllerTest < ActionDispatch::IntegrationTest
     assert Ban.exists?(ip_address: "203.0.113.2", user: user)
   end
 
+  test "create bans user who has sessions from private addresses" do
+    user = users(:kevin)
+    user.sessions.create!(ip_address: "203.0.113.1", user_agent: "Test")
+    user.sessions.create!(ip_address: "192.168.1.20", user_agent: "Test")
+
+    assert_difference -> { Ban.count }, 1 do
+      post user_ban_url(user)
+    end
+
+    assert_redirected_to user_url(user)
+    assert user.reload.banned?
+    assert_empty user.sessions
+    assert Ban.exists?(ip_address: "203.0.113.1", user: user)
+  end
+
   test "create destroys user sessions" do
     user = users(:kevin)
     user.sessions.create!(ip_address: "203.0.113.1", user_agent: "Test")
