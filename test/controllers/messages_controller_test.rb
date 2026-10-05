@@ -148,6 +148,41 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "creating a message with a video attachment transcodes it to mp4" do
+    movie = mock("movie")
+    movie.stubs(:duration).returns(0)
+    movie.stubs(:transcode).with do |output_path, _options|
+      File.binwrite(output_path, File.binread(Rails.root.join("test/fixtures/files/alpha-centuri.mov")))
+      true
+    end
+    FFMPEG::Movie.stubs(:new).returns(movie)
+
+    post room_messages_url(@room, format: :turbo_stream), params: { message: {
+      body: "New one", client_message_id: 999,
+      attachment: fixture_file_upload("alpha-centuri.mov", "video/quicktime") } }
+
+    assert_response :success
+    assert_equal "video/mp4", Message.last.attachment.blob.content_type
+  end
+
+  test "creating a message with a video attachment that fails to transcode redirects with an alert" do
+    movie = mock("movie")
+    movie.stubs(:duration).returns(0)
+    movie.stubs(:transcode).raises(RuntimeError, "ffmpeg exploded")
+    FFMPEG::Movie.stubs(:new).returns(movie)
+
+    assert_no_difference -> { Message.count } do
+      post room_messages_url(@room, format: :turbo_stream), params: { message: {
+        body: "New one", client_message_id: 999,
+        attachment: fixture_file_upload("alpha-centuri.mov", "video/quicktime") } }
+    end
+
+    assert_redirected_to root_url
+    assert_equal "Video attachment could not be processed", flash[:alert]
+  ensure
+    FFMPEG::Movie.unstub(:new)
+  end
+
   private
     def ensure_messages_present(*messages, count: 1)
       messages.each do |message|

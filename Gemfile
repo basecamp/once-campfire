@@ -31,6 +31,7 @@ gem "lexxy", "~> 0.9.24"
 
 # Media handling
 gem "image_processing", ">= 1.2"
+gem "streamio-ffmpeg"
 
 # Telemetry
 gem "sentry-ruby"
