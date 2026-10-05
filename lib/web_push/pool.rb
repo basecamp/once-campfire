@@ -5,7 +5,7 @@ class WebPush::Pool
   def initialize(invalid_subscription_handler:)
     @delivery_pool = Concurrent::ThreadPoolExecutor.new(max_threads: 50, max_queue: 10000)
     @invalidation_pool = Concurrent::FixedThreadPool.new(1)
-    @connection = Net::HTTP::Persistent.new(name: "web_push", pool_size: 150)
+    @connection = WebPush::Connections.new
     @invalid_subscription_handler = invalid_subscription_handler
   end
 

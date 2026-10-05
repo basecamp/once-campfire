@@ -231,8 +231,6 @@ GEM
     multi_json (1.17.0)
     mustermann (3.0.4)
       ruby2_keywords (~> 0.0.1)
-    net-http-persistent (4.0.6)
-      connection_pool (~> 2.2, >= 2.2.4)
     net-imap (0.6.4.1)
       date
       net-protocol
@@ -435,7 +433,6 @@ DEPENDENCIES
   kredis
   lexxy (~> 0.9.24)
   mocha
-  net-http-persistent
   ostruct
   platform_agent
   propshaft!
