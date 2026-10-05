@@ -26,14 +26,16 @@ class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
 
   test "a member is told about activity in their own room" do
     direct = rooms(:bender_and_kevin)
+    message = nil
 
     broadcasts = capture_unread_broadcasts_for(users(:kevin)) do
       perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
-        direct.messages.create!(body: "Private", creator: users(:bender), client_message_id: "member").broadcast_create
+        message = direct.messages.create!(body: "Private", creator: users(:bender), client_message_id: "member")
+        message.broadcast_create
       end
     end
 
-    assert_equal [ direct.id ], broadcasts.collect { |broadcast| broadcast["roomId"] }
+    assert_equal [ { "roomId" => direct.id, "at" => message.created_at.to_fs(:epoch) } ], broadcasts
   end
 
   private
