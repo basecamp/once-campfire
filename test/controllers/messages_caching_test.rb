@@ -53,6 +53,20 @@ class MessagesCachingTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "messages render their preloaded boosts in order without querying them again" do
+    earlier = messages(:fourth).boosts.create! booster: users(:jason), content: "🥇", created_at: 1.day.ago
+    in_order = [ dom_id(earlier), dom_id(boosts(:fourth_by_bender)) ]
+
+    assert_no_queries_match(/ORDER BY "boosts"/) do
+      get room_messages_url(rooms(:watercooler))
+    end
+    assert_response :success
+    assert_equal in_order, css_select("##{dom_id(messages(:fourth), :boosts)} .boost").map { it["id"] }
+
+    get message_boosts_url(messages(:fourth))
+    assert_equal in_order, css_select("##{dom_id(messages(:fourth), :boosts)} .boost").map { it["id"] }
+  end
+
   private
     def with_memory_cache
       old_cache = Rails.cache
