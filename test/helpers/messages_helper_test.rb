@@ -24,4 +24,35 @@ class MessagesHelperTest < ActionView::TestCase
     assert_match /<a href="https:\/\/example\.com"[^>]*>example<\/a>/, presentation
     assert_match /<strong>bold<\/strong>/, presentation
   end
+
+  test "message_presentation shows an image in the rich text as a file, rather than making its preview on view" do
+    presentation = view.message_presentation(message_with_file_in_rich_text("moon.jpg", "image/jpeg"))
+
+    assert_no_match %r{/representations/}, presentation
+    assert_match %r{<span class="attachment__name">moon\.jpg</span>}, presentation
+  end
+
+  test "message_presentation shows an image in the rich text whose preview was already made" do
+    message = message_with_file_in_rich_text("moon.jpg", "image/jpeg")
+    message.body.embeds.first.blob.variant(resize_to_limit: [ 1024, 768 ]).processed
+
+    presentation = view.message_presentation(message.reload)
+
+    assert_match %r{<img[^>]+src="[^"]*/representations/[^"]*moon\.jpg"}, presentation
+  end
+
+  test "message_presentation shows a video in the rich text as a file" do
+    presentation = view.message_presentation(message_with_file_in_rich_text("alpha-centuri.mov", "video/quicktime"))
+
+    assert_no_match %r{/representations/}, presentation
+    assert_match %r{<span class="attachment__name">alpha-centuri\.mov</span>}, presentation
+  end
+
+  private
+    def message_with_file_in_rich_text(file, content_type)
+      blob = ActiveStorage::Blob.create_and_upload!(io: file_fixture(file).open, filename: file, content_type: content_type)
+      body = %(<div>Here: <action-text-attachment sgid="#{blob.attachable_sgid}"></action-text-attachment></div>)
+
+      Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
+    end
 end

@@ -1,0 +1,20 @@
+<%# Files are posted as a message's own attachment, which gets its preview when it's posted; the composer adds none to
+    the rich text. One that's there anyway shows a preview only if it was already made, rather than linking to a URL
+    that makes it, on any view, for as long as it fails. %>
+<% preview = blob.variant(resize_to_limit: local_assigns[:in_gallery] ? [ 800, 600 ] : [ 1024, 768 ]) if blob.variable? %>
+<% preview = nil unless preview&.processed? %>
+
+<figure class="attachment attachment--<%= preview ? "preview" : "file" %> attachment--<%= blob.filename.extension %>">
+  <% if preview %>
+    <%= image_tag preview, alt: blob.try(:alt) %>
+  <% end %>
+
+  <figcaption class="attachment__caption">
+    <% if caption = blob.try(:caption) %>
+      <%= caption %>
+    <% else %>
+      <span class="attachment__name"><%= blob.filename %></span>
+      <span class="attachment__size"><%= number_to_human_size blob.byte_size %></span>
+    <% end %>
+  </figcaption>
+</figure>
