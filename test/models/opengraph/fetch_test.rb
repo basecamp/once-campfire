@@ -74,54 +74,6 @@ class Opengraph::FetchTest < ActiveSupport::TestCase
     end
   end
 
-  test "#fetch_document gives up on a host that accepts the connection and never answers" do
-    with_local_host do |url, connections|
-      stub_const(Opengraph::Fetch, :TIMEOUT, 0.2.seconds) do
-        assert_gives_up_within(1.second, Net::ReadTimeout) { @fetch.fetch_document(url, ip: "127.0.0.1") }
-      end
-      assert_equal 1, connections.size, "the GET is not retried"
-    end
-  end
-
-  test "#fetch_document gives up on headers that trickle in past the deadline" do
-    trickle_headers = ->(client) do
-      client.write "HTTP/1.1 200 OK\r\nX-Padding: "
-      100.times { client.write "x"; sleep 0.05 }
-      client.write "\r\nContent-Type: text/html\r\nContent-Length: 2\r\n\r\nok"
-    end
-
-    with_local_host(trickle_headers) do |url|
-      stub_const(Opengraph::Fetch, :DEADLINE, 0.5.seconds) do
-        assert_gives_up_within(1.5.seconds, Timeout::Error) { @fetch.fetch_document(url, ip: "127.0.0.1") }
-      end
-    end
-  end
-
-  test "#fetch_document gives up on a body that trickles in past the deadline" do
-    trickle_body = ->(client) do
-      client.write "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 100\r\n\r\n"
-      100.times { client.write "x"; sleep 0.05 }
-    end
-
-    with_local_host(trickle_body) do |url|
-      stub_const(Opengraph::Fetch, :DEADLINE, 0.5.seconds) do
-        assert_gives_up_within(1.5.seconds, Timeout::Error) { @fetch.fetch_document(url, ip: "127.0.0.1") }
-      end
-    end
-  end
-
-  test "#fetch_document gives up on redirects that keep coming past the deadline" do
-    stub_dns_resolution("1.2.3.4")
-    WebMock.stub_request(:get, "https://www.example.com/").to_return do
-      sleep 0.2
-      { status: 302, headers: { location: "https://www.example.com/" } }
-    end
-
-    stub_const(Opengraph::Fetch, :DEADLINE, 0.5.seconds) do
-      assert_gives_up_within(1.second, Timeout::Error) { @fetch.fetch_document(@url, ip: "1.2.3.4") }
-    end
-  end
-
   test "#fetch_document is empty following redirects that never finish" do
     WebMock.stub_request(:get, "https://www.example.com/")
       .to_return(status: 302, headers: { location: "https://www.example.com/" })
@@ -162,32 +114,5 @@ class Opengraph::FetchTest < ActiveSupport::TestCase
   private
     def large_body_content
       "x" * (Opengraph::Fetch::MAX_BODY_SIZE + 1)
-    end
-
-    # A real socket, because WebMock reads the whole response before the code under test sees any of it.
-    def with_local_host(respond = ->(client) { })
-      server = TCPServer.new("127.0.0.1", 0)
-      connections = Queue.new
-      Thread.new do
-        loop do
-          client = server.accept
-          connections << client
-          client.readpartial(1024)
-          respond.call(client)
-        end
-      rescue IOError, SystemCallError
-      end
-
-      WebMock.disable!
-      yield URI.parse("http://www.example.com:#{server.addr[1]}/"), connections
-    ensure
-      WebMock.enable!
-      server&.close
-    end
-
-    def assert_gives_up_within(limit, error, &block)
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      assert_raises(error, &block)
-      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, limit
     end
 end

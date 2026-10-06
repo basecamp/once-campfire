@@ -5,8 +5,7 @@ class Opengraph::Fetch
   ALLOWED_DOCUMENT_CONTENT_TYPE = "text/html"
   MAX_BODY_SIZE = 5.megabytes
   MAX_REDIRECTS = 10
-  TIMEOUT = 7.seconds   # to connect (TLS included), and for each read and write, as Webhook does
-  DEADLINE = 10.seconds # for the whole fetch: redirects, headers and body
+  TIMEOUT = 7.seconds # to connect (TLS included), and for each read and write, as Webhook does
 
   class TooManyRedirectsError < StandardError; end
   class RedirectDeniedError < StandardError; end
@@ -24,25 +23,22 @@ class Opengraph::Fetch
   end
 
   private
-    # A member triggers this from a web request, and the host on the other end decides how fast it answers.
-    # The timeouts bound each operation, but Net::HTTP reads headers and body in as many reads as the host
-    # likes, so only a deadline over the whole fetch stops one that sends a byte at a time.
+    # The timeouts bound each operation. A host can still send its headers or body a byte at a time,
+    # in as many reads as it likes: UnfurlLinksController puts the whole unfurl under one deadline.
     def request(url, request_class, ip:)
-      Timeout.timeout(DEADLINE) do
-        MAX_REDIRECTS.times do
-          Net::HTTP.start(url.host, url.port, ipaddr: ip, use_ssl: url.scheme == "https", **timeouts) do |http|
-            http.request request_class.new(url) do |response|
-              if response.is_a?(Net::HTTPRedirection)
-                url, ip = resolve_redirect(response["location"])
-              else
-                yield response
-              end
+      MAX_REDIRECTS.times do
+        Net::HTTP.start(url.host, url.port, ipaddr: ip, use_ssl: url.scheme == "https", **timeouts) do |http|
+          http.request request_class.new(url) do |response|
+            if response.is_a?(Net::HTTPRedirection)
+              url, ip = resolve_redirect(response["location"])
+            else
+              yield response
             end
           end
         end
-
-        raise TooManyRedirectsError
       end
+
+      raise TooManyRedirectsError
     end
 
     # Without max_retries: 0, Net::HTTP sends a GET or HEAD that timed out a second time.
