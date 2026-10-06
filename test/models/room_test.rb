@@ -1,6 +1,8 @@
 require "test_helper"
 
 class RoomTest < ActiveSupport::TestCase
+  include ActionCable::TestHelper
+
   test "grant membership to user" do
     rooms(:watercooler).memberships.grant_to(users(:kevin))
     assert rooms(:watercooler).users.include?(users(:kevin))
@@ -39,6 +41,19 @@ class RoomTest < ActiveSupport::TestCase
     assert_not newcomer.memberships.exists?(room_id: room.id)
     perform_enqueued_jobs only: Room::DestroyJob
     assert_not Room.exists?(room.id)
+  end
+
+  test "a room destroyed later resets the connections of its former members, as revoking their memberships would" do
+    room = rooms(:designers)
+    former_members = room.users.to_a
+    assert former_members.many?
+
+    room.destroy_later
+    perform_enqueued_jobs only: Room::DestroyJob
+
+    former_members.each do |member|
+      assert_broadcast_on "action_cable/#{member.to_gid_param}", { type: "disconnect", reconnect: true }
+    end
   end
 
   test "destroying one message at a time leaves nothing of the room behind" do

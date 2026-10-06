@@ -90,8 +90,9 @@ class RoomsControllerTest < ActionDispatch::IntegrationTest
 
   test "destroy takes the room away from its members at once and leaves its messages to a job" do
     room = rooms(:designers)
+    member_ids = room.memberships.pluck(:user_id)
 
-    assert_enqueued_with(job: Room::DestroyJob, args: [ room ]) do
+    assert_enqueued_with(job: Room::DestroyJob, args: [ room, member_ids ]) do
       assert_no_difference -> { Message.count } do
         delete room_url(room)
         assert_redirected_to root_url

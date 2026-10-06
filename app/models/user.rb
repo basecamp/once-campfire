@@ -50,8 +50,18 @@ class User < ApplicationRecord
   end
 
   private
+    # One statement, which SQLite runs under the write lock, so no room is closed between reading the open ones and
+    # inserting. A room that Room#destroy_later closes is either closed before, and skipped, or after, and takes this
+    # membership away with the others. A room that granted itself to every user when it was created is skipped too,
+    # as insert_all did.
     def grant_membership_to_open_rooms
-      Membership.insert_all(Rooms::Open.pluck(:id).collect { |room_id| { room_id: room_id, user_id: id } })
+      now = Time.current
+
+      Membership.connection.execute Membership.sanitize_sql([ <<~SQL, id, now, now ])
+        insert into memberships (room_id, user_id, created_at, updated_at)
+        select id, ?, ?, ? from rooms where type = 'Rooms::Open'
+        on conflict do nothing
+      SQL
     end
 
     def deactived_email_address

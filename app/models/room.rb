@@ -51,12 +51,19 @@ class Room < ApplicationRecord
   def destroy_later
     room = open? ? becomes!(Rooms::Closed) : self
 
-    transaction do
+    former_member_ids = transaction do
       room.save!
-      room.memberships.delete_all
+      room.memberships.pluck(:user_id).tap { room.memberships.delete_all }
     end
 
-    Room::DestroyJob.perform_later(room)
+    Room::DestroyJob.perform_later(room, former_member_ids)
+  end
+
+  # Deleting the memberships skips the reset that revoking one does, so the former members get it here, all at once,
+  # before the messages go: their connections stop receiving the room's streams. It's done in the job, not the
+  # request, because it costs a Redis round trip per member.
+  def reset_remote_connections_of(user_ids)
+    User.where(id: user_ids).find_each(&:reset_remote_connections)
   end
 
   # Each message is destroyed in its own transaction, so other writes get through in between. Any message posted
