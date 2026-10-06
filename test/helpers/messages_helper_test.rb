@@ -1,6 +1,8 @@
 require "test_helper"
 
 class MessagesHelperTest < ActionView::TestCase
+  include ActiveRecord::Assertions::QueryAssertions
+
   test "message_presentation neutralizes unsafe URI schemes in links" do
     message = Message.create! room: rooms(:pets), body: '<div><a href="javascript:alert(1)">x</a></div>', client_message_id: "0015", creator: users(:jason)
 
@@ -26,19 +28,23 @@ class MessagesHelperTest < ActionView::TestCase
   end
 
   test "message_presentation shows an image in the rich text as a file, rather than making its preview on view" do
-    presentation = view.message_presentation(message_with_file_in_rich_text("moon.jpg", "image/jpeg"))
+    message = Message.with_attachment_details.find(message_with_file_in_rich_text("moon.jpg", "image/jpeg").id)
+
+    presentation = nil
+    assert_no_queries_match(/active_storage_variant_records/) { presentation = view.message_presentation(message) }
 
     assert_no_match %r{/representations/}, presentation
     assert_match %r{<span class="attachment__name">moon\.jpg</span>}, presentation
   end
 
-  test "message_presentation shows an image in the rich text whose preview was already made" do
+  test "message_presentation shows an image in the rich text as a file even when its preview was made" do
     message = message_with_file_in_rich_text("moon.jpg", "image/jpeg")
     message.body.embeds.first.blob.variant(resize_to_limit: [ 1024, 768 ]).processed
 
     presentation = view.message_presentation(message.reload)
 
-    assert_match %r{<img[^>]+src="[^"]*/representations/[^"]*moon\.jpg"}, presentation
+    assert_no_match %r{/representations/}, presentation
+    assert_match %r{<span class="attachment__name">moon\.jpg</span>}, presentation
   end
 
   test "message_presentation shows a video in the rich text as a file" do
