@@ -8,7 +8,7 @@ class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
 
     assert subscription.confirmed?
     assert_has_stream "user_#{users(:jz).id}_unreads"
-    assert_not_includes subscription.streams, "unread_rooms"
+    assert_not_includes subscription.stream_names, "unread_rooms"
   end
 
   test "an outsider is not told about activity in a room they can't see" do
@@ -37,7 +37,7 @@ class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
       stub_connection(current_user: user)
       subscribe
 
-      stream = subscription.streams.sole
+      stream = subscription.stream_names.sole
       before = ActionCable.server.pubsub.broadcasts(stream).size
 
       yield

@@ -6,10 +6,10 @@
       <%= image_tag "disclosure.svg", aria: { hidden: "true" }, size: 10, class: "disclosure" %>
     </summary>
 
-    <% case
-      when platform.edge? %>
+    <% case %>
+      <% when platform.edge? %>
         <ol>
-          <li>Click <em><%= image_tag "install-edge.svg", alt: "the app available - install Campfire chat button", size: 16 %></em>in the address bar.</li>
+          <li>Click <em><%= image_tag "external/install-edge.svg", alt: "the app available - install Campfire chat button", size: 16 %></em>in the address bar.</li>
           <li>Click <em>Install</em>.</li>
         </ol>
       <% when platform.chrome? && platform.android? %>
