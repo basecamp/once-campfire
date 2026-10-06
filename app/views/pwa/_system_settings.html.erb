@@ -5,8 +5,8 @@
     <%= image_tag "disclosure.svg", aria: { hidden: "true" }, size: 10, class: "disclosure" %>
   </summary>
 
-  <% case
-    when platform.firefox? && platform.android? %>
+  <% case %>
+    <% when platform.firefox? && platform.android? %>
       <ol>
         <li>Tap the <em><%= image_tag "menu-dots-vertical.svg", alt: "More options", size: 16 %></em> menu button.</li>
         <li>Tap <em>Settings</em>.</li>

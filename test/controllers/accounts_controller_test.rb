@@ -10,6 +10,16 @@ class AccountsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
   end
 
+  test "edit shows whether room creation is restricted to administrators" do
+    get edit_account_url
+    assert_select "label.switch input.switch__input[type=checkbox]:not([checked])"
+
+    accounts(:signal).update!(settings: { restrict_room_creation_to_administrators: true })
+
+    get edit_account_url
+    assert_select "label.switch input.switch__input[type=checkbox][checked][data-action='change->form#submit']"
+  end
+
   test "edit groups administrators separately from members with a divider" do
     get edit_account_url
 

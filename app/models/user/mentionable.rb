@@ -11,6 +11,11 @@ module User::Mentionable
     "users/mention"
   end
 
+  # How a mention appears inside the editor, matching the prompt's editor template.
+  def to_editor_content_attachment_partial_path
+    "users/mention"
+  end
+
   def attachable_plain_text_representation(caption)
     "@#{name}"
   end
