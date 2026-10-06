@@ -40,9 +40,10 @@ class Messages::AttachmentPresentation
       end
     end
 
+    # A preview is processed once the frame is drawn, but the poster is a variant of that frame, which can fail on its own.
     def video_poster_url
       poster = message.attachment.preview(:poster)
-      url_for(poster) if poster.processed?
+      url_for(poster) if poster.processed? && poster.image.variant(poster.variation).processed?
     end
 
     def lightboxed_image_preview_tag

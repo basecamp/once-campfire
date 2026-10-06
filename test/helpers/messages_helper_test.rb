@@ -51,6 +51,17 @@ class MessagesHelperTest < ActionView::TestCase
     assert_no_match %r{poster=|/representations/}, presentation
   end
 
+  test "message_presentation shows a video whose frame was drawn but whose poster wasn't made without one" do
+    message = attachment_message("alpha-centuri.mov", "video/quicktime", processed: false)
+    message.attachment.preview(format: :jpg).processed
+    assert message.attachment.preview(:poster).processed?
+
+    presentation = view.message_presentation(message.reload)
+
+    assert_match %r{<video[^>]+src="[^"]*alpha-centuri\.mov"}, presentation
+    assert_no_match %r{poster=|/representations/}, presentation
+  end
+
   private
     def attachment_message(file, content_type, processed:)
       attributes = { creator: users(:jason), client_message_id: "0015", attachment: fixture_file_upload(file, content_type) }
