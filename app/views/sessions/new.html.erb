@@ -25,6 +25,15 @@
           </label>
         </div>
 
+        <% if smtp_enabled? %>
+          <div>
+            <%= link_to session_password_resets_path, class: "btn flex-item-justify-end" do %>
+              <div> Forgot your password? </div>
+              <span class="for-screen-reader">Forgot password?</span>
+            <% end %>
+          </div>
+        <% end %>
+
         <%= form.button class: "btn btn--reversed center txt-large", type: "submit", name: "log_in" do %>
           <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
           <span class="for-screen-reader">Go</span>

@@ -1,0 +1,65 @@
+<% @page_title = "Reset password" %>
+<% turbo_page_requires_reload %>
+
+<section class="txt-align-center">
+  <div class="panel <%= "shake" if flash[:alert] %>">
+    <%= account_logo_tag style: "center margin-block-end txt-xx-large" %>
+
+    <%= form_with model: @user, url: session_password_reset_url, class: "flex flex-column gap", data: { controller: "password-reset" }, method: :patch do |form| %>
+      <fieldset class="flex flex-column gap center-block upad">
+        <legend class="txt-large txt-align-center"><strong><%= Current.account.name %></strong></legend>
+        <p>Please enter the new password</p>
+
+        <div class="flex align-center gap">
+          <%= translation_button(:password) %>
+          <label class="flex align-center gap flex-item-grow txt-large input input--actor">
+            <%= form.password_field :new_password,
+                class: "input",
+                autocomplete: "new-password",
+                placeholder: "New password",
+                required: true,
+                maxlength: 72,
+                data: {
+                  password_reset_target: "resetPasswordInput",
+                  action: "input->password-reset#resetPasswordCheckInputs"
+                } %>
+            <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+          </label>
+        </div>
+
+        <div class="flex align-center gap">
+          <%= translation_button(:password) %>
+          <label class="flex align-center gap flex-item-grow txt-large input input--actor">
+            <%= form.password_field :confirm_new_password,
+                class: "input",
+                autocomplete: "new-password",
+                placeholder: "Confirm new password",
+                required: true,
+                maxlength: 72,
+                data: {
+                  password_reset_target: "resetPasswordConfirmInput",
+                  action: "input->password-reset#resetPasswordCheckInputs"
+                } %>
+            <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+          </label>
+        </div>
+        <%= form.text_field :password_reset_id, value: @password_reset_id, hidden: true,required: true %>
+
+        <p id="reset_password_not_matched" class="reset-password-alert" data-password-reset-target="resetPasswordError">Passwords do not match!</p>
+
+        <div>
+          <%= form.button class: "btn btn--reversed center txt-large",
+              type: "submit",
+              name: "reset_password",
+              disabled: true,
+              data: { password_reset_target: "resetPasswordSubmit" } do %>
+            <%= image_tag "arrow-right.svg", aria: { hidden: "true" } %>
+            <span class="for-screen-reader">Confirm new password</span>
+          <% end %>
+        </div>
+      </fieldset>
+    <% end %>
+  </div>
+
+  <%= render "accounts/help_contact" %>
+</section>
