@@ -64,6 +64,9 @@ Campfire also has implementations in Django, Laravel, Express, Elixir, Go and Ru
 Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395,
 with four hardware threads allocated to each app.
 
+To run the Rails HTTP workloads locally, see the [benchmark harness and usage instructions](https://github.com/basecamp/once-campfire-rust/blob/main/bench/run)
+in the Rust repository.
+
 ## Development
 
 You are welcome - and encouraged - to modify Campfire to your liking.
