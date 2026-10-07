@@ -33,4 +33,13 @@ class ActiveSupport::TestCase
   teardown do
     WebMock.reset!
   end
+
+  # fixtures :all inserts messages before rooms, so INSERT triggers cannot count
+  # yet. Backfill once after load; ensure! covers schema.rb (triggers not dumped).
+  def load_fixtures(config)
+    fixtures = super
+    Room::MessagesCount.ensure!
+    Room::MessagesCount.backfill!
+    fixtures
+  end
 end

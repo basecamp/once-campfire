@@ -1,6 +1,9 @@
 require "test_helper"
+require "active_record/testing/query_assertions"
 
 class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
+  include ActiveRecord::Assertions::QueryAssertions
+
   setup do
     @room = rooms(:watercooler)
   end
@@ -93,7 +96,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
       @room.messages.create!(body: "Filler #{i}", creator: users(:jason), client_message_id: "filler-#{i}")
     end
 
-    get room_bot_messages_url(@room, users(:bender).bot_key)
+    assert_no_queries_match(/SELECT COUNT\(\*\) FROM "messages"/i) do
+      get room_bot_messages_url(@room, users(:bender).bot_key)
+    end
     assert_response :success
 
     json = JSON.parse(response.body)
@@ -119,7 +124,10 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "index in a room with no messages" do
-    get room_bot_messages_url(rooms(:bender_and_kevin), users(:bender).bot_key)
+    room = rooms(:bender_and_kevin)
+    assert_equal 0, room.messages_count
+
+    get room_bot_messages_url(room, users(:bender).bot_key)
     assert_response :success
 
     assert_equal [], JSON.parse(response.body)
