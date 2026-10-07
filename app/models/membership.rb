@@ -9,7 +9,8 @@ class Membership < ApplicationRecord
   enum :involvement, %w[ invisible nothing mentions everything ].index_by(&:itself), prefix: :involved_in
 
   scope :with_ordered_room, -> { includes(:room).joins(:room).order("LOWER(rooms.name)") }
-  scope :without_direct_rooms, -> { joins(:room).where.not(room: { type: "Rooms::Direct" }) }
+  scope :with_direct_rooms, -> { includes(:room).joins(:room).merge(Room.directs).order(rooms: { updated_at: :desc }) }
+  scope :without_direct_rooms, -> { joins(:room).merge(Room.without_directs) }
 
   scope :visible, -> { where.not(involvement: :invisible) }
   scope :unread,  -> { where.not(unread_at: nil) }
