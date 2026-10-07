@@ -53,9 +53,12 @@ class Room::MessagePusher
       relevant_subscriptions.merge(Membership.involved_in_mentions).where(user_id: mentionees.ids)
     end
 
+    # Banning keeps the user's subscriptions, so that unbanning brings their notifications back,
+    # but nobody who can't sign in should be sent what's said in their rooms meanwhile.
     def relevant_subscriptions
       Push::Subscription
         .joins(user: :memberships)
+        .merge(User.active)
         .merge(Membership.visible.disconnected.where(room: room).where.not(user: message.creator))
     end
 

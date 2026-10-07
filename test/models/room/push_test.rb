@@ -63,7 +63,44 @@ class Room::PushTest < ActiveSupport::TestCase
     end
   end
 
+  test "does not notify banned users" do
+    users(:kevin).ban
+
+    assert_not_includes pushed_users { post_to_designers_mentioning_kevin }, users(:kevin)
+  end
+
+  test "notifies users again once they're unbanned" do
+    users(:kevin).ban
+    users(:kevin).unban
+
+    assert_includes pushed_users { post_to_designers_mentioning_kevin }, users(:kevin)
+  end
+
+  test "does not notify banned users of direct messages" do
+    users(:kevin).ban
+
+    pushed = pushed_users do
+      rooms(:david_and_kevin).messages.create! body: "Just between us", client_message_id: "earth", creator: users(:david)
+    end
+    assert_not_includes pushed, users(:kevin)
+  end
+
+  test "notifies active users mentioned" do
+    assert_includes pushed_users { post_to_designers_mentioning_kevin }, users(:kevin)
+  end
+
   private
+    def post_to_designers_mentioning_kevin
+      rooms(:designers).messages.create! body: "Hey #{mention_attachment_for(:kevin)}", client_message_id: "earth", creator: users(:david)
+    end
+
+    def pushed_users(&block)
+      queued = []
+      Rails.configuration.x.web_push_pool.stubs(:queue).with { |_payload, subscriptions| queued.concat subscriptions.to_a }
+      perform_enqueued_jobs(only: Room::PushMessageJob, &block)
+      queued.map(&:user).uniq
+    end
+
     def wait_for_web_push_delivery_pool_tasks(count)
       wait_for_pool_tasks(Rails.configuration.x.web_push_pool.delivery_pool, count)
     end
