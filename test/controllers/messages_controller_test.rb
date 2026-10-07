@@ -57,6 +57,32 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "message copy links preserve the request origin in broadcasts and regular reads" do
+    [
+      [ "once.campfire.test:38683", false, "http://once.campfire.test:38683" ],
+      [ "once.campfire.test:8443", true, "https://once.campfire.test:8443" ],
+      [ "once.campfire.test:80", false, "http://once.campfire.test" ],
+      [ "once.campfire.test:443", true, "https://once.campfire.test" ]
+    ].each_with_index do |(host, secure, origin), index|
+      host! host
+      https! secure
+
+      post room_messages_path(@room, format: :turbo_stream), params: { message: {
+        body: "Request origin #{index}", client_message_id: "request-origin-#{index}" } }
+      assert_response :success
+      message = Message.last
+      expected_url = "#{origin}/rooms/#{@room.id}/@#{message.id}"
+
+      assert_rendered_turbo_stream_broadcast @room, :messages, action: "append", target: [ @room, :messages ] do
+        assert_copy_link_button expected_url
+      end
+
+      get room_message_path(@room, message)
+      assert_response :success
+      assert_copy_link_button expected_url
+    end
+  end
+
   test "creating a message with an image that can't be decoded broadcasts the message to the room" do
     webp = Vips::Image.new_from_file(file_fixture("moon.jpg").to_s).webpsave_buffer
     broken = Rack::Test::UploadedFile.new(StringIO.new(webp.byteslice(0, webp.bytesize / 2)), "image/webp", original_filename: "broken.webp")
