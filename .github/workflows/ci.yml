@@ -102,7 +102,7 @@ jobs:
         options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 libvips curl ffmpeg
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 sqlite3 libvips curl ffmpeg
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,6 +120,9 @@ jobs:
       - name: Run tests
         run: bin/rails db:setup test
 
+      - name: Test benchmark response validation
+        run: bundle exec ruby bench/test_http_client.rb
+
   test_system:
     runs-on: ubuntu-latest
     permissions:
@@ -132,7 +135,7 @@ jobs:
         options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 libvips curl ffmpeg
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 sqlite3 libvips curl ffmpeg
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

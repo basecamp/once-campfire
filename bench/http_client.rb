@@ -33,12 +33,12 @@ class BenchmarkHTTPClient
     cookie_header(cookies)
   end
 
-  def measure(path, cookie, concurrency:, duration:)
+  def measure(path, cookie, concurrency:, duration:, contract:)
     start = clock
     deadline = start + duration
     workers = Array.new(concurrency) do
       Thread.new do
-        result = { latencies: [], statuses: Hash.new(0), bytes: 0, errors: 0 }
+        result = { latencies: [], statuses: Hash.new(0), bytes: 0, errors: 0, invalid_responses: 0 }
         while clock < deadline
           begin
             connection.start do |http|
@@ -48,6 +48,7 @@ class BenchmarkHTTPClient
                 result[:latencies] << (clock - requested) * 1000
                 result[:statuses][response.code] += 1
                 result[:bytes] += response.body.bytesize
+                result[:invalid_responses] += 1 unless contract.valid?(response)
               end
             end
           rescue IOError, SystemCallError, Timeout::Error, SocketError, Net::HTTPBadResponse
@@ -64,9 +65,10 @@ class BenchmarkHTTPClient
     statuses = Hash.new(0)
     samples.each { |sample| sample[:statuses].each { |status, count| statuses[status] += count } }
     errors = samples.sum { |sample| sample[:errors] }
-    raise "#{path}: HTTP statuses #{statuses}, #{errors} transport errors" unless errors.zero? && statuses.keys == [ "200" ]
+    invalid = samples.sum { |sample| sample[:invalid_responses] }
+    raise "#{path}: HTTP statuses #{statuses}, #{errors} transport errors, #{invalid} invalid bodies" unless errors.zero? && invalid.zero? && statuses.keys == [ "200" ]
     { path: path, conc: concurrency, gzip: false, secs: elapsed, rps: latencies.size / elapsed,
-      ok: latencies.size, statuses: statuses, errors: errors,
+      ok: latencies.size, statuses: statuses, errors: errors, invalid_responses: invalid, validation: "route-contract-v1",
       avg_bytes: samples.sum { |sample| sample[:bytes] } / latencies.size,
       latency_ms: { p50: percentile(latencies, 0.50), p95: percentile(latencies, 0.95), p99: percentile(latencies, 0.99) } }
   end

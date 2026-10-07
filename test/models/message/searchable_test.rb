@@ -68,6 +68,22 @@ class Message::SearchableTest < ActiveSupport::TestCase
     assert_no_match(/TEMP B-TREE/, Message.connection.select_rows("EXPLAIN QUERY PLAN #{queries.sole}").map(&:last).join(" | "))
   end
 
+  test "bounded search keeps older reachable hits behind inaccessible matches" do
+    accessible = rooms(:designers).messages.create! body: "bounded sparse needle", creator: users(:david)
+    private_room = Room.create! name: "Private search history", type: "Rooms::Closed", creator: users(:jason)
+    now = Time.current
+    records = 1100.times.map do |i|
+      { room_id: private_room.id, creator_id: users(:jason).id, client_message_id: "private-#{i}", created_at: now, updated_at: now }
+    end
+    ids = Message.insert_all!(records, returning: %w[id]).rows.flatten
+    ids.each do |id|
+      Message.connection.execute Message.sanitize_sql([ "INSERT INTO message_search_index(rowid,body) VALUES (?,?)", id, "bounded sparse needle" ])
+    end
+    assert_equal [ accessible.id ], Message.search_reachable(users(:david), "bounded sparse").map(&:id)
+    rooms(:designers).memberships.where(user: users(:david)).delete_all
+    assert_empty Message.search_reachable(users(:david), "bounded sparse")
+  end
+
   test "rich text body is converted to plain text for indexing" do
     message = rooms(:designers).messages.create! body: "<span>My hovercraft is full of eels</span>", client_message_id: "earth", creator: users(:david)
 

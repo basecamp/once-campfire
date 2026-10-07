@@ -22,5 +22,6 @@ CSRF disabling. Unread fanout excludes adapter I/O.
 The HTTP driver uses production Puma/Redis with one worker and five threads. Ruby threads
 each maintain a keep-alive connection, request uncompressed responses, and consume the
 whole body. Login uses normal CSRF protection; all warmup and measured responses must be
-HTTP 200 without transport errors. Measurements exclude Thruster, TLS and gzip. Client
+HTTP 200 without transport errors, complete HTML, exact independently seeded message windows
+and the visible sidebar rooms; this applies to every warmup and measured response. Measurements exclude Thruster, TLS and gzip. Client
 CPU, JIT warmup and GC can affect throughput; repeat runs and check client saturation.

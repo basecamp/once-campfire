@@ -3,6 +3,7 @@
 require "socket"
 require_relative "support"
 require_relative "http_client"
+require_relative "response_contract"
 
 include BenchmarkSupport
 options = parse_options("Compare HTTP throughput with Ruby keep-alive clients; every response must be HTTP 200.",
@@ -58,9 +59,10 @@ begin
       cookie = client.login(labels)
       results = {}
       paths.each do |name, path|
-        client.measure(path, cookie, concurrency: 1, duration: 3)
+        contract = BenchmarkResponseContract.new(name, File.join(data, "storage/db/production.sqlite3"), labels)
+        client.measure(path, cookie, concurrency: 1, duration: 3, contract: contract)
         concurrencies.each do |concurrency|
-          results["#{name}_#{concurrency}"] = client.measure(path, cookie, concurrency: concurrency, duration: options[:duration])
+          results["#{name}_#{concurrency}"] = client.measure(path, cookie, concurrency: concurrency, duration: options[:duration], contract: contract)
         end
       end
       write_json(File.join(options[:output], "#{side}-#{iteration + 1}.json"), results)

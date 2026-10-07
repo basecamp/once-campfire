@@ -19,6 +19,24 @@ module Message::Searchable
   end
 
   class_methods do
+    def search_reachable(user, query, size: 100)
+      relation = user.reachable_messages.search(query).with_presentation
+      probe = connection.select_rows(sanitize_sql([ <<~SQL, user.id, match_terms(query) ]))
+        SELECT m.id, mm.user_id IS NOT NULL FROM message_search_index idx
+        JOIN messages m ON m.id = idx.rowid
+        LEFT JOIN memberships mm ON mm.room_id = m.room_id AND mm.user_id = ?
+        WHERE idx.body MATCH ? ORDER BY idx.rowid DESC LIMIT 1000
+      SQL
+      ids = probe.filter_map { |id, reachable| id if reachable == 1 }.first(size)
+
+      # A scoped fallback preserves older reachable hits behind a large private history.
+      if ids.size < size && probe.size == 1000
+        relation.last_page_of_matches(size)
+      else
+        Message::Pagination::Page.load(relation.where(id: ids).reorder(:id), :last, size)
+      end
+    end
+
     # Orders by the index's rowid, which is the message id, so SQLite walks the full-text index
     # newest first and stops at the page. Ordering by created_at sorted every match before paging.
     def last_page_of_matches(size)
