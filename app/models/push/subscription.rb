@@ -14,9 +14,9 @@ class Push::Subscription < ApplicationRecord
   validates :endpoint, presence: true
   validate :validate_endpoint_url
 
-  def notification(**params)
+  def notification(badge: user.memberships.unread.count, **params)
     # Defer DNS lookup to the delivery worker to prevent rebinding
-    WebPush::Notification.new(**params, badge: user.memberships.unread.count, endpoint: endpoint, endpoint_ip_resolver: method(:resolved_endpoint_ip), p256dh_key: p256dh_key, auth_key: auth_key)
+    WebPush::Notification.new(**params, badge: badge, endpoint: endpoint, endpoint_ip_resolver: method(:resolved_endpoint_ip), p256dh_key: p256dh_key, auth_key: auth_key)
   end
 
   # Validate at point of use, not just when saved.
