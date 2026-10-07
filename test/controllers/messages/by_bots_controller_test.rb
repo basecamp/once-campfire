@@ -3,6 +3,8 @@ require "test_helper"
 class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   setup do
     @room = rooms(:watercooler)
+    Room.reset_counters(@room.id, :messages)
+    @room.reload
   end
 
   test "create" do

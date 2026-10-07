@@ -1,7 +1,7 @@
 class Message < ApplicationRecord
   include Attachment, Broadcasts, Mentionee, Pagination, Searchable
 
-  belongs_to :room, touch: true
+  belongs_to :room, touch: true, counter_cache: true
   belongs_to :creator, class_name: "User", default: -> { Current.user }
 
   has_many :boosts, dependent: :destroy

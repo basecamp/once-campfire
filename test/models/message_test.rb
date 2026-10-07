@@ -83,6 +83,20 @@ class MessageTest < ActiveSupport::TestCase
     assert_equal [ message ], Message.search(%(say "hi NOT)).to_a
   end
 
+  test "creating and destroying a message keeps rooms.messages_count in step" do
+    room = rooms(:designers)
+    Room.reset_counters(room.id, :messages)
+    room.reload
+
+    assert_difference -> { room.reload.messages_count }, +1 do
+      create_new_message_in room
+    end
+
+    assert_difference -> { room.reload.messages_count }, -1 do
+      room.messages.order(:id).last.destroy
+    end
+  end
+
   private
     def create_new_message_in(room)
       room.messages.create!(creator: users(:jason), body: "Hello", client_message_id: "123")
