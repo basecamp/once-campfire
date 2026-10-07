@@ -9,7 +9,14 @@ module CachedResponses
   end
 
   def perform_caching
-    super && @response_cache_version.present? && !ActiveRecord::Base.connection.transaction_open?
+    return false unless super && @response_cache_version.present? && !ActiveRecord::Base.connection.transaction_open?
+
+    # Check again after authentication, before the first native fragment lookup.
+    # Later renders retain this immutable namespace and cannot poison a new epoch.
+    unless defined?(@fragment_cache_snapshot_valid)
+      @fragment_cache_snapshot_valid = @response_cache_version == ResponseCache.instance.version
+    end
+    @fragment_cache_snapshot_valid
   end
 
   # Keep the class store (including shared rate limits) and Rails.cache unchanged.

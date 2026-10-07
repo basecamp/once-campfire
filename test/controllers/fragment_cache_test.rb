@@ -61,6 +61,19 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "foreign conditional body"
   end
 
+  test "a foreign commit after capture bypasses old native fragment lookups" do
+    ResponseCache.instance.stubs(:budget).returns(0)
+    get room_messages_url(@room)
+    assert_response :success
+    MessagesController.any_instance.stubs(:set_version_headers).with do
+      foreign_write("UPDATE action_text_rich_texts SET body = ? WHERE record_type = 'Message' AND record_id = ?", "foreign before fragments", @message.id)
+      true
+    end
+    get room_messages_url(@room), headers: { "If-None-Match" => "unmatched" }
+    assert_response :success
+    assert_includes response.body, "foreign before fragments"
+  end
+
   test "refresh streams recheck native cached creator body and boost presentation" do
     message = messages(:first)
     room = message.room
