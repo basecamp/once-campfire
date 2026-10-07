@@ -5,6 +5,10 @@ class Sessions::TransfersControllerTest < ActionDispatch::IntegrationTest
     get session_transfer_url("some-token")
 
     assert_response :success
+    assert_select "form[data-controller='auto-submit']", count: 1
+    assert_select "input[name='_method'][value='put']", count: 1
+    assert_equal response.body.scan(/<form\b/).size, response.body.scan("</form>").size
+    assert_match(/<form\b[^>]*data-controller="auto-submit"[^>]*>(?:\s*<input\b[^>]*>)*\s*<\/form>/, response.body)
   end
 
   test "update establishes a session when the code is valid" do
