@@ -67,6 +67,22 @@ class MessagesCachingTest < ActionDispatch::IntegrationTest
     assert_equal in_order, css_select("##{dom_id(messages(:fourth), :boosts)} .boost").map { it["id"] }
   end
 
+  test "a page of messages loads whether their previews were made along with the messages, not one at a time" do
+    room = rooms(:watercooler)
+    2.times do |copy|
+      { "moon.jpg" => "image/jpeg", "alpha-centuri.mov" => "video/quicktime" }.each do |file, content_type|
+        room.messages.create_with_attachment! creator: users(:david), client_message_id: "#{copy}-#{file}", attachment: fixture_file_upload(file, content_type)
+      end
+    end
+
+    assert_no_queries_match(/"active_storage_\w+"\."(id|blob_id|record_id)" = \?/) do
+      get room_messages_url(room)
+    end
+    assert_response :success
+    assert_select "img[src*='moon.jpg']", count: 2
+    assert_select "video[poster]", count: 2
+  end
+
   private
     def with_memory_cache
       old_cache = Rails.cache

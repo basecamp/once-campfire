@@ -17,11 +17,16 @@ class Messages::AttachmentPresentation
     attr_reader :message, :context
     delegate :tag, :link_to, :broadcast_image_tag, :rails_blob_path, :url_for, to: :context
 
+    # Previews are made when the message is posted, within limits. One that wasn't, because the file was too large or
+    # the preview failed, isn't attempted again from here: its URL would make it on every view.
     def render_preview
-      if message.attachment.video?
+      case
+      when message.attachment.video?
         video_preview_tag
-      else
+      when message.attachment.representation(:thumb).processed?
         lightboxed_image_preview_tag
+      else
+        render_link
       end
     end
 
@@ -30,9 +35,15 @@ class Messages::AttachmentPresentation
 
       inline_media_dimension_constraints(width, height) do
         tag.video \
-          src: rails_blob_path(message.attachment), poster: url_for(message.attachment.preview(format: :webp, resize_to_limit: [ Message::THUMBNAIL_MAX_WIDTH, Message::THUMBNAIL_MAX_HEIGHT ])),
+          src: rails_blob_path(message.attachment), poster: video_poster_url,
           controls: true, preload: :none, width: "100%", height: "100%", class: "message__attachment"
       end
+    end
+
+    # A preview is processed once the frame is drawn, but the poster is a variant of that frame, which can fail on its own.
+    def video_poster_url
+      poster = message.attachment.preview(:poster)
+      url_for(poster) if poster.processed? && poster.image.variant(poster.variation).processed?
     end
 
     def lightboxed_image_preview_tag
