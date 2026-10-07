@@ -15,6 +15,11 @@ class SendingMessagesTest < ApplicationSystemTestCase
     join_room rooms(:designers)
     send_message "Is this thing on?"
 
+    # The optimistic pending message is reconciled with the server broadcast even
+    # though they no longer share a DOM id: exactly one element, no duplicate.
+    assert_selector ".message__body", text: "Is this thing on?", count: 1
+    assert_no_selector "[data-pending-message]"
+
     using_session("Kevin") do
       join_room rooms(:designers)
       assert_message_text "Is this thing on?"

@@ -24,10 +24,6 @@ class Message < ApplicationRecord
     body.to_plain_text.presence || attachment&.filename&.to_s || ""
   end
 
-  def to_key
-    [ client_message_id ]
-  end
-
   def content_type
     case
     when attachment?    then "attachment"

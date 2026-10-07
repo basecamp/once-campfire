@@ -190,6 +190,20 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "messages sharing a client_message_id render as distinct elements" do
+    victim = @messages.last
+
+    post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "Collision", client_message_id: victim.client_message_id } }
+    colliding = @room.messages.ordered.last
+    assert_not_equal victim, colliding
+
+    get room_messages_url(@room)
+
+    ids = css_select(".message[data-message-id]").map { it["id"] }
+    assert_equal ids.uniq, ids
+    ensure_messages_present victim, colliding
+  end
+
   private
     def ensure_messages_present(*messages, count: 1)
       messages.each do |message|
