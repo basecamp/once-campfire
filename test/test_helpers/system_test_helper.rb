@@ -22,6 +22,8 @@ module SystemTestHelper
   def send_message(message)
     fill_in_rich_text_area "message_body", with: message
     click_on "send"
+    # Keep job helpers active through the actual response, not the optimistic DOM.
+    assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: message
   end
 
   def within_message(message, &block)
