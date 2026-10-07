@@ -1,0 +1,139 @@
+require "test_helper"
+
+class CachedResponsesTest < ActionDispatch::IntegrationTest
+  self.use_transactional_tests = false
+
+  setup do
+    host! "once.campfire.test"
+    sign_in :david
+    @previous_forgery = ActionController::Base.allow_forgery_protection
+    ActionController::Base.allow_forgery_protection = true
+    @previous_cache = Rails.cache
+    @previous_caching = ActionController::Base.perform_caching
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    ActionController::Base.perform_caching = true
+    @room = rooms(:watercooler)
+    # Establish last-room and CSRF cookies before checking reuse.
+    2.times { get room_url(@room) }
+    ResponseCache.instance.clear
+  end
+
+  teardown do
+    ResponseCache.instance.clear
+    ActionController::Base.allow_forgery_protection = @previous_forgery
+    Rails.cache = @previous_cache
+    ActionController::Base.perform_caching = @previous_caching
+  end
+
+  test "all four read actions reuse completed pages" do
+    urls = [ room_url(@room), room_messages_url(@room), user_sidebar_url(:me), searches_url(q: "hello") ]
+    urls.each do |url|
+      get url
+      assert_response :success
+    end
+    ResponseCache.instance.expects(:write).never
+    urls.each do |url|
+      get url
+      assert_response :success
+    end
+  end
+
+  test "cached tokens stay fresh and literal token-like text survives" do
+    get room_url(@room)
+    literal = css_select('meta[name="csrf-token"]').first["content"]
+    @room.messages.create!(creator: users(:david), body: "literal #{literal}")
+    get room_url(@room)
+    first = css_select('meta[name="csrf-token"]').first["content"]
+    get room_url(@room)
+    second = css_select('meta[name="csrf-token"]').first["content"]
+    assert_not_equal first, second
+    assert_includes response.body, "literal #{literal}"
+    assert_no_match /campfire-csrf-/, response.body
+
+    post room_messages_url(@room, format: :turbo_stream), params: {
+      authenticity_token: second, message: { body: "cached token works", client_message_id: "cache-token" } }
+    assert_response :success
+  end
+
+  test "local and foreign commits invalidate pages and nested fragments" do
+    message = @room.messages.ordered.last
+    get room_url(@room)
+    @room.messages.create!(creator: users(:david), body: "local commit")
+    get room_url(@room)
+    assert_includes response.body, "local commit"
+
+    foreign_write("UPDATE users SET name = ? WHERE id = ?", "Foreign creator", message.creator_id)
+    get room_url(@room)
+    assert_includes response.body, "Foreign creator"
+    foreign_write("UPDATE action_text_rich_texts SET body = ? WHERE record_type = 'Message' AND record_id = ?", "foreign message body", message.id)
+    get room_url(@room)
+    assert_includes response.body, "foreign message body"
+  end
+
+  test "cached room access and sessions are checked afresh" do
+    get room_url(@room)
+    foreign_write("DELETE FROM memberships WHERE room_id = ? AND user_id = ?", @room.id, users(:david).id)
+    get room_url(@room)
+    assert_redirected_to root_url
+    get user_sidebar_url(:me)
+    foreign_write("DELETE FROM sessions WHERE user_id = ?", users(:david).id)
+    get user_sidebar_url(:me)
+    assert_redirected_to new_session_url
+  end
+
+  test "conditional requests keep native validators" do
+    get room_messages_url(@room)
+    etag = response.headers["ETag"]
+    assert etag.present?
+    get room_messages_url(@room), headers: { "If-None-Match" => etag }
+    assert_response :not_modified
+  end
+
+  test "foreign presentation changes cannot return a false not-modified response" do
+    get room_messages_url(@room)
+    etag = response.headers["ETag"]
+    message = @room.messages.ordered.last
+    foreign_write("UPDATE action_text_rich_texts SET body = ? WHERE record_type = 'Message' AND record_id = ?", "changed presentation", message.id)
+    get room_messages_url(@room), headers: { "If-None-Match" => etag }
+    assert_response :success
+    assert_includes response.body, "changed presentation"
+    assert_not_equal etag, response.headers["ETag"]
+  end
+
+  test "origins and frame variants have separate entries" do
+    get room_url(@room)
+    ResponseCache.instance.expects(:write).twice
+    get room_url(@room), headers: { "Turbo-Frame" => "different-frame" }
+    host! "once.campfire.test:8081"
+    get room_path(@room)
+    assert_response :success
+  end
+
+  test "cache can be disabled" do
+    ResponseCache.instance.stubs(:budget).returns(0)
+    ResponseCache.instance.expects(:read).never
+    2.times { get room_url(@room) }
+    assert_response :success
+  end
+
+  test "a commit after authentication cannot admit captured user fields" do
+    Users::SidebarsController.any_instance.stubs(:set_version_headers).with do
+      foreign_write("UPDATE users SET name = ? WHERE id = ?", "During authentication", users(:david).id)
+      true
+    end
+    get user_sidebar_url(:me)
+    Users::SidebarsController.any_instance.unstub(:set_version_headers)
+    ResponseCache.instance.expects(:write).once
+    get user_sidebar_url(:me)
+    assert_includes response.body, "During authentication"
+  end
+
+  private
+    def foreign_write(sql, *bindings)
+      SQLite3::Database.new(ActiveRecord::Base.connection_db_config.database) do |database|
+        database.execute(sql, bindings)
+      end
+      # Fixtures share this thread's query cache outside the request executor.
+      ActiveRecord::Base.clear_query_caches_for_current_thread
+    end
+end

@@ -49,6 +49,10 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 > that people have someone to contact if they need help with their account. If that bothers you, put in any
 > email address you want and create yourself a new admin account.
 
+Authenticated room, message, sidebar and search pages use a bounded 64 MiB cache per worker.
+Set `CAMPFIRE_RESPONSE_CACHE_MB=0` to disable it. Every request still checks authentication
+and room access; commits from any SQLite writer invalidate pages, and CSRF masks stay fresh.
+
 ## Other implementations
 
 Campfire also has implementations in Django, Laravel, Express, Elixir, Go, Rust and C:

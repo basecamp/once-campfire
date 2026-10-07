@@ -4,6 +4,7 @@ class MessagesController < ApplicationController
   before_action :set_room, except: :create
   before_action :set_message, only: %i[ show edit update destroy ]
   before_action :ensure_can_administer, only: %i[ edit update destroy ]
+  around_action :cache_read_response, only: :index
 
   layout false, only: :index
 
@@ -11,7 +12,11 @@ class MessagesController < ApplicationController
     @messages = find_paged_messages
 
     if @messages.any?
-      fresh_when @messages
+      body = render_to_string(:index)
+      # Creator, body and boost edits can change HTML without touching messages.
+      # Masked CSRF tokens remain fresh while the presentation validator stays stable.
+      fresh_when etag: Digest::SHA256.hexdigest(csrf_neutral_body(body, "")), template: false
+      self.response_body = body unless performed?
     else
       head :no_content
     end

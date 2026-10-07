@@ -1,5 +1,6 @@
 class Users::SidebarsController < ApplicationController
   DIRECT_PLACEHOLDERS = 20
+  around_action :cache_read_response, only: :show
 
   def show
     visible_memberships = Current.user.memberships.visible
