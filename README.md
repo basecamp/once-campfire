@@ -51,18 +51,20 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 
 ## Other implementations
 
-Campfire also has implementations in Django, Laravel, Express, Elixir, Go and Rust:
+Campfire also has implementations in Django, Laravel, Express, Elixir, Go, Rust and C:
 
-| HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 236 | 62 | 764 | 2,702 | 981 | 32,132 | 35,056 |
-| Messages page | 384 | 70 | 922 | 3,183 | 1,341 | 31,564 | 40,481 |
-| Sidebar | 474 | 230 | 1,399 | 34,595 | 2,546 | 17,993 | 33,924 |
-| Search | 415 | 120 | 1,291 | 6,725 | 1,907 | 29,775 | 34,199 |
-| Post a message | 244 | 113 | 498 | 2,183 | 1,431 | 9,442 | 8,995 |
+| HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) | [C](https://github.com/basecamp/once-campfire-c) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Room page | 230 | 62 | 760 | 2,622 | 942 | 31,673 | 35,484 | 141,834 |
+| Messages page | 402 | 70 | 924 | 3,245 | 1,267 | 30,746 | 40,674 | 151,564 |
+| Sidebar | 468 | 229 | 1,383 | 34,938 | 2,515 | 18,586 | 34,479 | 159,850 |
+| Search | 399 | 118 | 1,135 | 6,613 | 1,814 | 29,765 | 34,432 | 155,456 |
+| Post a message | 248 | 112 | 498 | 2,088 | 1,400 | 9,073 | 8,998 | 7,460 |
+
+[Shared verification](https://github.com/basecamp/once-campfire-verification) · [Detailed results](https://github.com/basecamp/once-campfire-verification/blob/main/docs/performance-review.md).
 
 Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395 with 32 GB RAM,
-with four hardware threads allocated to each app.
+with four hardware cores allocated to each app.
 
 ## Development
 
