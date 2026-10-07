@@ -54,7 +54,7 @@ Membership.disconnect_all
 # do not inherit the flock; each worker starts its own contender. Single-process
 # mode never forks, so the initializer's contender keeps running.
 before_fork { SqliteWalCheckpoint.stop }
-on_worker_boot { SqliteWalCheckpoint.start }
+before_worker_boot { SqliteWalCheckpoint.start }
 
 Signal.trap :SIGPROF do
   Thread.list.each do |t|

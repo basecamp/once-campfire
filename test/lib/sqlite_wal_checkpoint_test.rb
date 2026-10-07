@@ -35,6 +35,24 @@ class SqliteWalCheckpointTest < ActiveSupport::TestCase
     assert_empty checkpoint_threads
   end
 
+  test "stop before start again mimics a fork-safe worker boot" do
+    db_path = build_wal_database(rows: 10)
+    SqliteWalCheckpoint.database_path_override = db_path
+
+    first = SqliteWalCheckpoint.start(interval: 0.05, enabled: true)
+    wait_until { first.name == "sqlite-wal-checkpoint" }
+    SqliteWalCheckpoint.stop
+    assert_not first.alive?
+
+    second = SqliteWalCheckpoint.start(interval: 0.05, enabled: true)
+    wait_until { second.name == "sqlite-wal-checkpoint" }
+    assert second.alive?
+
+    SqliteWalCheckpoint.stop
+    assert_not second.alive?
+    assert_equal :checkpointed, SqliteWalCheckpoint.tick
+  end
+
   test "tick checkpoints through the elected lock holder" do
     db_path = build_wal_database(rows: 50)
     SqliteWalCheckpoint.database_path_override = db_path

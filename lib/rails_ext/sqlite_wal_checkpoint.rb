@@ -21,6 +21,7 @@ module SqliteWalCheckpoint
         return if @thread&.alive?
 
         @stop = false
+        install_exit_checkpoint
         @thread = Thread.new { run(interval) }
         @thread.report_on_exception = false
       end
@@ -33,6 +34,7 @@ module SqliteWalCheckpoint
     def stop
       @stop = true
       thread = @mutex&.synchronize { @thread }
+      # Join longer than busy_handler_timeout so before_fork does not race a PRAGMA.
       thread&.join(2)
       @mutex&.synchronize { @thread = nil if @thread && !@thread.alive? }
     end
@@ -63,6 +65,7 @@ module SqliteWalCheckpoint
       @lock_path = nil
       @database_path_override = nil
       @stop = false
+      @exit_checkpoint_installed = false
     end
 
     private
@@ -113,7 +116,8 @@ module SqliteWalCheckpoint
 
         result = nil
         SQLite3::Database.new(path) do |database|
-          database.busy_handler_timeout = 5_000
+          # Keep below stop's join timeout so before_fork can finish cleanly.
+          database.busy_handler_timeout = 1_000
           result = yield database
         end
         result
@@ -147,6 +151,15 @@ module SqliteWalCheckpoint
         @lock_file.close
       ensure
         @lock_file = nil
+      end
+
+      # Best-effort PASSIVE for short-lived console/rake writers that exit before
+      # the contender acquires the flock. Does not touch lock ownership.
+      def install_exit_checkpoint
+        return if @exit_checkpoint_installed
+
+        @exit_checkpoint_installed = true
+        at_exit { checkpoint rescue nil }
       end
   end
 end
