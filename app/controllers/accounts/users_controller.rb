@@ -2,7 +2,7 @@ class Accounts::UsersController < ApplicationController
   before_action :ensure_can_administer, :set_user, only: %i[ update destroy ]
 
   def index
-    set_page_and_extract_portion_from User.active.ordered.without_bots, per_page: 500
+    set_page_and_extract_portion_from User.visible_to(Current.user).ordered.member, per_page: 500
   end
 
   def update
