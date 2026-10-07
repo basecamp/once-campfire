@@ -1,0 +1,13 @@
+<%# Files are posted as a message's own attachment, which gets its preview when it's posted; the composer adds none to
+    the rich text. One that's there anyway is shown by its name, with no preview: Action Text's partial links to a URL
+    that makes one on view, and nothing else in the app would make it. %>
+<figure class="attachment attachment--file attachment--<%= blob.filename.extension %>">
+  <figcaption class="attachment__caption">
+    <% if caption = blob.try(:caption) %>
+      <%= caption %>
+    <% else %>
+      <span class="attachment__name"><%= blob.filename %></span>
+      <span class="attachment__size"><%= number_to_human_size blob.byte_size %></span>
+    <% end %>
+  </figcaption>
+</figure>
