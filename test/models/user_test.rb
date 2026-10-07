@@ -12,6 +12,18 @@ class UserTest < ActiveSupport::TestCase
     end
   end
 
+  test "memberships granted to the open rooms are like any other" do
+    freeze_time
+    user = create_new_user
+
+    assert_equal Rooms::Open.ids.sort, user.memberships.pluck(:room_id).sort
+    user.memberships.each do |membership|
+      assert membership.involved_in_mentions?
+      assert_equal Time.current, membership.created_at
+      assert_equal Time.current, membership.updated_at
+    end
+  end
+
   test "deactivating a user deletes push subscriptions, searches, memberships for non-direct rooms, and changes their email address" do
     assert_difference -> { Membership.count }, -users(:david).memberships.without_direct_rooms.count do
     assert_difference -> { Push::Subscription.count }, -users(:david).push_subscriptions.count do

@@ -25,8 +25,10 @@ class Rooms::DirectsControllerTest < ActionDispatch::IntegrationTest
     sign_in :kevin
 
     assert_difference -> { Room.count }, -1 do
-      delete rooms_direct_url(rooms(:david_and_kevin))
-      assert_redirected_to root_url
+      perform_enqueued_jobs do
+        delete rooms_direct_url(rooms(:david_and_kevin))
+        assert_redirected_to root_url
+      end
     end
   end
 
