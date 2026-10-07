@@ -9,27 +9,9 @@ class Room::MessagesCount
 
   class << self
     def install!(connection = ActiveRecord::Base.connection)
-      uninstall!(connection)
-      connection.execute <<~SQL
-        CREATE TRIGGER #{INSERT_TRIGGER} AFTER INSERT ON messages
-        BEGIN
-          UPDATE rooms SET messages_count = messages_count + 1 WHERE id = NEW.room_id;
-        END
-      SQL
-      connection.execute <<~SQL
-        CREATE TRIGGER #{DELETE_TRIGGER} AFTER DELETE ON messages
-        BEGIN
-          UPDATE rooms SET messages_count = messages_count - 1 WHERE id = OLD.room_id;
-        END
-      SQL
-      connection.execute <<~SQL
-        CREATE TRIGGER #{UPDATE_TRIGGER} AFTER UPDATE OF room_id ON messages
-        WHEN OLD.room_id IS NOT NEW.room_id
-        BEGIN
-          UPDATE rooms SET messages_count = messages_count - 1 WHERE id = OLD.room_id;
-          UPDATE rooms SET messages_count = messages_count + 1 WHERE id = NEW.room_id;
-        END
-      SQL
+      with_immediate_write(connection) do
+        replace_triggers!(connection)
+      end
     end
 
     def uninstall!(connection = ActiveRecord::Base.connection)
@@ -47,13 +29,21 @@ class Room::MessagesCount
     end
 
     # schema.rb does not dump SQLite triggers; reinstall after schema:load.
+    # Repair rechecks, rebuilds counts, and installs triggers in one write txn
+    # so concurrent writers and concurrent boot repairs cannot observe a gap.
     def ensure!(connection = ActiveRecord::Base.connection)
       return unless connection.adapter_name.match?(/sqlite/i)
       return unless connection.data_source_exists?(:rooms)
       return unless connection.column_exists?(:rooms, :messages_count)
-      return if TRIGGERS.all? { |name| trigger_installed?(connection, name) }
+      return if triggers_installed?(connection)
 
-      install!(connection)
+      with_immediate_write(connection) do
+        next if triggers_installed?(connection)
+
+        uninstall!(connection)
+        backfill!(connection)
+        create_triggers!(connection)
+      end
     end
 
     def trigger_installed?(connection, name)
@@ -61,5 +51,46 @@ class Room::MessagesCount
         "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = #{connection.quote(name)}"
       ).present?
     end
+
+    def triggers_installed?(connection = ActiveRecord::Base.connection)
+      TRIGGERS.all? { |name| trigger_installed?(connection, name) }
+    end
+
+    private
+      def with_immediate_write(connection)
+        if connection.transaction_open?
+          yield
+        else
+          connection.raw_connection.transaction(:immediate) { yield }
+        end
+      end
+
+      def replace_triggers!(connection)
+        uninstall!(connection)
+        create_triggers!(connection)
+      end
+
+      def create_triggers!(connection)
+        connection.execute <<~SQL
+          CREATE TRIGGER #{INSERT_TRIGGER} AFTER INSERT ON messages
+          BEGIN
+            UPDATE rooms SET messages_count = messages_count + 1 WHERE id = NEW.room_id;
+          END
+        SQL
+        connection.execute <<~SQL
+          CREATE TRIGGER #{DELETE_TRIGGER} AFTER DELETE ON messages
+          BEGIN
+            UPDATE rooms SET messages_count = messages_count - 1 WHERE id = OLD.room_id;
+          END
+        SQL
+        connection.execute <<~SQL
+          CREATE TRIGGER #{UPDATE_TRIGGER} AFTER UPDATE OF room_id ON messages
+          WHEN OLD.room_id IS NOT NEW.room_id
+          BEGIN
+            UPDATE rooms SET messages_count = messages_count - 1 WHERE id = OLD.room_id;
+            UPDATE rooms SET messages_count = messages_count + 1 WHERE id = NEW.room_id;
+          END
+        SQL
+      end
   end
 end
