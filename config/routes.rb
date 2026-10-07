@@ -69,6 +69,7 @@ Rails.application.routes.draw do
         end
       end
 
+      # Literal "bot" must stay above :bot_key so it is not captured as a key.
       scope path: "bot", as: :bot_api, defaults: { format: :json }, &bot_messages
       scope path: ":bot_key", as: :bot, defaults: { format: :json }, &bot_messages
     end
