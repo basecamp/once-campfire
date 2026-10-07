@@ -70,10 +70,38 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "creating a message broadcasts unread room to each member" do
+    memberships(:david_watercooler).present # the poster is in the room
+
     @room.users.each do |member|
       assert_broadcasts UnreadRoomsChannel.stream_name_for(member.id), 1 do
-        post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one #{member.id}", client_message_id: member.id } }
+        perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
+          post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one #{member.id}", client_message_id: member.id } }
+        end
       end
+    end
+  end
+
+  test "creating a message leaves the unread fanout to a job" do
+    member = @room.users.excluding(users(:david)).first
+
+    assert_no_broadcasts UnreadRoomsChannel.stream_name_for(member.id) do
+      post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+    end
+
+    assert_enqueued_with job: Message::BroadcastUnreadRoomJob, args: [ Message.last ]
+  end
+
+  test "the unread fanout skips a member who has opened the room since" do
+    membership = memberships(:jason_watercooler)
+
+    post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+    assert membership.reload.unread?
+
+    membership.present
+    membership.reload.disconnected
+
+    assert_no_broadcasts UnreadRoomsChannel.stream_name_for(membership.user_id) do
+      perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob
     end
   end
 
@@ -83,7 +111,9 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
 
     outsiders.each do |outsider|
       assert_no_broadcasts UnreadRoomsChannel.stream_name_for(outsider.id) do
-        post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+        perform_enqueued_jobs only: Message::BroadcastUnreadRoomJob do
+          post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+        end
       end
     end
   end

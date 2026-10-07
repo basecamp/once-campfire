@@ -16,7 +16,7 @@ export default class extends Controller {
     })
   }
 
-  #read = ({ room_id }) => {
-    this.dispatch("read", { detail: { roomId: room_id } })
+  #read = ({ room_id, at }) => {
+    this.dispatch("read", { detail: { roomId: room_id, at } })
   }
 }

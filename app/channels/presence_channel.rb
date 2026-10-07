@@ -22,6 +22,6 @@ class PresenceChannel < RoomChannel
     end
 
     def broadcast_read_room
-      ActionCable.server.broadcast "user_#{current_user.id}_reads", { room_id: membership.room_id }
+      ActionCable.server.broadcast "user_#{current_user.id}_reads", { room_id: membership.room_id, at: Time.current.to_fs(:epoch) }
     end
 end

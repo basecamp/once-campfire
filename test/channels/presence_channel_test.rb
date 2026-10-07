@@ -40,6 +40,16 @@ class PresenceChannelTest < ActionCable::Channel::TestCase
     end
   end
 
+  test "subscribing tells the user's other tabs when they read the room" do
+    membership = users(:david).memberships.first
+
+    freeze_time do
+      assert_broadcast_on "user_#{users(:david).id}_reads", { room_id: membership.room_id, at: Time.current.to_fs(:epoch) } do
+        subscribe room_id: membership.room_id
+      end
+    end
+  end
+
   test "unsubscribing marks the membership as disconnected" do
     membership = users(:david).memberships.first
     subscribe room_id: membership.room_id
