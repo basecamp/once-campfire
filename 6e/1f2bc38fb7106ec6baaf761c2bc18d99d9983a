@@ -1,0 +1,21 @@
+app/models/room/message_pusher.rb
+  s_c8ecb2a9cf2c3a::t_80d9436a7c64e6 56-57,61
+test/models/room/push_test.rb
+  s_c8ecb2a9cf2c3a::t_6bd6182057639c 66-91,93-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6e1f2bc38fb7106ec6baaf761c2bc18d99d9983a",
+  "prompts": {},
+  "sessions": {
+    "s_c8ecb2a9cf2c3a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ecceba0b-b8c3-41b6-89cd-16be89dcf9c8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
