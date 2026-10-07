@@ -214,14 +214,9 @@ Then start Campfire again.
 
 ### Bot API credentials and logs
 
-Thruster writes an access log line for every request, including the raw path.
-Bot keys used to live in that path (`/rooms/:id/:bot_key/messages`), so `docker logs`
-and any log shipper saw a live credential. Rails redacts that form; Thruster does not.
-
 Prefer `/rooms/:id/bot/messages` with `X-Campfire-Bot-Key` (or `Authorization: Bearer`).
-The account bots page copies curl commands in that form. The old path still works
-for existing integrations; treat those container logs as secret-bearing.
-
-Webhook payloads keep `room.path` as the old URL so existing bots keep working.
-They also send `room.api_path` (no key) and `room.bot_key` for header auth.
+Thruster logs the raw path, so the old `/rooms/:id/:bot_key/...` form still works but
+treats container logs as secret-bearing. The bots page copies curl in the header form.
+Webhooks keep `room.path` for compatibility and add `room.api_path` + `room.bot_key`
+for header auth.
 

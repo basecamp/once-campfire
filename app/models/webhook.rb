@@ -41,7 +41,13 @@ class Webhook < ApplicationRecord
     def payload(message)
       {
         user:    { id: message.creator.id, name: message.creator.name },
-        room:    { id: message.room.id, name: message.room.name, **room_bot_access(message) },
+        room:    {
+          id: message.room.id,
+          name: message.room.name,
+          path: room_bot_messages_path(message),
+          api_path: room_bot_api_messages_path(message),
+          bot_key: user.bot_key
+        },
         message: { id: message.id, body: { html: message.body.body, plain: without_recipient_mentions(message.plain_text_body) }, path: message_path(message) }
       }.to_json
     end
@@ -50,12 +56,12 @@ class Webhook < ApplicationRecord
       Rails.application.routes.url_helpers.room_at_message_path(message.room, message)
     end
 
-    def room_bot_access(message)
-      {
-        path: Rails.application.routes.url_helpers.room_bot_messages_path(message.room, user.bot_key),
-        api_path: Rails.application.routes.url_helpers.room_bot_api_messages_path(message.room),
-        bot_key: user.bot_key
-      }
+    def room_bot_messages_path(message)
+      Rails.application.routes.url_helpers.room_bot_messages_path(message.room, user.bot_key)
+    end
+
+    def room_bot_api_messages_path(message)
+      Rails.application.routes.url_helpers.room_bot_api_messages_path(message.room)
     end
 
     def extract_text_from(response)

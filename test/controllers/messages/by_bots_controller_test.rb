@@ -145,7 +145,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "regular messages index remains denied for bots" do
-    get room_messages_url(@room, bot_key: users(:bender).bot_key)
+    get room_messages_url(@room), headers: { "X-Campfire-Bot-Key" => users(:bender).bot_key }
     assert_response :forbidden
   end
 
@@ -238,13 +238,13 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_includes JSON.parse(response.body).map { it["body"]["plain_text"] }, "Hello from a header"
   end
 
-  test "index accepts a Bearer token" do
-    get room_bot_api_messages_url(@room), headers: { "Authorization" => "Bearer #{users(:bender).bot_key}" }
-    assert_response :success
-  end
+  test "index accepts Bearer tokens with any scheme casing" do
+    key = users(:bender).bot_key
 
-  test "index accepts a lowercase bearer scheme" do
-    get room_bot_api_messages_url(@room), headers: { "Authorization" => "bearer #{users(:bender).bot_key}" }
+    get room_bot_api_messages_url(@room), headers: { "Authorization" => "Bearer #{key}" }
+    assert_response :success
+
+    get room_bot_api_messages_url(@room), headers: { "Authorization" => "bearer #{key}" }
     assert_response :success
   end
 
@@ -259,9 +259,14 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_not_includes response.headers["Link"], users(:bender).bot_key
   end
 
-  test "the path form still authenticates" do
-    get room_bot_messages_url(@room, users(:bender).bot_key)
-    assert_response :success
+  test "query-string bot_key does not authenticate the key-free path" do
+    get room_bot_api_messages_url(@room, bot_key: users(:bender).bot_key)
+    assert_response :redirect
+  end
+
+  test "the key-free path requires a header or Bearer token" do
+    get room_bot_api_messages_url(@room)
+    assert_response :redirect
   end
 
   private

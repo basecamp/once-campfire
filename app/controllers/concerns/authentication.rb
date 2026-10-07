@@ -99,7 +99,10 @@ module Authentication
     end
 
     def bot_key_from_request
-      params[:bot_key].presence || request.headers["X-Campfire-Bot-Key"].presence || bearer_bot_key
+      # Path segment only — query/body bot_key would still hit Thruster's access log.
+      request.path_parameters[:bot_key].presence ||
+        request.headers["X-Campfire-Bot-Key"].presence ||
+        bearer_bot_key
     end
 
     def bearer_bot_key

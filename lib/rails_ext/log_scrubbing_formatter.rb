@@ -1,7 +1,6 @@
-# Bot requests carry the bot key as a URL path segment (/rooms/:room_id/:bot_key/...).
-# config.filter_parameters redacts query and form parameters but never path segments,
-# so the key would otherwise be written verbatim to the request log. Redact it wherever
-# it appears in a formatted log line.
+# Legacy bot requests carry the key in the path (/rooms/:room_id/:bot_key/...).
+# Prefer /rooms/:id/bot/... with X-Campfire-Bot-Key; this still redacts the old form.
+# config.filter_parameters covers query/form params but never path segments.
 class LogScrubbingFormatter < ::Logger::Formatter
   BOT_KEY_IN_PATH = %r{(/rooms/\d+/)\d+-[A-Za-z0-9]+}
 
