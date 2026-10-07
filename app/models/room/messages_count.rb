@@ -1,6 +1,9 @@
-# Keeps rooms.messages_count correct for every SQLite writer — Rails, bulk SQL,
+# Keeps rooms.messages_count correct for ordinary SQLite writes — Rails, bulk SQL,
 # and foreign connections — without ActiveRecord counter_cache callbacks that
 # those paths skip (and that would double-count if combined with triggers).
+# Foreign REPLACE writes require PRAGMA recursive_triggers=ON so SQLite also
+# fires the delete trigger. Migrations rebuilding messages must call ensure!
+# before reading counters inside that migration; database tasks repair afterwards.
 class Room::MessagesCount
   INSERT_TRIGGER = "messages_ai_rooms_messages_count"
   DELETE_TRIGGER = "messages_ad_rooms_messages_count"
