@@ -19,6 +19,20 @@ class Message::AttachmentTest < ActiveSupport::TestCase
     assert_equal message.plain_text_body, "moon.jpg"
   end
 
+  test "creating a message keeps an image that can't be decoded" do
+    webp = Vips::Image.new_from_file(file_fixture("moon.jpg").to_s).webpsave_buffer
+    message = create_unreadable_attachment_message(webp.byteslice(0, webp.bytesize / 2), "broken.webp")
+
+    assert_equal "broken.webp", message.reload.attachment.filename.to_s
+    assert_nil message.attachment.representation(:thumb).image
+  end
+
+  test "creating a message keeps a video that can't be decoded" do
+    message = create_unreadable_attachment_message(file_fixture("alpha-centuri.mov").binread(64), "broken.mov")
+
+    assert_equal "broken.mov", message.reload.attachment.filename.to_s
+    assert_not message.attachment.preview(format: :webp).image.attached?
+  end
 
   private
     def create_attachment_message(file, content_type)
@@ -26,5 +40,12 @@ class Message::AttachmentTest < ActiveSupport::TestCase
         creator: users(:david),
         client_message_id: "message",
         attachment: fixture_file_upload(file, content_type)
+    end
+
+    def create_unreadable_attachment_message(content, filename)
+      rooms(:hq).messages.create_with_attachment! \
+        creator: users(:david),
+        client_message_id: "message",
+        attachment: { io: StringIO.new(content), filename: filename }
     end
 end
