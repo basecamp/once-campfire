@@ -36,6 +36,7 @@ module MessagesHelper
         controller: "reply",
         user_id: message.creator_id,
         message_id: message.id,
+        client_message_id: message.client_message_id,
         message_timestamp: message_timestamp_milliseconds,
         message_updated_at: message.updated_at.to_fs(:epoch),
         sort_value: message_timestamp_milliseconds,

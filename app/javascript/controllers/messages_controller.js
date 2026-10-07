@@ -46,6 +46,7 @@ export default class extends Controller {
   }
 
   messageTargetConnected(target) {
+    this.#reconcilePendingMessage(target)
     this.#formatter.format(target, ThreadStyle.thread)
   }
 
@@ -124,6 +125,25 @@ export default class extends Controller {
 
 
   // Internal
+
+  // The composer inserts a pending message client-side using the client_message_id
+  // as its DOM id. The server broadcast now renders the real message with a DOM id
+  // derived from the record's primary key, so it no longer replaces the pending
+  // element by id. Reconcile by matching the server message's client_message_id and
+  // dropping our own pending placeholder. Only elements flagged data-pending-message
+  // (client-side placeholders, never broadcast) are removed, so a message another
+  // member posted reusing this client_message_id can never displace a real one.
+  #reconcilePendingMessage(target) {
+    const clientMessageId = target.dataset.clientMessageId
+
+    if (target.dataset.messageId && clientMessageId) {
+      const selector = `[data-pending-message][data-client-message-id="${CSS.escape(clientMessageId)}"]`
+
+      this.messagesTarget.querySelectorAll(selector).forEach((pending) => {
+        if (pending !== target) pending.remove()
+      })
+    }
+  }
 
   async #ensureUpToDate() {
     if (!this.#paginator.upToDate) {

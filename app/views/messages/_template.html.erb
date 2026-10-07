@@ -2,6 +2,8 @@
   <div class="message message--me $messageClasses$"
       id="message_$clientMessageId$"
       data-format-message-target="message"
+      data-pending-message="true"
+      data-client-message-id="$clientMessageId$"
       data-user-id="<%= Current.user.id %>"
       data-message-timestamp="$messageTimestamp$"
       data-messages-target="message">
