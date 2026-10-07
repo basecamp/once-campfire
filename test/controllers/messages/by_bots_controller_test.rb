@@ -103,7 +103,6 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
     json = JSON.parse(response.body)
     assert_equal Message::PAGE_SIZE, json.size
-    assert_equal @room.reload.messages_count.to_s, response.headers["X-Total-Count"]
     assert_equal "41", response.headers["X-Total-Count"]
     assert_not_includes json.map { it["id"] }, messages(:fourth).id
 

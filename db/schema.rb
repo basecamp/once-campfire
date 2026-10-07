@@ -183,6 +183,5 @@ ActiveRecord::Schema[8.2].define(version: 2026_10_07_190000) do
   # Virtual tables defined in this database.
   # Note that virtual tables may not work with other database engines. Be careful if changing database.
   create_virtual_table "message_search_index", "fts5", ["body", "tokenize=porter"]
-  # SQLite triggers are not dumped by schema.rb; keep rooms.messages_count honest after schema:load.
-  Room::MessagesCount.install!
 end
+

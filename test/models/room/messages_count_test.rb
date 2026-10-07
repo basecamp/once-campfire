@@ -5,7 +5,12 @@ class Room::MessagesCountTest < ActiveSupport::TestCase
   setup do
     @room = rooms(:designers)
     @other_room = rooms(:pets)
-    synchronize!(@room, @other_room)
+  end
+
+  test "fixture rooms start with an accurate messages_count" do
+    [ rooms(:watercooler), rooms(:designers), rooms(:bender_and_kevin) ].each do |room|
+      assert_equal room.messages.count, room.messages_count, "#{room.name || room.id} fixture count"
+    end
   end
 
   test "ActiveRecord create and destroy adjust the counter once" do
@@ -64,7 +69,6 @@ class Room::MessagesCountTest < ActiveSupport::TestCase
 
   test "moving a message between rooms moves the counter" do
     message = @room.messages.create!(creator: users(:jason), body: "Move me", client_message_id: "count-move")
-    synchronize!(@room, @other_room)
 
     assert_difference -> { @room.reload.messages_count }, -1 do
       assert_difference -> { @other_room.reload.messages_count }, +1 do
@@ -76,6 +80,31 @@ class Room::MessagesCountTest < ActiveSupport::TestCase
     assert_equal @other_room.messages.count, @other_room.reload.messages_count
   end
 
+  test "Message does not declare an ActiveRecord counter_cache" do
+    reflection = Message.reflect_on_association(:room)
+    assert_not reflection.counter_cache_column
+  end
+end
+
+# Destructive trigger DDL and foreign connections need a committed DB.
+class Room::MessagesCountLifecycleTest < ActiveSupport::TestCase
+  self.use_transactional_tests = false
+
+  setup do
+    Room::MessagesCount.ensure!
+    @room = rooms(:designers)
+    @other_room = rooms(:pets)
+    Room::MessagesCount.backfill!
+    @room.reload
+    @other_room.reload
+  end
+
+  teardown do
+    Message.where("client_message_id LIKE ?", "count-%").delete_all
+    Room::MessagesCount.ensure!
+    Room::MessagesCount.backfill!
+  end
+
   test "ensure! installs missing triggers without changing existing counts" do
     before = @room.reload.messages_count
     Room::MessagesCount.uninstall!
@@ -84,68 +113,41 @@ class Room::MessagesCountTest < ActiveSupport::TestCase
 
     Room::MessagesCount.ensure!
 
-    assert Room::MessagesCount.trigger_installed?(ActiveRecord::Base.connection, Room::MessagesCount::INSERT_TRIGGER)
+    assert Room::MessagesCount::TRIGGERS.all? { |name|
+      Room::MessagesCount.trigger_installed?(ActiveRecord::Base.connection, name)
+    }
     assert_equal before, @room.reload.messages_count
 
     assert_difference -> { @room.reload.messages_count }, +1 do
       @room.messages.create!(creator: users(:jason), body: "After ensure", client_message_id: "count-ensure")
     end
-  ensure
-    Room::MessagesCount.ensure!
   end
 
-  test "backfill plus triggers do not double-count ActiveRecord writes" do
+  test "ensure! repairs a partial trigger install" do
     Room::MessagesCount.uninstall!
     ActiveRecord::Base.connection.execute <<~SQL
-      UPDATE rooms SET messages_count = (
-        SELECT COUNT(*) FROM messages WHERE messages.room_id = rooms.id
-      )
+      CREATE TRIGGER #{Room::MessagesCount::INSERT_TRIGGER} AFTER INSERT ON messages
+      BEGIN
+        UPDATE rooms SET messages_count = messages_count + 1 WHERE id = NEW.room_id;
+      END
     SQL
-    Room::MessagesCount.install!
 
-    assert_equal @room.messages.count, @room.reload.messages_count
+    assert Room::MessagesCount.trigger_installed?(ActiveRecord::Base.connection, Room::MessagesCount::INSERT_TRIGGER)
+    assert_not Room::MessagesCount.trigger_installed?(ActiveRecord::Base.connection, Room::MessagesCount::DELETE_TRIGGER)
 
-    assert_difference -> { @room.reload.messages_count }, +1 do
-      assert_difference -> { @room.messages.count }, +1 do
-        @room.messages.create!(creator: users(:jason), body: "Once", client_message_id: "count-no-double")
-      end
-    end
-
-    assert_equal @room.messages.count, @room.reload.messages_count
-  ensure
     Room::MessagesCount.ensure!
-  end
 
-  private
-    def synchronize!(*rooms)
-      Room::MessagesCount.ensure!
-      Room::MessagesCount.backfill!
-      rooms.each(&:reload)
-    end
-end
-
-# Foreign connections cannot join the transactional fixture lock; run outside it.
-class Room::MessagesCountForeignConnectionTest < ActiveSupport::TestCase
-  self.use_transactional_tests = false
-
-  setup do
-    Room::MessagesCount.ensure!
-    @room = rooms(:designers)
-    Room::MessagesCount.backfill!
-    @room.reload
-  end
-
-  teardown do
-    Message.where(client_message_id: "count-foreign-insert").delete_all
-    Room::MessagesCount.backfill!
+    assert Room::MessagesCount::TRIGGERS.all? { |name|
+      Room::MessagesCount.trigger_installed?(ActiveRecord::Base.connection, name)
+    }
   end
 
   test "foreign SQLite connections keep the counter in step" do
     path = File.expand_path(ActiveRecord::Base.connection_db_config.database)
     now = Time.current.utc.strftime("%Y-%m-%d %H:%M:%S.%6N")
     before = @room.reload.messages_count
+    other_before = @other_room.reload.messages_count
 
-    # Release AR's checkout so the native connection can write.
     ActiveRecord::Base.connection_pool.release_connection
 
     SQLite3::Database.new(path) do |db|
@@ -165,10 +167,20 @@ class Room::MessagesCountForeignConnectionTest < ActiveSupport::TestCase
 
     SQLite3::Database.new(path) do |db|
       db.busy_timeout = 5_000
+      db.execute("UPDATE messages SET room_id = ? WHERE id = ?", [ @other_room.id, foreign_id ])
+    end
+
+    assert_equal before, @room.reload.messages_count
+    assert_equal other_before + 1, @other_room.reload.messages_count
+
+    ActiveRecord::Base.connection_pool.release_connection
+
+    SQLite3::Database.new(path) do |db|
+      db.busy_timeout = 5_000
       db.execute("DELETE FROM messages WHERE id = ?", [ foreign_id ])
     end
 
     assert_equal before, @room.reload.messages_count
-    assert_equal @room.messages.count, @room.messages_count
+    assert_equal other_before, @other_room.reload.messages_count
   end
 end

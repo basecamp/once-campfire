@@ -5,6 +5,7 @@ class Room::MessagesCount
   INSERT_TRIGGER = "messages_ai_rooms_messages_count"
   DELETE_TRIGGER = "messages_ad_rooms_messages_count"
   UPDATE_TRIGGER = "messages_au_rooms_messages_count"
+  TRIGGERS = [ INSERT_TRIGGER, DELETE_TRIGGER, UPDATE_TRIGGER ].freeze
 
   class << self
     def install!(connection = ActiveRecord::Base.connection)
@@ -32,7 +33,7 @@ class Room::MessagesCount
     end
 
     def uninstall!(connection = ActiveRecord::Base.connection)
-      [ INSERT_TRIGGER, DELETE_TRIGGER, UPDATE_TRIGGER ].each do |name|
+      TRIGGERS.each do |name|
         connection.execute("DROP TRIGGER IF EXISTS #{name}")
       end
     end
@@ -47,9 +48,10 @@ class Room::MessagesCount
 
     # schema.rb does not dump SQLite triggers; reinstall after schema:load.
     def ensure!(connection = ActiveRecord::Base.connection)
+      return unless connection.adapter_name.match?(/sqlite/i)
       return unless connection.data_source_exists?(:rooms)
       return unless connection.column_exists?(:rooms, :messages_count)
-      return if trigger_installed?(connection, INSERT_TRIGGER)
+      return if TRIGGERS.all? { |name| trigger_installed?(connection, name) }
 
       install!(connection)
     end
@@ -61,4 +63,3 @@ class Room::MessagesCount
     end
   end
 end
-
