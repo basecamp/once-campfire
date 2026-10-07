@@ -5,6 +5,7 @@ class Opengraph::Fetch
   ALLOWED_DOCUMENT_CONTENT_TYPE = "text/html"
   MAX_BODY_SIZE = 5.megabytes
   MAX_REDIRECTS = 10
+  TIMEOUT = 7.seconds # to connect (TLS included), and for each read and write, as Webhook does
 
   class TooManyRedirectsError < StandardError; end
   class RedirectDeniedError < StandardError; end
@@ -22,9 +23,11 @@ class Opengraph::Fetch
   end
 
   private
+    # The timeouts bound each operation. A host can still send its headers or body a byte at a time,
+    # in as many reads as it likes: UnfurlLinksController puts the whole unfurl under one deadline.
     def request(url, request_class, ip:)
       MAX_REDIRECTS.times do
-        Net::HTTP.start(url.host, url.port, ipaddr: ip, use_ssl: url.scheme == "https") do |http|
+        Net::HTTP.start(url.host, url.port, ipaddr: ip, use_ssl: url.scheme == "https", **timeouts) do |http|
           http.request request_class.new(url) do |response|
             if response.is_a?(Net::HTTPRedirection)
               url, ip = resolve_redirect(response["location"])
@@ -36,6 +39,11 @@ class Opengraph::Fetch
       end
 
       raise TooManyRedirectsError
+    end
+
+    # Without max_retries: 0, Net::HTTP sends a GET or HEAD that timed out a second time.
+    def timeouts
+      { open_timeout: TIMEOUT, read_timeout: TIMEOUT, write_timeout: TIMEOUT, max_retries: 0 }
     end
 
     def resolve_redirect(location)
