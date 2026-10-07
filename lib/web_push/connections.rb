@@ -26,8 +26,9 @@ class WebPush::Connections
       end
   end
 
-  def initialize(keep_alive_timeout: 30)
+  def initialize(keep_alive_timeout: 30, max_idle: 150)
     @keep_alive_timeout = keep_alive_timeout
+    @max_idle = max_idle
     @idle = Hash.new { |idle, address| idle[address] = [] }
     @mutex = Mutex.new
     @pid = Process.pid
@@ -85,7 +86,7 @@ class WebPush::Connections
     def checkin(address, http)
       @mutex.synchronize do
         close_expired
-        if @shut_down
+        if @shut_down || @idle.values.sum(&:size) >= @max_idle
           close(http)
         else
           @idle[address].push [ http, now ]

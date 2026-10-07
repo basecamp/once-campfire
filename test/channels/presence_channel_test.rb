@@ -44,7 +44,7 @@ class PresenceChannelTest < ActionCable::Channel::TestCase
     membership = users(:david).memberships.first
 
     freeze_time do
-      assert_broadcast_on "user_#{users(:david).id}_reads", { room_id: membership.room_id, at: Time.current.to_fs(:epoch) } do
+      assert_broadcast_on "user_#{users(:david).id}_reads", { room_id: membership.room_id, at: Time.current.to_f } do
         subscribe room_id: membership.room_id
       end
     end

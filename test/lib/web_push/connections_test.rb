@@ -135,6 +135,24 @@ class WebPush::ConnectionsTest < ActiveSupport::TestCase
     end
   end
 
+  test "the idle pool closes connections beyond its bound" do
+    connections = WebPush::Connections.new(max_idle: 1)
+
+    with_push_service do |server|
+      other = Server.new
+      connections.request(pinned_connection(server), push_request)
+      connections.request(pinned_connection(other), push_request)
+      assert other.hung_up?
+      assert_not server.hung_up?(within: 0.1)
+
+      connections.request(pinned_connection(server), push_request)
+      assert_equal 1, server.connections
+    ensure
+      connections.shutdown
+      other&.stop
+    end
+  end
+
   test "idle connections are closed after the keep-alive timeout and on shutdown" do
     connections = WebPush::Connections.new(keep_alive_timeout: 0)
 

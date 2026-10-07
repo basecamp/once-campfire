@@ -35,7 +35,7 @@ class UnreadRoomsChannelTest < ActionCable::Channel::TestCase
       end
     end
 
-    assert_equal [ { "roomId" => direct.id, "at" => message.created_at.to_fs(:epoch) } ], broadcasts
+    assert_equal [ { "roomId" => direct.id, "at" => message.created_at.to_f } ], broadcasts
   end
 
   private

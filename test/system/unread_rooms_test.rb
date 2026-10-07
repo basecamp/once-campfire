@@ -55,8 +55,23 @@ class UnreadRoomsTest < ApplicationSystemTestCase
     end
   end
 
+  test "a message after a read in the same second marks the room unread" do
+    room = rooms(:designers)
+    user = users(:jz)
+    join_room rooms(:hq)
+    read_at = Time.current.change(usec: 100_000)
+
+    broadcast_unread_notice room, to: user, at: read_at - 1
+    assert_room_unread room
+    ActionCable.server.broadcast "user_#{user.id}_reads", { room_id: room.id, at: read_at.to_f }
+    assert_room_read room
+
+    broadcast_unread_notice room, to: user, at: read_at + 0.2
+    assert_room_unread room
+  end
+
   private
     def broadcast_unread_notice(room, to:, at:)
-      ActionCable.server.broadcast UnreadRoomsChannel.stream_name_for(to.id), { roomId: room.id, at: at.to_fs(:epoch) }
+      ActionCable.server.broadcast UnreadRoomsChannel.stream_name_for(to.id), { roomId: room.id, at: at.to_f }
     end
 end
