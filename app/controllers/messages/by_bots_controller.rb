@@ -37,7 +37,7 @@ class Messages::ByBotsController < MessagesController
     end
 
     def set_pagination_headers
-      headers["X-Total-Count"] = @room.messages.count.to_s
+      headers["X-Total-Count"] = @room.messages_count.to_s
 
       if next_page = next_page_params
         headers["Link"] = %(<#{room_bot_messages_url(@room, params[:bot_key], **next_page)}>; rel="next")
