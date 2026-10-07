@@ -44,10 +44,41 @@ class ResponseCacheTest < ActiveSupport::TestCase
     assert_nil @cache.read("k" * 2049, version)
   end
 
-  test "observer namespaces cannot reuse old shared fragment keys after restart" do
+  test "clearing the observer gives later pages a distinct namespace" do
     version = @cache.version
     @cache.clear
     assert_not_equal version, @cache.version
+  end
+
+  test "cold renders coalesce without holding the observer mutex" do
+    version = @cache.version
+    entered = Queue.new
+    release = Queue.new
+    first = Thread.new do
+      @cache.synchronize_render("page", version) do
+        entered << true
+        release.pop
+        @cache.write("page", version, entry("completed render"))
+      end
+    end
+    entered.pop
+    second_started = Queue.new
+    second = Thread.new do
+      second_started << true
+      @cache.synchronize_render("page", version) { @cache.read("page", version) }
+    end
+    second_started.pop
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+    Thread.pass until second.status == "sleep" || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    assert_equal "sleep", second.status
+    assert_nil @cache.read("page", version)
+    assert_equal version, @cache.version
+    release << true
+    first.value
+    assert_equal "completed render", second.value[:body]
+  ensure
+    release << true if release
+    [ first, second ].compact.each { |thread| thread.join(2) }
   end
 
   private

@@ -52,6 +52,8 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 Authenticated room, message, sidebar and search pages use a bounded 64 MiB cache per worker.
 Set `CAMPFIRE_RESPONSE_CACHE_MB=0` to disable it. Every request still checks authentication
 and room access; commits from any SQLite writer invalidate pages, and CSRF masks stay fresh.
+Native HTML, JSON and stream fragments have a separate 64 MiB memory limit per worker;
+shared rate limits retain their existing store.
 
 ## Other implementations
 

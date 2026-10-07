@@ -7,13 +7,14 @@ class ResponseCache
   MAX_KEY_BYTES = 2.kilobytes
 
   def self.instance
-    @instance ||= new
+    INSTANCE
   end
 
   def initialize
     @mutex = Mutex.new
     @entries = {}
     @bytes = 0
+    @render_locks = Array.new(16) { Mutex.new }
   end
 
   def budget
@@ -34,6 +35,12 @@ class ResponseCache
   rescue SQLite3::Exception
     clear
     nil
+  end
+
+  # Collapse cold renders without retaining a mutex for every viewer or URL.
+  # Rendering must never hold the observer/entry mutex: controllers read it too.
+  def synchronize_render(key, version, &block)
+    @render_locks[[ key, version ].hash % @render_locks.length].synchronize(&block)
   end
 
   def write(key, version, entry)
@@ -86,4 +93,6 @@ class ResponseCache
       end
       [ @database, @namespace, @version ]
     end
+
+  INSTANCE = new
 end
