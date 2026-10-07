@@ -55,13 +55,13 @@ Campfire also has implementations in Django, Laravel, Express, Elixir, Go and Ru
 
 | HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 241 | 170 | 164 | 559 | 722 | 3,860 | 36,260 |
-| Messages page | 413 | 196 | 175 | 777 | 1,053 | 5,573 | 40,872 |
-| Sidebar | 552 | 615 | 715 | 4,125 | 1,275 | 19,753 | 34,672 |
-| Search | 435 | 315 | 305 | 1,294 | 1,156 | 7,053 | 33,299 |
-| Post a message | 273 | 154 | 137 | 256 | 801 | 4,767 | 6,896 |
+| Room page | 236 | 62 | 764 | 2,702 | 981 | 32,045 | 35,056 |
+| Messages page | 384 | 70 | 922 | 3,183 | 1,341 | 31,670 | 40,481 |
+| Sidebar | 474 | 230 | 1,399 | 34,595 | 2,546 | 20,125 | 33,924 |
+| Search | 415 | 120 | 1,291 | 6,725 | 1,907 | 30,239 | 34,199 |
+| Post a message | 244 | 113 | 498 | 2,183 | 1,431 | 9,413 | 8,995 |
 
-Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395,
+Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395 with 32 GB RAM,
 with four hardware threads allocated to each app.
 
 ## Development
