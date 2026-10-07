@@ -27,7 +27,7 @@ module CachedResponses
   def combined_fragment_cache_key(key)
     @fragment_cache_namespace ||= [
       @response_cache_version, request.base_url, request.script_name, request.format.to_s, I18n.locale,
-      Current.user&.id, Current.session&.token,
+      Current.user&.id, (Digest::SHA256.hexdigest(Current.session.token) if Current.session),
       (Digest::SHA256.hexdigest(real_csrf_token) if request.format.html? || request.format.turbo_stream?)
     ].freeze
     super([ @fragment_cache_namespace, key ])

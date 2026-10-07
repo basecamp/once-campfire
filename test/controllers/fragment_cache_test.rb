@@ -39,6 +39,8 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     end
     assert_response :success
     assert_not_empty hits
+    token = users(:david).sessions.order(:id).last.token
+    assert_not_includes hits.join, token
   end
 
   test "disabled page caching retains fresh native fragments after foreign leaf writes" do
@@ -119,12 +121,16 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     foreign_write("UPDATE action_text_rich_texts SET body = ? WHERE record_type = 'Message' AND record_id = ?", "foreign broadcast body", @message.id)
     FragmentCache.store.expects(:read).never
     FragmentCache.store.expects(:write).never
+    FragmentCache.store.expects(:read_multi).never
+    FragmentCache.store.expects(:write_multi).never
     @message.reload.broadcast_create
     assert_rendered_turbo_stream_broadcast @room, :messages, action: "append", target: [ @room, :messages ] do |stream|
       assert_includes stream.to_html, "foreign broadcast body"
     end
     body = ApplicationController.render(partial: "messages/message", locals: { message: @message.reload })
     assert_includes body, "foreign broadcast body"
+    collection = ApplicationController.render(partial: "messages/message", collection: [ @message.reload ], cached: true)
+    assert_includes collection, "foreign broadcast body"
     assert_not ApplicationController.new.perform_caching
   end
 
