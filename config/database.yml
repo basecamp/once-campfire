@@ -9,8 +9,9 @@ default: &default
   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 10 } %>
   timeout: 5000
   default_transaction_mode: immediate
-  # Checkpoint on a background connection instead (SqliteWalCheckpoint). Every
-  # non-test writer process runs a contender so this is never left without one.
+  # Checkpoint on a background connection instead (SqliteWalCheckpoint).
+  # Non-test processes start a contender; forking servers stop before fork and
+  # start again in the child so the flock is never inherited.
   pragmas:
     wal_autocheckpoint: 0
 

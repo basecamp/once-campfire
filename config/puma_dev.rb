@@ -1,7 +1,5 @@
 require File.expand_path("../config/environment", File.dirname(__FILE__))
 
-SqliteWalCheckpoint.start
-
 Signal.trap :SIGPROF do
   Thread.list.each do |t|
     puts t

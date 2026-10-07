@@ -35,15 +35,6 @@ class SqliteWalCheckpointTest < ActiveSupport::TestCase
     assert_empty checkpoint_threads
   end
 
-  test "single_puma_process? treats only literal zero as single-process" do
-    assert SqliteWalCheckpoint.single_puma_process?(0)
-    assert SqliteWalCheckpoint.single_puma_process?("0")
-    assert_not SqliteWalCheckpoint.single_puma_process?("auto")
-    assert_not SqliteWalCheckpoint.single_puma_process?(2)
-    assert_not SqliteWalCheckpoint.single_puma_process?("2")
-    assert_not SqliteWalCheckpoint.single_puma_process?(8)
-  end
-
   test "tick checkpoints through the elected lock holder" do
     db_path = build_wal_database(rows: 50)
     SqliteWalCheckpoint.database_path_override = db_path

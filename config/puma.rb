@@ -33,10 +33,7 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 # processes).
 #
 worker_count = (Concurrent.processor_count * 0.666).ceil
-# Keep the raw setting: WEB_CONCURRENCY=auto must not be coerced with to_i (that
-# is 0 and would look like single-process mode while Puma still forks workers).
-configured_workers = ENV.fetch("WEB_CONCURRENCY") { worker_count }
-workers configured_workers
+workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
 
 ENV["JOB_CONCURRENCY"] ||= worker_count.to_s
 
@@ -53,14 +50,11 @@ plugin :tmp_restart
 # Reset all membership connections
 Membership.disconnect_all
 
-# Only the literal 0 is single-process. "auto" and positive counts fork workers;
-# those must start the checkpointer after boot so a surviving worker can take
-# the lock if the previous leader exits.
-if SqliteWalCheckpoint.single_puma_process?(configured_workers)
-  SqliteWalCheckpoint.start
-else
-  on_worker_boot { SqliteWalCheckpoint.start }
-end
+# Initializer starts a contender in this process. Stop before fork so workers
+# do not inherit the flock; each worker starts its own contender. Single-process
+# mode never forks, so the initializer's contender keeps running.
+before_fork { SqliteWalCheckpoint.stop }
+on_worker_boot { SqliteWalCheckpoint.start }
 
 Signal.trap :SIGPROF do
   Thread.list.each do |t|

@@ -2,9 +2,9 @@
 # writer and fsyncs during the request. database.yml sets wal_autocheckpoint=0;
 # this module copies pages off the request thread with PASSIVE checkpoints.
 #
-# Every non-test writer process starts a contender thread (initializer, Puma,
-# Resque). A file lock elects one leader; if that process exits, another takes
-# over on the next interval so auto-checkpoint stays off safely.
+# Every non-test process starts a contender. Callers that fork (Puma, Resque pool)
+# must stop before fork and start again in the child so the flock is never shared
+# across an inherited file descriptor.
 module SqliteWalCheckpoint
   INTERVAL = 0.25
   MAX_BACKOFF = 30.0
@@ -21,7 +21,6 @@ module SqliteWalCheckpoint
         return if @thread&.alive?
 
         @stop = false
-        install_exit_handler
         @thread = Thread.new { run(interval) }
         @thread.report_on_exception = false
       end
@@ -29,13 +28,13 @@ module SqliteWalCheckpoint
       @thread
     end
 
+    # Signal the contender to exit and wait for it. Only the contender thread
+    # acquires or releases the flock (see run's ensure).
     def stop
       @stop = true
       thread = @mutex&.synchronize { @thread }
       thread&.join(2)
-    ensure
       @mutex&.synchronize { @thread = nil if @thread && !@thread.alive? }
-      release_lock
     end
 
     def checkpoint
@@ -64,13 +63,6 @@ module SqliteWalCheckpoint
       @lock_path = nil
       @database_path_override = nil
       @stop = false
-      @exit_handler_installed = false
-    end
-
-    # Puma's WEB_CONCURRENCY=auto must not use to_i (that is 0). Only the literal
-    # 0 means single-process mode; everything else forks workers.
-    def single_puma_process?(configured_workers)
-      configured_workers.to_s == "0"
     end
 
     private
@@ -81,12 +73,12 @@ module SqliteWalCheckpoint
         until @stop
           begin
             unless database_path
-              interruptible_sleep interval
+              sleep interval
               next
             end
 
             unless acquire_lock
-              interruptible_sleep interval
+              sleep interval
               next
             end
 
@@ -95,7 +87,7 @@ module SqliteWalCheckpoint
                 until @stop
                   checkpoint_on(database)
                   backoff = interval
-                  interruptible_sleep interval
+                  sleep interval
                 end
               end
             ensure
@@ -103,7 +95,7 @@ module SqliteWalCheckpoint
             end
           rescue => error
             Rails.logger.warn "SQLite WAL checkpoint failed: #{error.class}: #{error.message}"
-            interruptible_sleep backoff
+            sleep backoff
             backoff = [ backoff * 2, MAX_BACKOFF ].min
           end
         end
@@ -153,29 +145,8 @@ module SqliteWalCheckpoint
 
         @lock_file.flock(File::LOCK_UN)
         @lock_file.close
-      rescue Errno::EBADF, IOError
-        # Already closed by a racing ensure / exit handler.
       ensure
         @lock_file = nil
-      end
-
-      def interruptible_sleep(seconds)
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
-        while !@stop && (remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)) > 0
-          sleep [ remaining, 0.05 ].min
-        end
-      end
-
-      def install_exit_handler
-        return if @exit_handler_installed
-
-        @exit_handler_installed = true
-        at_exit do
-          if @lock_file
-            checkpoint rescue nil
-          end
-          stop
-        end
       end
   end
 end

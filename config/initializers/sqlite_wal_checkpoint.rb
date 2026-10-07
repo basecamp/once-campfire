@@ -1,10 +1,5 @@
-# Start a checkpoint contender in console, runner, rake and other non-Puma writers.
-# Puma skips this path: config/puma.rb and config/puma_dev.rb start after the
-# correct process is chosen (worker boot vs single-process), so the master that
-# only forks workers never holds the lock alone. Resque starts after_prefork.
+# Start a checkpoint contender in every non-test process. Puma and Resque pool
+# stop before fork and start again in the child so the flock is never inherited.
 Rails.application.config.after_initialize do
-  next if Rails.env.test?
-  next if defined?(Puma::CLI)
-
-  SqliteWalCheckpoint.start
+  SqliteWalCheckpoint.start unless Rails.env.test?
 end
