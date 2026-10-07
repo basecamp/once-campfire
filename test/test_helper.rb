@@ -6,31 +6,15 @@ require "mocha/minitest"
 require "webmock/minitest"
 require "turbo/broadcastable/test_helper"
 
-# maintain_test_schema! may reload schema.rb after after_initialize; triggers are
-# not dumped, so ensure they exist before fixtures insert messages.
-Room::MessagesCount.ensure!
-
 WebMock.enable!
-
-module RoomMessagesCountFixtures
-  # Fixture YAML still inserts messages before rooms via some load paths, so
-  # INSERT triggers can update zero room rows. Reconcile once after load.
-  def load_fixtures(config)
-    fixtures = super
-    Room::MessagesCount.backfill!
-    fixtures
-  end
-end
 
 class ActiveSupport::TestCase
   include ActiveJob::TestHelper
-  prepend RoomMessagesCountFixtures
 
   parallelize(workers: :number_of_processors)
 
-  # Prefer rooms before messages when the loader honors declaration order.
-  fixtures :accounts, :users, :rooms, :memberships, :messages, "action_text/rich_texts",
-           :boosts, :searches, :sessions, :webhooks, "push/subscriptions"
+  # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
+  fixtures :all
 
   include SessionTestHelper, MentionTestHelper, TurboTestHelper, DnsTestHelper
 
@@ -48,5 +32,14 @@ class ActiveSupport::TestCase
 
   teardown do
     WebMock.reset!
+  end
+
+  # fixtures :all inserts messages before rooms, so INSERT triggers cannot count
+  # yet. Backfill once after load; ensure! covers schema.rb (triggers not dumped).
+  def load_fixtures(config)
+    fixtures = super
+    Room::MessagesCount.ensure!
+    Room::MessagesCount.backfill!
+    fixtures
   end
 end
