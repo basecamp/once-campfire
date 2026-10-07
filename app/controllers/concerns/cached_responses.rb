@@ -57,8 +57,9 @@ module CachedResponses
       ActiveSupport::JSON.encode([
         controller_path, request.fullpath, request.base_url, request.user_agent,
         request.headers["Accept"], request.headers["Turbo-Frame"], I18n.locale,
-        Current.user.id, Current.session.token, session.to_hash,
-        request.env["action_controller.csrf_token"],
+        # Tokens are hydrated per request, including clients that replay an old
+        # cookie. Their raw CSRF secret does not select a presentation variant.
+        Current.user.id, Current.session.token, session.to_hash.except("_csrf_token"),
         cookies.to_h.except("_campfire_session", "session_token")
       ])
     end

@@ -6,6 +6,7 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
   setup do
     host! "once.campfire.test"
     sign_in :david
+    @login_cookie = cookies["_campfire_session"]
     @previous_forgery = ActionController::Base.allow_forgery_protection
     ActionController::Base.allow_forgery_protection = true
     @previous_cache = Rails.cache
@@ -36,6 +37,31 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
       get url
       assert_response :success
     end
+  end
+
+  test "pagination caches the completed HTML rather than silently bypassing admission" do
+    get room_messages_url(@room)
+    assert_response :success
+    assert_equal "text/html", response.media_type
+    MessagesController.any_instance.expects(:find_paged_messages).never
+    get room_messages_url(@room)
+    assert_response :success
+  end
+
+  test "clients without a persisted CSRF session still reuse token-neutral HTML" do
+    cookies["_campfire_session"] = @login_cookie
+    get room_url(@room)
+    first = css_select('meta[name="csrf-token"]').first["content"]
+    cookies["_campfire_session"] = @login_cookie
+    ResponseCache.instance.expects(:write).never
+    get room_url(@room)
+    second = css_select('meta[name="csrf-token"]').first["content"]
+    assert_response :success
+    assert_not_equal first, second
+    assert_no_match /campfire-csrf-/, response.body
+    post room_messages_url(@room, format: :turbo_stream), params: {
+      authenticity_token: second, message: { body: "fresh replay token works", client_message_id: "cache-replay-token" } }
+    assert_response :success
   end
 
   test "cached tokens stay fresh and literal token-like text survives" do
