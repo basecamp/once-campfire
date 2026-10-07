@@ -29,14 +29,15 @@ module SqliteWalCheckpoint
       @thread
     end
 
-    # Signal the contender to exit and wait for it. Only the contender thread
-    # acquires or releases the flock (see run's ensure).
+    # Signal the contender to exit and wait until it has released the flock and
+    # closed its SQLite connection. before_fork must not return while those are open.
     def stop
       @stop = true
       thread = @mutex&.synchronize { @thread }
-      # Join longer than busy_handler_timeout so before_fork does not race a PRAGMA.
-      thread&.join(2)
-      @mutex&.synchronize { @thread = nil if @thread && !@thread.alive? }
+      return unless thread
+
+      thread.join
+      @mutex&.synchronize { @thread = nil if @thread.equal?(thread) }
     end
 
     def checkpoint
@@ -75,7 +76,8 @@ module SqliteWalCheckpoint
 
         until @stop
           begin
-            unless database_path
+            path = database_path
+            unless path && File.exist?(path)
               sleep interval
               next
             end
@@ -86,7 +88,9 @@ module SqliteWalCheckpoint
             end
 
             begin
+              ran = false
               with_database do |database|
+                ran = true
                 until @stop
                   checkpoint_on(database)
                   backoff = interval
@@ -96,6 +100,10 @@ module SqliteWalCheckpoint
             ensure
               release_lock
             end
+
+            # with_database no-ops if the file vanished between the exist? check
+            # and open; sleep so we do not spin on the lock file.
+            sleep interval unless ran || @stop
           rescue => error
             Rails.logger.warn "SQLite WAL checkpoint failed: #{error.class}: #{error.message}"
             sleep backoff
