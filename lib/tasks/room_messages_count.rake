@@ -1,6 +1,6 @@
-# Repair while DatabaseTasks still selects the database it loaded or migrated.
-# db:prepare calls these methods directly, and test tasks restore their original
-# pool before a Rake enhancement runs. This also avoids Rake's once-only invoke.
+# Repair the database selected by each schema-load or migration operation.
+# db:prepare calls DatabaseTasks directly, bypassing Rake enhancements;
+# method hooks also run on every invocation.
 module RoomMessagesCountDatabaseTasks
   def load_schema(...)
     super.tap { repair_room_messages_count }
