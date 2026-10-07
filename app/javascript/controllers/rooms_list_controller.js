@@ -7,7 +7,7 @@ export default class extends Controller {
   static classes = [ "unread" ]
 
   #disconnected = true
-  #readAt = new Map()
+  #connection = 0
 
   async connect() {
     this.channel ??= await cable.subscribeTo({ channel: "UnreadRoomsChannel" }, {
@@ -19,6 +19,7 @@ export default class extends Controller {
 
   disconnect() {
     ignoringBriefDisconnects(this.element, () => {
+      this.#channelDisconnected()
       this.channel?.unsubscribe()
       this.channel = null
     })
@@ -28,12 +29,8 @@ export default class extends Controller {
     this.read({ detail: { roomId: Current.room.id } })
   }
 
-  read({ detail: { roomId, at } }) {
+  read({ detail: { roomId } }) {
     const room = this.#findRoomTarget(roomId)
-
-    if (at) {
-      this.#readAt.set(Number(roomId), Math.max(Number(at), this.#readAt.get(Number(roomId)) ?? 0))
-    }
 
     if (room) {
       room.classList.remove(this.unreadClass)
@@ -41,10 +38,15 @@ export default class extends Controller {
     }
   }
 
-  #channelConnected() {
+  async #channelConnected() {
     if (this.#disconnected) {
       this.#disconnected = false
-      this.element.reload()
+      const connection = ++this.#connection
+      // Reloading an unfinished frame aborts its response body reader.
+      await this.element.loaded
+      if (this.element.isConnected && !this.#disconnected && connection === this.#connection) {
+        this.element.reload()
+      }
     }
   }
 
@@ -52,22 +54,16 @@ export default class extends Controller {
     this.#disconnected = true
   }
 
-  #unread({ roomId, at }) {
+  #unread({ roomId }) {
     const unreadRoom = this.#findRoomTarget(roomId)
 
     if (unreadRoom) {
-      if (Current.room.id != roomId && !this.#readSince(roomId, at)) {
+      if (Current.room.id != roomId) {
         unreadRoom.classList.add(this.unreadClass)
       }
 
       this.dispatch("unread", { detail: { targetId: unreadRoom.id } })
     }
-  }
-
-  // Notices fan out one member at a time, so one can arrive after the member has already
-  // read the room in another tab. It still reorders the room, but doesn't mark it unread.
-  #readSince(roomId, at) {
-    return Number(at) <= this.#readAt.get(Number(roomId))
   }
 
   #findRoomTarget(roomId) {
