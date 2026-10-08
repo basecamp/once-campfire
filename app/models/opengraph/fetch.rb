@@ -23,11 +23,14 @@ class Opengraph::Fetch
   end
 
   private
+    # The nil proxy address ignores http_proxy: a proxy would look the host up again, and the connection
+    # would no longer go to the checked IP.
+    #
     # The timeouts bound each operation. A host can still send its headers or body a byte at a time,
     # in as many reads as it likes: UnfurlLinksController puts the whole unfurl under one deadline.
     def request(url, request_class, ip:)
       MAX_REDIRECTS.times do
-        Net::HTTP.start(url.host, url.port, ipaddr: ip, use_ssl: url.scheme == "https", **timeouts) do |http|
+        Net::HTTP.start(url.host, url.port, nil, ipaddr: ip, use_ssl: url.scheme == "https", **timeouts) do |http|
           http.request request_class.new(url) do |response|
             if response.is_a?(Net::HTTPRedirection)
               url, ip = resolve_redirect(response["location"])

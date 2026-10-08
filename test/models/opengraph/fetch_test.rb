@@ -74,6 +74,23 @@ class Opengraph::FetchTest < ActiveSupport::TestCase
     end
   end
 
+  test "#fetch_document connects to the resolved IP even when a proxy is configured" do
+    url = URI.parse("http://www.example.com/")
+    saved = ENV.slice("http_proxy", "HTTP_PROXY")
+    %w[ http_proxy HTTP_PROXY ].each { |k| ENV[k] = "http://proxy.internal:3128" }
+
+    WebMock.disable_net_connect! allow: [ url.host ]
+    TCPSocket.expects(:open).with { |*args, **| args.first == "proxy.internal" }.never
+    TCPSocket.expects(:open).with { |*args, **| args.first == "1.2.3.4" && args[1] == 80 }.throws(:not_proxied)
+
+    assert_throws :not_proxied do
+      @fetch.fetch_document(url, ip: "1.2.3.4")
+    end
+  ensure
+    %w[ http_proxy HTTP_PROXY ].each { |k| ENV.delete(k) }
+    saved.each { |k, v| ENV[k] = v }
+  end
+
   test "#fetch_document is empty following redirects that never finish" do
     WebMock.stub_request(:get, "https://www.example.com/")
       .to_return(status: 302, headers: { location: "https://www.example.com/" })
