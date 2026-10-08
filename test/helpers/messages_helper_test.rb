@@ -1,6 +1,18 @@
 require "test_helper"
 
 class MessagesHelperTest < ActionView::TestCase
+  test "plain text presentation is reused by content rather than database epoch" do
+    view.controller.stubs(:perform_caching).returns(true)
+    FragmentCache.store.clear
+    message = Message.create! room: rooms(:pets), body: "A reusable <strong>safe</strong> body", creator: users(:jason)
+    first = view.message_presentation(message)
+    assert_includes first, "A reusable <strong>safe</strong> body"
+    ContentFilters::TextMessagePresentationFilters.expects(:apply).never
+    assert_equal first, view.message_presentation(message)
+  ensure
+    FragmentCache.store.clear
+  end
+
   test "message_presentation neutralizes unsafe URI schemes in links" do
     message = Message.create! room: rooms(:pets), body: '<div><a href="javascript:alert(1)">x</a></div>', client_message_id: "0015", creator: users(:jason)
 

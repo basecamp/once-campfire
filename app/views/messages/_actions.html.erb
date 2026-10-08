@@ -1,5 +1,6 @@
 <%# Be sure to check/update messages/_template.html.erb when changing this file %>
 
+<%= cache_message_actions(message) do %>
 <div class="message__actions" data-controller="soft-keyboard">
   <%= tag.details class: "position-relative",
       data: { controller: "popup", action: "keydown.esc->popup#close toggle->popup#toggle click@document->popup#closeOnClickOutside", popup_orientation_top_class: "popup-orientation-top" } do %>
@@ -10,14 +11,16 @@
 
     <div class="message__actions-menu border shadow" data-popup-target="menu">
       <div class="quick-boosts">
+        <% boost_path = message_boosts_path(message) %>
+        <% boost_frame = dom_id(message, :boosting) %>
         <% EmojiHelper::REACTIONS.each do |character, title| %>
-          <%= form_with model: [ message, Boost.new ], data: { turbo_frame: dom_id(message, :boosting), action: "popup#close"} do |form| %>
+          <form data-turbo-frame="<%= boost_frame %>" data-action="popup#close" action="<%= boost_path %>" accept-charset="UTF-8" method="post">
             <%= hidden_field_tag "boost[content]", character %>
-            <%= form.button type: "submit", title: title, class: "btn message__action-btn", data: { emoji: character } do %>
+            <button name="button" type="submit" title="<%= title %>" class="btn message__action-btn" data-emoji="<%= character %>">
               <figure class="margin-none boost-character"><%= character %></figure>
               <span class="for-screen-reader"><%= title %></span>
-            <% end %>
-          <% end %>
+            </button>
+          </form>
         <% end %>
 
         <%= link_to new_message_boost_path(message),
@@ -29,7 +32,7 @@
       </div>
 
       <div class="flex flex-wrap border-top margin-block-start-half pad-block-start-half message__actions-grid">
-        <% if message.content_type.attachment? %>
+        <% if message.attachment? %>
           <%= link_to rails_blob_path(message.attachment, disposition: "attachment", only_path: true), class: "btn message__action-btn center full-width hide-in-ios-pwa", title: "Download", aria: { label: "Download" } do %>
             <%= image_tag "download.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
           <% end %>
@@ -56,3 +59,4 @@
     </div>
   <% end %>
 </div>
+<% end %>

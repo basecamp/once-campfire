@@ -21,7 +21,10 @@ class RoomsController < ApplicationController
 
   private
     def set_room
-      if room = room_scope.find_by(id: params[:room_id] || params[:id])
+      room = RecordCache.fetch([ "room", self.class.name, Current.user.id, params[:room_id] || params[:id] ], read_record_cache_version) do
+        [ room_scope.find_by(id: params[:room_id] || params[:id]) ]
+      end.first
+      if room
         @room = room
       else
         redirect_to root_url, alert: "Room not found or inaccessible"

@@ -17,6 +17,28 @@ class MessageTest < ActiveSupport::TestCase
     assert_not Message.new(body: "🔥 💯").plain_text_body.all_emoji?
   end
 
+  test "plain text keeps Action Text formatting and attachment conversion" do
+    bodies = [ nil, "", "Hello &amp; goodbye", "<div>First<br>second</div>", "<p>One</p><p>Two</p>",
+      "<ul><li>First</li><li><strong>Second</strong></li></ul>", "<blockquote>Quoted</blockquote>",
+      "<pre><code>one\n  two</code></pre>", "<table><tr><td>one</td><td>two</td></tr></table>",
+      "<div><em>Unclosed", "😄🤘", "<div>Hi #{mention_attachment_for(:david)}</div>" ]
+    bodies.each do |html|
+      message = Message.new(body: html)
+      assert_equal message.body.to_plain_text, message.plain_text_body, html.inspect
+    end
+  end
+
+  test "plain text follows body replacement and does not expose mutable cached text" do
+    message = Message.new(body: "<p>First</p>")
+    message.plain_text_body.replace("Caller edit")
+    assert_equal "First", message.plain_text_body
+    message.body = "<p>Replacement</p>"
+    assert_equal "Replacement", message.plain_text_body
+    message = messages(:first)
+    message.update!(body: "<p>Reloaded body</p>")
+    assert_equal message.body.to_plain_text, message.reload.plain_text_body
+  end
+
   test "mentionees" do
     message = Message.new room: rooms(:pets), body: "<div>Hey #{mention_attachment_for(:david)}</div>", creator: users(:jason), client_message_id: "earth"
     assert_equal [ users(:david) ], message.mentionees

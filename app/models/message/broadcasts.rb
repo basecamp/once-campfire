@@ -1,6 +1,6 @@
 module Message::Broadcasts
-  def broadcast_create
-    broadcast_append_to room, :messages, target: [ room, :messages ]
+  def broadcast_create(html: nil)
+    broadcast_append_to room, :messages, target: [ room, :messages ], **(html ? { html: html } : {})
     broadcast_unread_room_later
   end
 

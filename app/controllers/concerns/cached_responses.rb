@@ -10,7 +10,7 @@ module CachedResponses
   end
 
   def perform_caching
-    return false unless super && @response_cache_version.present? && !ActiveRecord::Base.connection.transaction_open?
+    return false unless super && @response_cache_version.present? && !FragmentCache.transaction_open?
 
     # Check again after authentication, before the first native fragment lookup.
     # Later renders retain this immutable namespace and cannot poison a new epoch.
@@ -26,14 +26,19 @@ module CachedResponses
   end
 
   def combined_fragment_cache_key(key)
-    @fragment_cache_namespace ||= [
-      @response_cache_version, request.base_url, request.script_name, request.format.to_s, I18n.locale,
+    @fragment_cache_context ||= [
+      request.base_url, request.script_name, request.format.to_s, I18n.locale,
       Current.user&.id, (Digest::SHA256.hexdigest(Current.session.token) if Current.session)
     ].freeze
-    super([ @fragment_cache_namespace, key ])
+    version = @response_cache_version unless Array(key).flatten.any? { |part| part.is_a?(FragmentCache::ContentKey) }
+    super([ version, @fragment_cache_context, key ])
   end
 
   private
+    def read_record_cache_version
+      @response_cache_version if request.get? || request.head?
+    end
+
     def capture_response_cache_version
       # Capture for native HTML/JSON/stream renders too, even with page reuse off.
       # Detached renderers do not run callbacks and therefore render uncached.
@@ -47,8 +52,6 @@ module CachedResponses
         return yield unless encoding
 
         key = response_cache_key(encoding)
-        original_session = session.to_hash.deep_dup
-
         return yield if key.bytesize > ResponseCache::MAX_KEY_BYTES
 
         entry = ResponseCache.instance.read(key, @response_cache_version)
@@ -57,6 +60,7 @@ module CachedResponses
           ResponseCache.instance.synchronize_render(key, @response_cache_version) do
             entry = ResponseCache.instance.read(key, @response_cache_version)
             if !entry && ResponseCache.instance.version == @response_cache_version
+              original_session = session.to_hash.deep_dup
               yield
               rendered = true
               entry = cache_completed_response(key, original_session, encoding)
@@ -81,6 +85,10 @@ module CachedResponses
     def cache_completed_response(key, original_session, encoding)
       if response.status == 200 && response.media_type == "text/html" && session.to_hash == original_session && !response.headers["Content-Encoding"]
         body = encoding == "gzip" ? Zlib.gzip(response.body) : response.body
+        unless body.empty? || response.headers["ETag"] || response.headers["Last-Modified"]
+          # Match Rack::ETag once, rather than hashing the same bytes on each hit.
+          response.headers["ETag"] = %(W/"#{Digest::SHA256.hexdigest(body).byteslice(0, 32)}")
+        end
         response.headers["Content-Encoding"] = "gzip" if encoding == "gzip"
         response.headers["Vary"] = (response.headers["Vary"].to_s.split(/,\s*/) | [ "Accept-Encoding" ]).join(", ")
         headers = response.headers.slice(*CACHE_HEADERS).to_h.freeze
@@ -95,7 +103,7 @@ module CachedResponses
         !authenticated_by.bot_key? && flash.empty? &&
         !request.headers["If-None-Match"] && !request.headers["If-Modified-Since"] &&
         !Rails.application.config.content_security_policy_nonce_generator &&
-        !ActiveRecord::Base.connection.transaction_open?
+        !FragmentCache.transaction_open?
     end
 
     def response_cache_key(encoding)

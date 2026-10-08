@@ -49,7 +49,11 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "creating a message broadcasts the message to the room" do
+    ContentFilters::TextMessagePresentationFilters.expects(:apply).once.with { |body| body.to_plain_text == "New one" }.returns(ActionText::Content.new("New one"))
     post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+
+    assert_response :success
+    assert_select "turbo-stream[action=append] .message__body", text: /New one/
 
     assert_rendered_turbo_stream_broadcast @room, :messages, action: "append", target: [ @room, :messages ] do
       assert_select ".message__body", text: /New one/
