@@ -1,2 +1,11 @@
 #!/bin/bash
-exec /rails/script/admin/prepare-backup
+
+# ONCE pauses the container before copying the volume when this hook fails.
+# Separate SQLite backups taken while the app is live are not point-in-time
+# consistent across the primary and Solid Queue databases, so force that safe
+# volume-copy path instead of claiming the snapshots are coordinated.
+echo "Campfire backup requires a paused volume copy; asking ONCE to pause the container." >&2
+app_root="${APP_ROOT:-/rails}"
+mkdir -p "$app_root/storage/backups"
+touch "$app_root/storage/backups/.once-paused-volume-backup"
+exit 1
