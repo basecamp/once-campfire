@@ -11,4 +11,5 @@ test:
   <<: *default
 
 production:
+  database: <%= ENV.fetch("DATABASE", "cache") %>
   <<: *default

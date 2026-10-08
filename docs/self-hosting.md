@@ -169,7 +169,9 @@ docker pull ghcr.io/basecamp/once-campfire:latest
 
 Any pending database migrations run automatically when the container boots.
 
-The Rails cache is stored in the primary SQLite database. The Solid Cache table is added by a normal database migration, so no extra volume or cache database needs to be configured. Existing Redis cache entries are not copied; the cache starts cold and repopulates as requests arrive. Redis is still required for Action Cable. The app's bounded per-worker response and fragment caches remain in memory and are separate from `Rails.cache`.
+Production `Rails.cache` uses Solid Cache in its own SQLite database, `storage/db/production_cache.sqlite3`. Startup's normal `db:prepare` creates it from the checked-in cache schema. Existing Redis entries are not copied; the cache starts cold and repopulates as requests arrive. Redis remains required for Action Cable. The bounded per-worker response and fragment caches remain in memory and are separate from `Rails.cache`.
+
+See the [Solid Cache upgrade notes](upgrades/solid-cache.md) for backup and restore behavior.
 
 ### Backups
 
@@ -192,10 +194,10 @@ docker run --rm \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
-  tar czf "/backup/campfire-backup.tar.gz" -C /rails storage
+  tar czf "/backup/campfire-backup.tar.gz" --exclude='storage/db/production_cache.sqlite3*' -C /rails storage
 ```
 
-This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files.
+This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files. The disposable Solid Cache database is excluded and is rebuilt empty after a restore.
 Copy it somewhere safe, ideally off the machine.
 
 To restore, extract the archive back into a (stopped) instance's volume, and replace the live database with the snapshot:
@@ -209,6 +211,7 @@ docker run --rm \
   bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
            cp /rails/storage/backups/production.sqlite3 /rails/storage/db/production.sqlite3 &&
            rm -f /rails/storage/db/production.sqlite3-wal /rails/storage/db/production.sqlite3-shm &&
+           rm -f /rails/storage/db/production_cache.sqlite3 /rails/storage/db/production_cache.sqlite3-wal /rails/storage/db/production_cache.sqlite3-shm /rails/storage/db/production_cache.sqlite3-journal &&
            chown -R rails:rails /rails/storage"
 ```
 
