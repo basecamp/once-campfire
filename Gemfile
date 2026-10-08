@@ -18,8 +18,7 @@ gem "solid_cache", "~> 1.0.10"
 gem "puma", "~> 8.0"
 
 # Jobs
-gem "resque", "~> 2.7.0"
-gem "resque-pool", "~> 0.7.1"
+gem "solid_queue", "~> 1.7.2"
 
 # Assets
 gem "propshaft", github: "rails/propshaft"

@@ -8,7 +8,7 @@ module BenchmarkSupport
   WORK = File.join(ROOT, "tmp/rails-optimization")
 
   def parse_options(description, defaults)
-    options = { baseline: nil, seed: nil, image: "campfire-reference:app", cpus: "8-11", rounds: 2 }.merge(defaults)
+    options = { baseline: nil, seed: nil, image: "campfire-reference:app", baseline_image: nil, cpus: "8-11", rounds: 2 }.merge(defaults)
     parser = OptionParser.new do |parser|
       parser.banner = "Usage: ruby #{$PROGRAM_NAME} --baseline PATH --seed PATH [options]\n#{description}"
       options.each do |name, default|
@@ -26,6 +26,7 @@ module BenchmarkSupport
     raise OptionParser::MissingArgument, "--baseline and --seed are required" unless options[:baseline] && options[:seed]
     raise OptionParser::InvalidArgument, "--rounds must be even and at least 2" unless options[:rounds] >= 2 && options[:rounds].even?
     %i[baseline seed output].each { |name| options[name] = File.expand_path(options.fetch(name)) }
+    options[:baseline_image] ||= options[:image]
     options
   rescue OptionParser::ParseError => error
     abort "#{error.message}\n#{parser}"
