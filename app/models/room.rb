@@ -104,8 +104,13 @@ class Room < ApplicationRecord
       end
     end
 
+    # Rewriting every member on every message is most of what posting to a large room writes,
+    # so members who are unread already stay as they are. Directs keep touching them all: a
+    # direct's sidebar row is cached by membership and shows the room's recency.
     def unread_memberships(message)
-      memberships.visible.disconnected.where.not(user: message.creator).update_all(unread_at: message.created_at, updated_at: Time.current)
+      recipients = memberships.visible.disconnected.where.not(user: message.creator)
+      recipients = recipients.where(unread_at: nil) unless direct?
+      recipients.update_all(unread_at: message.created_at, updated_at: Time.current)
     end
 
     def push_later(message)
