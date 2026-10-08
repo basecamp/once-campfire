@@ -56,6 +56,39 @@ class PostRestoreTest < ActiveSupport::TestCase
     refute File.exist?(path("storage/db/production_queue.sqlite3"))
   end
 
+  test "preserves database files and WAL sidecars from an ONCE paused-volume backup" do
+    write_file("storage/backups/.once-paused-volume-backup", "")
+    write_file("storage/db/production.sqlite3", "paused primary")
+    write_file("storage/db/production.sqlite3-wal", "paused primary wal")
+    write_file("storage/db/production.sqlite3-shm", "stale primary shm")
+    write_file("storage/db/production.sqlite3-journal", "primary journal")
+    write_file("storage/db/production_queue.sqlite3", "paused queue")
+    write_file("storage/db/production_queue.sqlite3-wal", "paused queue wal")
+    write_file("storage/db/production_queue.sqlite3-shm", "stale queue shm")
+    write_file("storage/db/production_queue.sqlite3-journal", "queue journal")
+    write_file("storage/db/production_cache.sqlite3", "stale cache")
+    write_file("storage/db/production_cache.sqlite3-wal", "stale cache wal")
+    write_file("storage/db/production_cable.sqlite3", "stale cable")
+    write_file("storage/db/production_cable.sqlite3-wal", "stale cable wal")
+
+    _output, status = run_hook
+
+    assert status.success?
+    assert_equal "paused primary", read_file("storage/db/production.sqlite3")
+    assert_equal "paused primary wal", read_file("storage/db/production.sqlite3-wal")
+    assert_equal "primary journal", read_file("storage/db/production.sqlite3-journal")
+    refute File.exist?(path("storage/db/production.sqlite3-shm"))
+    assert_equal "paused queue", read_file("storage/db/production_queue.sqlite3")
+    assert_equal "paused queue wal", read_file("storage/db/production_queue.sqlite3-wal")
+    assert_equal "queue journal", read_file("storage/db/production_queue.sqlite3-journal")
+    refute File.exist?(path("storage/db/production_queue.sqlite3-shm"))
+    refute File.exist?(path("storage/db/production_cache.sqlite3"))
+    refute File.exist?(path("storage/db/production_cache.sqlite3-wal"))
+    refute File.exist?(path("storage/db/production_cable.sqlite3"))
+    refute File.exist?(path("storage/db/production_cable.sqlite3-wal"))
+    refute File.exist?(path("storage/backups/.once-paused-volume-backup"))
+  end
+
   private
     def run_hook
       Open3.capture2e(

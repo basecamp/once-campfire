@@ -1,4 +1,6 @@
 #!/usr/bin/env ruby
+# Invoke only while all web and queue writers are quiesced: the primary and
+# Solid Queue databases are snapshotted separately and are not cross-DB atomic.
 require File.expand_path("../../config/environment", File.dirname(__FILE__))
 
 class Backup

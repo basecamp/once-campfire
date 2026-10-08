@@ -178,32 +178,34 @@ See the [Solid Cache](upgrades/solid-cache.md), [Solid Queue](upgrades/solid-que
 
 ### Backups
 
-To back up your instance, back up the contents of the `/rails/storage` volume.
+Primary records and Solid Queue jobs live in separate SQLite databases, so separate online snapshots are not one point-in-time backup. Stop every Campfire web and job process before generating snapshots and copying the volume. The normal ONCE pre-backup hook deliberately requests ONCE's pause-before-copy fallback for the same reason; its nonzero hook result is intentional.
 
-Because the SQLite database may be written to at any moment, you shouldn't copy its files directly while Campfire is running.
-Instead, first run `script/admin/prepare-backup` inside the running container to produce a consistent snapshot of the database (it's written to `storage/backups/` inside the volume):
+For a single Docker container, stop the app, run the snapshot command in a one-off container using its stopped volume, archive the volume, and restart the app:
 
 ```sh
-docker exec campfire script/admin/prepare-backup
-```
+docker stop campfire
+trap 'docker start campfire' EXIT
 
-(If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
+docker run --rm --volumes-from campfire \
+  ghcr.io/basecamp/once-campfire:latest \
+  script/admin/prepare-backup
 
 Then archive the storage volume to a file on the host, excluding the disposable cache and Action Cable databases:
 
 ```sh
 docker run --rm \
   --user root \
-  --volume campfire:/rails/storage \
+  --volumes-from campfire \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
   tar czf "/backup/campfire-backup.tar.gz" --exclude='storage/db/production_cache.sqlite3*' --exclude='storage/db/production_cable.sqlite3*' -C /rails storage
 ```
 
-This gives you a `campfire-backup.tar.gz` in your current directory containing consistent primary and Solid Queue snapshots, plus uploaded files. The disposable Solid Cache and Solid Cable databases are excluded and rebuilt empty after a restore.
-Copy it somewhere safe, ideally off the machine.
+This gives you a `campfire-backup.tar.gz` in your current directory containing consistent primary and Solid Queue snapshots, plus uploaded files. The disposable Solid Cache and Solid Cable databases are excluded and rebuilt empty after a restore. Copy it somewhere safe, ideally off the machine.
 
-To restore, extract the archive back into a (stopped) instance's volume, and replace the live database with the snapshot:
+If you're using Docker Compose, stop every service that can write to either database, run `script/admin/prepare-backup` in a one-off web container, archive the shared storage volume, then start the services again. Do not run the snapshot and archive commands against a live web/worker process.
+
+To restore, extract the archive back into a stopped instance's volume and run the restore hook:
 
 ```sh
 docker run --rm \

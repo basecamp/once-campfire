@@ -8,22 +8,34 @@ queue_db="$app_root/storage/db/${env}_queue.sqlite3"
 queue_snapshot="$app_root/storage/backups/${env}_queue.sqlite3"
 cache_db="$app_root/storage/db/${env}_cache.sqlite3"
 cable_db="$app_root/storage/db/${env}_cable.sqlite3"
+paused_volume_marker="$app_root/storage/backups/.once-paused-volume-backup"
+paused_volume_restore=false
 
-if [ ! -f "$queue_snapshot" ] && [ -f "$queue_db" ]; then
+# ONCE archives the live SQLite files only after pausing the container when
+# pre-backup fails. Preserve each database together with its WAL sidecars.
+if [ -f "$paused_volume_marker" ]; then
+  rm -f "$app_root/storage/db/$env.sqlite3-shm" "$queue_db-shm"
+  rm -f "$paused_volume_marker"
+  paused_volume_restore=true
+fi
+
+if [ "$paused_volume_restore" = false ] && [ ! -f "$queue_snapshot" ] && [ -f "$queue_db" ]; then
   echo "Queue database snapshot missing; refusing to restore over an existing queue database." >&2
   exit 1
 fi
 
-for db_name in "${db_names[@]}"; do
-  snapshot="$app_root/storage/backups/$db_name"
-  db="$app_root/storage/db/$db_name"
+if [ "$paused_volume_restore" = false ]; then
+  for db_name in "${db_names[@]}"; do
+    snapshot="$app_root/storage/backups/$db_name"
+    db="$app_root/storage/db/$db_name"
 
-  if [ -f "$snapshot" ]; then
-    mkdir -p "$(dirname "$db")"
-    cp "$snapshot" "$db"
-    rm -f "$db-wal" "$db-shm"
-  fi
-done
+    if [ -f "$snapshot" ]; then
+      mkdir -p "$(dirname "$db")"
+      cp "$snapshot" "$db"
+      rm -f "$db-wal" "$db-shm"
+    fi
+  done
+fi
 
 # Cache entries and Action Cable broadcasts are disposable and may belong to a
 # different point in time than the restored application database.
