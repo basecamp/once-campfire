@@ -43,3 +43,7 @@ production:
     database: storage/db/production_cache.sqlite3
     migrations_paths: db/cache_migrate
     schema_dump: cache_schema.rb
+    # The background checkpoint contender tracks the primary database; keep
+    # SQLite's normal checkpointing for cache writes.
+    pragmas:
+      wal_autocheckpoint: 1000
