@@ -28,7 +28,7 @@ You'll be able to access the app at http://localhost:3000.
 
 On first run you'll be guided through creating your admin account, and you can sign in with that account from then on.
 
-Note that Campfire needs Redis (for Action Cable, caching, and background jobs), so if you've restarted your machine or stopped the container, `docker start campfire-redis` will bring it back.
+Note that Campfire needs Redis (for Action Cable and caching), so if you've restarted your machine or stopped the container, `docker start campfire-redis` will bring it back.
 
 ### Web Push notifications
 
