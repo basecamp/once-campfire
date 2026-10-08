@@ -63,6 +63,32 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "foreign conditional body"
   end
 
+  test "message controls survive creator edits while the author is rendered fresh" do
+    get room_messages_url(@room)
+    assert_response :success
+    foreign_write("UPDATE users SET name = ? WHERE id = ?", "Fresh creator with cached controls", @message.creator_id)
+    ActionView::Base.any_instance.expects(:form_with).never
+    get room_messages_url(@room)
+    assert_response :success
+    assert_includes response.body, "Fresh creator with cached controls"
+    assert_select "form[action=?]", message_boosts_path(@message)
+  end
+
+  test "a commit in another room retains content-validated message collection hits" do
+    ResponseCache.instance.stubs(:budget).returns(0)
+    get room_messages_url(@room)
+    assert_response :success
+    foreign_write("UPDATE rooms SET name = ? WHERE id = ?", "Unrelated room rename", rooms(:pets).id)
+    collections = []
+    ActiveSupport::Notifications.subscribed(->(event) { collections << event.payload }, "render_collection.action_view") do
+      get room_messages_url(@room)
+    end
+    assert_response :success
+    messages = collections.find { |payload| payload[:identifier].end_with?("messages/_message.html.erb") }
+    assert messages
+    assert_equal @room.messages.count, messages[:cache_hits]
+  end
+
   test "a foreign commit after capture bypasses old native fragment lookups" do
     ResponseCache.instance.stubs(:budget).returns(0)
     get room_messages_url(@room)

@@ -6,9 +6,9 @@ class Room::MessagePusher
   end
 
   def push
-    build_payload.tap do |payload|
-      push_to_users_involved_in_everything(payload)
-      push_to_users_involved_in_mentions(payload)
+    subscriptions = push_subscriptions_for_users_involved_in_everything.or(push_subscriptions_for_mentionable_users(message.mentionees))
+    if subscriptions.exists?
+      Rails.configuration.x.web_push_pool.queue(build_payload, subscriptions)
     end
   end
 
@@ -37,14 +37,6 @@ class Room::MessagePusher
       }
     end
 
-    def push_to_users_involved_in_everything(payload)
-      enqueue_payload_for_delivery payload, push_subscriptions_for_users_involved_in_everything
-    end
-
-    def push_to_users_involved_in_mentions(payload)
-      enqueue_payload_for_delivery payload, push_subscriptions_for_mentionable_users(message.mentionees)
-    end
-
     def push_subscriptions_for_users_involved_in_everything
       relevant_subscriptions.merge(Membership.involved_in_everything)
     end
@@ -59,10 +51,6 @@ class Room::MessagePusher
       Push::Subscription
         .joins(user: :memberships)
         .merge(User.active)
-        .merge(Membership.visible.disconnected.where(room: room).where.not(user: message.creator))
-    end
-
-    def enqueue_payload_for_delivery(payload, subscriptions)
-      Rails.configuration.x.web_push_pool.queue(payload, subscriptions)
+        .merge(Membership.visible.disconnected.where(room: room).where.not(user_id: message.creator_id))
     end
 end

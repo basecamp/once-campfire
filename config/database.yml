@@ -9,6 +9,11 @@ default: &default
   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 10 } %>
   timeout: 5000
   default_transaction_mode: immediate
+  # Checkpoint on a background connection instead (SqliteWalCheckpoint).
+  # Non-test processes start a contender; forking servers stop before fork and
+  # start again in the child so the flock is never inherited.
+  pragmas:
+    wal_autocheckpoint: 0
 
 development:
   primary:
@@ -38,3 +43,7 @@ production:
     database: storage/db/production_queue.sqlite3
     migrations_paths: db/queue_migrate
     schema_dump: queue_schema.rb
+    # The background checkpoint contender tracks the primary database; keep
+    # SQLite's normal checkpointing for queue writes.
+    pragmas:
+      wal_autocheckpoint: 1000
