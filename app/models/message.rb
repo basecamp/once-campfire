@@ -9,7 +9,9 @@ class Message < ApplicationRecord
   has_rich_text :body
 
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
-  after_create_commit -> { room.receive(self) }
+  # Run after Action Text and Active Storage autosave, while creation is still atomic.
+  after_save :record_creation, if: :previously_new_record?
+  after_create_commit -> { room.push_later(self) }
 
   scope :ordered, -> { order(:created_at) }
   scope :with_creator, -> { preload(creator: :avatar_attachment) }
@@ -45,4 +47,10 @@ class Message < ApplicationRecord
       Sound.find_by_name match[:name]
     end
   end
+
+  private
+    def record_creation
+      create_in_index
+      room.unread_memberships(self)
+    end
 end

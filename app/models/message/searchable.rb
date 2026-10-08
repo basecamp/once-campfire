@@ -2,7 +2,6 @@ module Message::Searchable
   extend ActiveSupport::Concern
 
   included do
-    after_create_commit  :create_in_index
     before_update        -> { @attachment_replaced = attachment_changes.key?("attachment") }
     after_update_commit  :update_in_index, if: :indexed_text_changed?
     after_destroy_commit :remove_from_index

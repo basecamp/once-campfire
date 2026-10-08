@@ -78,6 +78,19 @@ class Room < ApplicationRecord
     push_later(message)
   end
 
+  # Rewriting every member on every message is most of what posting to a large room writes,
+  # so members who are unread already stay as they are. Directs keep touching them all: a
+  # direct's sidebar row is cached by membership and shows the room's recency.
+  def unread_memberships(message)
+    recipients = memberships.visible.disconnected.where.not(user: message.creator)
+    recipients = recipients.where(unread_at: nil) unless direct?
+    recipients.update_all(unread_at: message.created_at, updated_at: Time.current)
+  end
+
+  def push_later(message)
+    Room::PushMessageJob.perform_later(self, message)
+  end
+
   def open?
     is_a?(Rooms::Open)
   end
@@ -102,18 +115,5 @@ class Room < ApplicationRecord
       if type_changed? && type_was == "Rooms::Direct"
         errors.add :type, "can't be changed for a direct room"
       end
-    end
-
-    # Rewriting every member on every message is most of what posting to a large room writes,
-    # so members who are unread already stay as they are. Directs keep touching them all: a
-    # direct's sidebar row is cached by membership and shows the room's recency.
-    def unread_memberships(message)
-      recipients = memberships.visible.disconnected.where.not(user: message.creator)
-      recipients = recipients.where(unread_at: nil) unless direct?
-      recipients.update_all(unread_at: message.created_at, updated_at: Time.current)
-    end
-
-    def push_later(message)
-      Room::PushMessageJob.perform_later(self, message)
     end
 end
