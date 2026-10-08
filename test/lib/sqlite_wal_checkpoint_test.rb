@@ -53,6 +53,101 @@ class SqliteWalCheckpointTest < ActiveSupport::TestCase
     assert_equal :checkpointed, SqliteWalCheckpoint.tick
   end
 
+  test "stop interrupts a long checkpoint interval" do
+    waits = observe_waits
+    contender = SqliteWalCheckpoint.start(interval: 30, enabled: true)
+    assert_equal 30, receive(waits)
+
+    SqliteWalCheckpoint.stop(timeout: 0.5)
+    assert_not contender.alive?
+    assert_empty checkpoint_threads
+  end
+
+  test "stop interrupts checkpoint error backoff" do
+    SqliteWalCheckpoint.database_path_override = build_wal_database(rows: 10)
+    SqliteWalCheckpoint.stubs(:checkpoint_on).raises(SQLite3::Exception, "checkpoint failed")
+    waits = observe_waits
+    contender = SqliteWalCheckpoint.start(interval: 30, enabled: true)
+    assert_equal 30, receive(waits)
+
+    SqliteWalCheckpoint.stop(timeout: 0.5)
+    assert_not contender.alive?
+    assert_not lock_held_by_other_process?(SqliteWalCheckpoint.lock_path)
+  end
+
+  test "timed out stop prevents replacement until the checkpoint releases its resources" do
+    entered, release = block_checkpoint
+    contender = SqliteWalCheckpoint.start(enabled: true)
+    database = receive(entered)
+    assert lock_held_by_other_process?(SqliteWalCheckpoint.lock_path)
+
+    assert_raises(SqliteWalCheckpoint::StopTimeout) { SqliteWalCheckpoint.stop(timeout: 0.01) }
+    assert contender.alive?
+    assert lock_held_by_other_process?(SqliteWalCheckpoint.lock_path)
+    assert_raises(SqliteWalCheckpoint::StopTimeout) { SqliteWalCheckpoint.start(enabled: true) }
+    assert_equal [ contender ], checkpoint_threads
+
+    release << true
+    SqliteWalCheckpoint.stop
+    assert_not contender.alive?
+    assert database.closed?
+    assert_not lock_held_by_other_process?(SqliteWalCheckpoint.lock_path)
+  ensure
+    release&.push(true)
+    SqliteWalCheckpoint.stop
+  end
+
+  test "start waits for a concurrent stop to release the previous contender" do
+    entered, release = block_checkpoint
+    contender = SqliteWalCheckpoint.start(enabled: true)
+    receive(entered)
+    stopping = Thread.new { SqliteWalCheckpoint.stop }
+    wait_until { stopping.status == "sleep" }
+    starting = Thread.new { SqliteWalCheckpoint.start(enabled: true) }
+    wait_until { starting.status == "sleep" }
+    assert contender.alive?
+
+    release << true
+    stopping.value
+    replacement = starting.value
+    assert_not contender.alive?
+    assert replacement.alive?
+    assert_not_equal contender, replacement
+  ensure
+    release&.push(true)
+    stopping&.join
+    starting&.join
+    SqliteWalCheckpoint.stop
+  end
+
+  test "a contender cannot release a concurrent tick's lock" do
+    entered, release = block_checkpoint
+    ticking = Thread.new { SqliteWalCheckpoint.tick }
+    receive(entered)
+    waits = observe_waits
+    contender = SqliteWalCheckpoint.start(interval: 30, enabled: true)
+    assert_equal 30, receive(waits)
+
+    SqliteWalCheckpoint.stop(timeout: 0.5)
+    assert_not contender.alive?
+    assert lock_held_by_other_process?(SqliteWalCheckpoint.lock_path)
+    release << true
+    assert_equal :checkpointed, ticking.value
+    assert_not lock_held_by_other_process?(SqliteWalCheckpoint.lock_path)
+  ensure
+    release&.push(true)
+    ticking&.join
+    SqliteWalCheckpoint.stop
+  end
+
+  test "reset does not reinstall the process exit checkpoint" do
+    SqliteWalCheckpoint.start(enabled: true)
+    SqliteWalCheckpoint.reset!
+    SqliteWalCheckpoint.expects(:at_exit).never
+    SqliteWalCheckpoint.start(enabled: true)
+    SqliteWalCheckpoint.stop
+  end
+
   test "tick checkpoints through the elected lock holder" do
     db_path = build_wal_database(rows: 50)
     SqliteWalCheckpoint.database_path_override = db_path
@@ -94,12 +189,13 @@ class SqliteWalCheckpointTest < ActiveSupport::TestCase
       assert File.size(wal_path) > 0
 
       SqliteWalCheckpoint.database_path_override = db_path
-      assert SqliteWalCheckpoint.send(:acquire_lock)
+      lock = SqliteWalCheckpoint.send(:acquire_lock)
+      assert lock
       begin
         _busy, _log, checkpointed = SqliteWalCheckpoint.checkpoint
         assert checkpointed.to_i > 0, "expected PASSIVE checkpoint to copy WAL pages, got #{checkpointed.inspect}"
       ensure
-        SqliteWalCheckpoint.send(:release_lock)
+        SqliteWalCheckpoint.send(:release_lock, lock)
       end
     end
   end
@@ -129,6 +225,36 @@ class SqliteWalCheckpointTest < ActiveSupport::TestCase
   end
 
   private
+    def observe_waits
+      waits = Thread::Queue.new
+      SqliteWalCheckpoint.stubs(:wait).with do |wakeup, timeout|
+        waits << timeout
+        wakeup.pop(timeout: timeout)
+        true
+      end
+      waits
+    end
+
+    def block_checkpoint
+      SqliteWalCheckpoint.database_path_override = build_wal_database(rows: 10)
+      entered = Thread::Queue.new
+      release = Thread::Queue.new
+      blocked = false
+      SqliteWalCheckpoint.stubs(:checkpoint_on).returns([ 0, 0, 0 ]).with do |database|
+        unless blocked
+          blocked = true
+          entered << database
+          release.pop
+        end
+        true
+      end
+      [ entered, release ]
+    end
+
+    def receive(queue)
+      queue.pop(timeout: 2).tap { |value| assert_not_nil value, "expected checkpoint barrier" }
+    end
+
     def checkpoint_threads
       Thread.list.select { |thread| thread.name == "sqlite-wal-checkpoint" }
     end
