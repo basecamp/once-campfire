@@ -13,4 +13,8 @@ class FragmentCache
   def self.store
     STORE
   end
+
+  def self.transaction_open?
+    ActiveRecord::Base.connection_pool.with_connection(&:transaction_open?)
+  end
 end

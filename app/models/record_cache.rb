@@ -2,7 +2,7 @@
 # The observer must still see the captured epoch after lookup and admission.
 class RecordCache
   def self.fetch(key, version)
-    return yield unless version && ResponseCache.instance.budget.positive? && !ActiveRecord::Base.connection_pool.active_connection?&.transaction_open?
+    return yield unless version && ResponseCache.instance.budget.positive? && !FragmentCache.transaction_open?
 
     key = ActiveSupport::Cache.expand_cache_key([ "record-snapshot-v1", version, key ])
     return yield if key.bytesize > ResponseCache::MAX_KEY_BYTES
