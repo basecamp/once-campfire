@@ -12,5 +12,7 @@ for db_name in "${RAILS_ENV:-production}.sqlite3" "${RAILS_ENV:-production}_queu
   fi
 done
 
-cache_db="/rails/storage/db/${RAILS_ENV:-production}_cache.sqlite3"
-rm -f "$cache_db" "$cache_db-wal" "$cache_db-shm"
+for disposable in cache cable; do
+  db="/rails/storage/db/${RAILS_ENV:-production}_$disposable.sqlite3"
+  rm -f "$db" "$db-wal" "$db-shm"
+done
