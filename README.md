@@ -51,7 +51,7 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 
 Authenticated room, message, sidebar and search pages use a bounded 64 MiB cache per worker.
 Set `CAMPFIRE_RESPONSE_CACHE_MB=0` to disable it. Every request still checks authentication
-and room access; commits from any SQLite writer invalidate pages, and CSRF masks stay fresh.
+and room access; commits from any SQLite writer invalidate complete cached HTML and gzip bodies.
 Native HTML, JSON and stream fragments have a separate 64 MiB memory limit per worker;
 shared rate limits retain their existing store.
 
@@ -61,11 +61,11 @@ Campfire also has implementations in Django, Laravel, Express, Elixir, Go, Rust 
 
 | HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) | [C](https://github.com/basecamp/once-campfire-c) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 710 | 414 | 1,696 | 42,481 | 1,126 | 52,512 | 105,909 | 137,505 |
-| Messages page | 1,113 | 454 | 1,890 | 74,779 | 1,407 | 54,100 | 103,301 | 142,669 |
-| Sidebar | 1,901 | 576 | 3,364 | 94,460 | 3,621 | 58,714 | 120,930 | 151,001 |
-| Search | 1,332 | 549 | 2,615 | 83,493 | 2,127 | 60,444 | 121,502 | 148,766 |
-| Post a message | 226 | 113 | 567 | 2,121 | 1,392 | 9,000 | 8,004 | 7,486 |
+| Room page | 2,063 | 478 | 3,038 | 43,925 | 5,350 | 53,060 | 106,494 | 137,524 |
+| Messages page | 2,063 | 486 | 3,081 | 74,176 | 5,712 | 54,800 | 102,697 | 144,642 |
+| Sidebar | 2,545 | 601 | 3,832 | 94,322 | 5,949 | 59,144 | 120,294 | 152,002 |
+| Search | 2,528 | 594 | 3,710 | 82,937 | 5,848 | 60,509 | 121,378 | 149,487 |
+| Post a message | 234 | 112 | 577 | 2,098 | 1,278 | 9,021 | 8,037 | 7,530 |
 
 [Shared verification](https://github.com/basecamp/once-campfire-verification) · [Detailed results](https://github.com/basecamp/once-campfire-verification/blob/main/docs/performance-review.md).
 
@@ -81,12 +81,6 @@ Please see our [development guide](docs/development.md) for how to get Campfire 
 
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability and a description of our trust model.
 
-## Request protection
-
-Browser writes use Rails' `Sec-Fetch-Site` header-only forgery protection and its
-`Origin` check. HTTPS requires modern browser metadata; plain HTTP retains the
-missing-header fallback with the existing `SameSite=Lax` cookies. Authenticated
-bot APIs and signed disk-upload capabilities keep their existing exemptions.
-Forms contain no CSRF tokens. Authenticated page caches reuse complete HTML and
-gzip bodies while checking current sessions, permissions and SQLite changes.
-Existing installation cookies remain valid, including old token-bearing cookies.
+Browser writes use Rails’ `Sec-Fetch-Site` header-only protection and `Origin` check.
+HTTPS requires browser metadata; plain HTTP retains the missing-header fallback.
+Forms contain no CSRF tokens. Existing cookies, bot APIs and signed uploads remain compatible.
