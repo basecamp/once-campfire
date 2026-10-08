@@ -47,8 +47,6 @@ module CachedResponses
         return yield unless encoding
 
         key = response_cache_key(encoding)
-        original_session = session.to_hash.deep_dup
-
         return yield if key.bytesize > ResponseCache::MAX_KEY_BYTES
 
         entry = ResponseCache.instance.read(key, @response_cache_version)
@@ -57,6 +55,7 @@ module CachedResponses
           ResponseCache.instance.synchronize_render(key, @response_cache_version) do
             entry = ResponseCache.instance.read(key, @response_cache_version)
             if !entry && ResponseCache.instance.version == @response_cache_version
+              original_session = session.to_hash.deep_dup
               yield
               rendered = true
               entry = cache_completed_response(key, original_session, encoding)

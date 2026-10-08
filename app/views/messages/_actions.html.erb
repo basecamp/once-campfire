@@ -1,5 +1,6 @@
 <%# Be sure to check/update messages/_template.html.erb when changing this file %>
 
+<%= cache_message_actions(message) do %>
 <div class="message__actions" data-controller="soft-keyboard">
   <%= tag.details class: "position-relative",
       data: { controller: "popup", action: "keydown.esc->popup#close toggle->popup#toggle click@document->popup#closeOnClickOutside", popup_orientation_top_class: "popup-orientation-top" } do %>
@@ -56,3 +57,4 @@
     </div>
   <% end %>
 </div>
+<% end %>

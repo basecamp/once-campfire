@@ -28,7 +28,9 @@ class MessagesController < ApplicationController
     set_room
     @message = @room.messages.create_with_attachment!(message_params)
 
-    @message.broadcast_create
+    # Both deliveries contain the same token-free, viewer-independent markup.
+    @message_html = render_to_string partial: "messages/message", formats: :html, locals: { message: @message }
+    @message.broadcast_create(html: @message_html)
     deliver_webhooks_to_bots
   rescue ActiveRecord::RecordNotFound
     render action: :room_not_found
