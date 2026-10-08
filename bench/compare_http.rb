@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Compare warm production Puma/Redis requests using isolated seeded containers.
+# Compare warm production HTTP requests against the frozen Redis-backed baseline.
 require "socket"
 require_relative "support"
 require_relative "http_client"
@@ -43,9 +43,11 @@ begin
         "--cpuset-cpus", options[:cpus], "-p", "127.0.0.1:#{port}:3000" ]
       command.concat mounts(source => "/rails", File.join(data, "storage") => "/rails/storage",
         File.join(data, "tmp") => "/rails/tmp", File.join(data, "log") => "/rails/log", assets => "/rails/public/assets")
-      command.concat environment(RAILS_ENV: "production", SECRET_KEY_BASE: "isolated-benchmark-fixture-key", DISABLE_SSL: true,
-        SKIP_TELEMETRY: true, RAILS_LOG_LEVEL: "fatal", WEB_CONCURRENCY: 1, JOB_CONCURRENCY: 1, RAILS_MAX_THREADS: 5,
-        REDIS_URL: "redis://#{redis}:6379/0")
+      environment_variables = { RAILS_ENV: "production", SECRET_KEY_BASE: "isolated-benchmark-fixture-key", DISABLE_SSL: true,
+        SKIP_TELEMETRY: true, RAILS_LOG_LEVEL: "fatal", WEB_CONCURRENCY: 1, JOB_CONCURRENCY: 1, RAILS_MAX_THREADS: 5
+      }
+      environment_variables[:REDIS_URL] = "redis://#{redis}:6379/0" if side == "before"
+      command.concat environment(environment_variables)
       command.concat [ options[:image], "bundle", "exec", "puma", "-C", "config/puma.rb" ]
       run(*command)
       deadline = clock + 45

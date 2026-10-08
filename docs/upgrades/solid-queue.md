@@ -21,7 +21,7 @@ This release changes the Active Job backend from Resque to Solid Queue. It does 
 4. Once both queue counts are zero, stop the old container and take a normal Campfire [backup](../self-hosting.md#backups). The pre-migration Resque payloads are not included; the application database and uploaded files are.
 5. Pull the new image and recreate the container. The new release prepares the Solid Queue database before starting the web server and worker. Confirm both are healthy before removing maintenance mode.
 
-This creates a short maintenance window, but avoids a dual-queue period and avoids losing work when the Redis-backed queue is replaced. Redis remains required for Action Cable and the Rails cache until their separate migrations; it is no longer the job store.
+This creates a short maintenance window, but avoids a dual-queue period and avoids losing work when the Redis-backed queue is replaced. Redis remains required for Action Cable and the Rails cache until their separate [Solid Cable](solid-cable.md) and [Solid Cache](solid-cache.md) migrations; it is no longer the job store.
 
 ## Backups and restores
 
