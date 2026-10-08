@@ -10,11 +10,6 @@ class VipsLoaderPolicyTest < ActiveSupport::TestCase
   # ones are represented by their magic bytes.
   FTYP_AVIF = "\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf".b
   FTYP_HEIC = "\x00\x00\x00\x1cftypheic\x00\x00\x00\x00heicmif1miaf".b
-  BMP = "BM" + [ 0, 0, 54 ].pack("V3") + "\x00" * 40
-  PSD = "8BPS" + [ 1 ].pack("n") + "\x00" * 26
-  ICO = "\x00\x00\x01\x00\x01\x00" + "\x00" * 16
-  SVG = %q(<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>)
-
   test "loads PNG" do
     assert_equal "VipsForeignLoadPngFile", loader_for(encode("png"))
   end
@@ -43,20 +38,20 @@ class VipsLoaderPolicyTest < ActiveSupport::TestCase
     assert_equal "VipsForeignLoadHeifFile", loader_for(FTYP_HEIC)
   end
 
-  test "denies BMP through magickload" do
-    assert_nil loader_for(BMP)
+  test "blocks BMP through magickload" do
+    assert_loader_blocked :magickload, ".bmp"
   end
 
-  test "denies PSD through magickload" do
-    assert_nil loader_for(PSD)
+  test "blocks PSD through magickload" do
+    assert_loader_blocked :magickload, ".psd"
   end
 
-  test "denies ICO through magickload" do
-    assert_nil loader_for(ICO)
+  test "blocks ICO through magickload" do
+    assert_loader_blocked :magickload, ".ico"
   end
 
-  test "denies SVG through svgload" do
-    assert_nil loader_for(SVG)
+  test "blocks SVG through svgload" do
+    assert_loader_blocked :svgload, ".svg"
   end
 
   test "denies OpenSlide files through openslideload" do
