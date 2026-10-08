@@ -1,1 +1,1 @@
-<%= render partial: "messages/message", collection: @messages, cached: true %>
+<%= render partial: "messages/message", collection: @messages, cached: ->(message) { message_fragment_cache_key(message) } %>

@@ -83,6 +83,22 @@ module MessagesHelper
     FragmentCache.store.fetch(key) { capture(&block) }
   end
 
+  def message_fragment_cache_key(message)
+    return message unless controller.perform_caching &&
+      %i[room creator rich_text_body boosts attachment_attachment].all? { |name| message.association(name).loaded? }
+
+    room = message.room
+    body = message.body.body
+    return message if room.direct? || message.attachment? || !body || body.to_html.include?("<action-text-attachment") ||
+      message.boosts.any? { |boost| !boost.association(:booster).loaded? }
+
+    # Collection caching preloads these rows before deriving keys. Read their
+    # actual content: foreign SQL writers need not touch Rails timestamps.
+    dependencies = [ message.attributes, room.attributes.slice("id", "type", "name"), message.creator.attributes,
+      body.to_html, message.boosts.sort_by(&:created_at).map { |boost| [ boost.attributes, boost.booster.attributes ] } ]
+    FragmentCache::ContentKey.new(Digest::SHA256.hexdigest(ActiveSupport::JSON.encode(dependencies)))
+  end
+
   private
     def text_message_presentation(body)
       render = -> do

@@ -26,11 +26,12 @@ module CachedResponses
   end
 
   def combined_fragment_cache_key(key)
-    @fragment_cache_namespace ||= [
-      @response_cache_version, request.base_url, request.script_name, request.format.to_s, I18n.locale,
+    @fragment_cache_context ||= [
+      request.base_url, request.script_name, request.format.to_s, I18n.locale,
       Current.user&.id, (Digest::SHA256.hexdigest(Current.session.token) if Current.session)
     ].freeze
-    super([ @fragment_cache_namespace, key ])
+    version = @response_cache_version unless Array(key).flatten.any? { |part| part.is_a?(FragmentCache::ContentKey) }
+    super([ version, @fragment_cache_context, key ])
   end
 
   private
