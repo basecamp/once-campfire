@@ -21,7 +21,15 @@ class Message < ApplicationRecord
   scope :with_presentation, -> { with_creator.with_attachment_details.with_boosts.preload(:room) }
 
   def plain_text_body
-    body.to_plain_text.presence || attachment&.filename&.to_s || ""
+    content = body.body
+    text = if content && content.fragment.find_all(ActionText::Attachment.tag_name).empty?
+      # ActionText::Content#to_plain_text duplicates the fragment to replace
+      # attachments. Without them, reuse its native Fragment conversion instead.
+      content.fragment.to_plain_text.dup
+    else
+      body.to_plain_text
+    end
+    text.presence || attachment&.filename&.to_s || ""
   end
 
   def content_type
