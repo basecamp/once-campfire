@@ -68,7 +68,7 @@ Rails.application.configure do
   # Don't log any deprecations.
   config.active_support.report_deprecations = false
 
-  # Persist the Rails cache in the primary SQLite database.
+  # Persist the Rails cache in its own SQLite database.
   config.cache_store = :solid_cache_store
 
   # Assets are cacheable
