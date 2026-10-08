@@ -68,8 +68,8 @@ Rails.application.configure do
   # Don't log any deprecations.
   config.active_support.report_deprecations = false
 
-  # Cache in memory for now
-  config.cache_store = :redis_cache_store
+  # Persist the Rails cache in the primary SQLite database.
+  config.cache_store = :solid_cache_store
 
   # Assets are cacheable
   config.public_file_server.headers = {

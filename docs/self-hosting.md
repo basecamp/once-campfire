@@ -169,6 +169,8 @@ docker pull ghcr.io/basecamp/once-campfire:latest
 
 Any pending database migrations run automatically when the container boots.
 
+The Rails cache is stored in the primary SQLite database. The Solid Cache table is added by a normal database migration, so no extra volume or cache database needs to be configured. Existing Redis cache entries are not copied; the cache starts cold and repopulates as requests arrive. Redis is still required for Action Cable. The app's bounded per-worker response and fragment caches remain in memory and are separate from `Rails.cache`.
+
 ### Backups
 
 To back up your instance, back up the contents of the `/rails/storage` volume.
