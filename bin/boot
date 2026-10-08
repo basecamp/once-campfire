@@ -51,4 +51,5 @@ class MonitoredProcess
   end
 end
 
+system "bin/rails db:prepare", exception: true
 ProcessMonitor.new("Procfile")

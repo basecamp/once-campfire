@@ -24,7 +24,7 @@ options[:rounds].times do |iteration|
       File.join(options[:seed], "labels.json") => "/bench-labels.json")
     command.concat environment(RAILS_ENV: "production", SECRET_KEY_BASE: "isolated-benchmark-fixture-key", DISABLE_SSL: true,
       SKIP_TELEMETRY: true, RAILS_LOG_LEVEL: "fatal", BENCH_LABELS: "/bench-labels.json")
-    command.concat [ options[:image], "bundle", "exec", "ruby", "-r", "/rails/config/environment.rb", "/bench/message_hot_paths.rb" ]
+    command.concat [ options[side == "before" ? :baseline_image : :image], "bundle", "exec", "ruby", "-r", "/rails/config/environment.rb", "/bench/message_hot_paths.rb" ]
     data = JSON.parse(run(*command))
     runs[side] << data
     write_json(File.join(options[:output], "#{side}-#{iteration + 1}.json"), data)
