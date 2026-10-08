@@ -10,7 +10,7 @@ module CachedResponses
   end
 
   def perform_caching
-    return false unless super && @response_cache_version.present? && !ActiveRecord::Base.connection.transaction_open?
+    return false unless super && @response_cache_version.present? && !ActiveRecord::Base.connection_pool.active_connection?&.transaction_open?
 
     # Check again after authentication, before the first native fragment lookup.
     # Later renders retain this immutable namespace and cannot poison a new epoch.
@@ -103,7 +103,7 @@ module CachedResponses
         !authenticated_by.bot_key? && flash.empty? &&
         !request.headers["If-None-Match"] && !request.headers["If-Modified-Since"] &&
         !Rails.application.config.content_security_policy_nonce_generator &&
-        !ActiveRecord::Base.connection.transaction_open?
+        !ActiveRecord::Base.connection_pool.active_connection?&.transaction_open?
     end
 
     def response_cache_key(encoding)
