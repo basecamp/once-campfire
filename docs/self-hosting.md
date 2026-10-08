@@ -172,6 +172,10 @@ docker pull ghcr.io/basecamp/once-campfire:latest
 
 Any pending database migrations run automatically when the container boots.
 
+Production Rails cache, background jobs, and Action Cable each use a separate SQLite database: `production_cache.sqlite3`, `production_queue.sqlite3`, and `production_cable.sqlite3`. Startup's normal `db:prepare` creates them from the checked-in schemas. Solid Cache's 256 MiB `max_size` is an estimated eviction target, not a cap on SQLite/WAL disk usage. Cache entries and Action Cable broadcasts are disposable and are not migrated; Solid Cable delivers broadcasts through database polling, so allow for its configured polling interval (100 ms by default). The bounded per-worker response and fragment caches remain in memory and are separate from `Rails.cache`. Redis is no longer required.
+
+See the [Solid Cache](upgrades/solid-cache.md), [Solid Queue](upgrades/solid-queue.md), and [Solid Cable](upgrades/solid-cable.md) upgrade notes for migration and backup/restore behavior.
+
 ### Backups
 
 To back up your instance, back up the contents of the `/rails/storage` volume.
@@ -185,7 +189,7 @@ docker exec campfire script/admin/prepare-backup
 
 (If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
 
-Then archive the whole storage volume to a file on the host:
+Then archive the storage volume to a file on the host, excluding the disposable cache and Action Cable databases:
 
 ```sh
 docker run --rm \
@@ -193,10 +197,10 @@ docker run --rm \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
-  tar czf "/backup/campfire-backup.tar.gz" -C /rails storage
+  tar czf "/backup/campfire-backup.tar.gz" --exclude='storage/db/production_cache.sqlite3*' --exclude='storage/db/production_cable.sqlite3*' -C /rails storage
 ```
 
-This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files.
+This gives you a `campfire-backup.tar.gz` in your current directory containing consistent primary and Solid Queue snapshots, plus uploaded files. The disposable Solid Cache and Solid Cable databases are excluded and rebuilt empty after a restore.
 Copy it somewhere safe, ideally off the machine.
 
 To restore, extract the archive back into a (stopped) instance's volume, and replace the live database with the snapshot:
@@ -214,4 +218,4 @@ docker run --rm \
 
 Then start Campfire again.
 
-Backups made before the Solid Queue migration do not contain a queue database. When restoring one after upgrading, follow the instructions in the [queue migration notes](upgrades/solid-queue.md) to explicitly reset the queue database before running the restore hook.
+Backups made before the Solid Queue migration do not contain a queue database. When restoring one after upgrading, follow the instructions in the [queue migration notes](upgrades/solid-queue.md) to explicitly reset the queue database before running the restore hook. The restore hook also clears disposable cache and cable databases so they cannot contain state newer than the restored primary database.

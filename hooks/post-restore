@@ -2,11 +2,12 @@
 set -euo pipefail
 
 env="${RAILS_ENV:-production}"
-db_names=("$env.sqlite3" "${env}_queue.sqlite3")
 app_root="${APP_ROOT:-/rails}"
-
+db_names=("$env.sqlite3" "${env}_queue.sqlite3")
 queue_db="$app_root/storage/db/${env}_queue.sqlite3"
 queue_snapshot="$app_root/storage/backups/${env}_queue.sqlite3"
+cache_db="$app_root/storage/db/${env}_cache.sqlite3"
+cable_db="$app_root/storage/db/${env}_cable.sqlite3"
 
 if [ ! -f "$queue_snapshot" ] && [ -f "$queue_db" ]; then
   echo "Queue database snapshot missing; refusing to restore over an existing queue database." >&2
@@ -22,4 +23,10 @@ for db_name in "${db_names[@]}"; do
     cp "$snapshot" "$db"
     rm -f "$db-wal" "$db-shm"
   fi
+done
+
+# Cache entries and Action Cable broadcasts are disposable and may belong to a
+# different point in time than the restored application database.
+for db in "$cache_db" "$cable_db"; do
+  rm -f "$db" "$db-wal" "$db-shm" "$db-journal"
 done

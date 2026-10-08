@@ -19,6 +19,13 @@ development:
   primary:
     <<: *default
     database: storage/db/development.sqlite3
+  cable:
+    <<: *default
+    database: storage/db/development_cable.sqlite3
+    migrations_paths: db/cable_migrate
+    schema_dump: cable_schema.rb
+    pragmas:
+      wal_autocheckpoint: 1000
 
 # Warning: The database defined as "test" will be erased and
 # re-generated from your development database when you run "rake".
@@ -32,18 +39,45 @@ performance:
   primary:
     <<: *default
     database: storage/db/performance.sqlite3
+  cable:
+    <<: *default
+    database: storage/db/performance_cable.sqlite3
+    migrations_paths: db/cable_migrate
+    schema_dump: cable_schema.rb
+    pragmas:
+      wal_autocheckpoint: 1000
 
 production:
   primary:
     <<: *default
     database: storage/db/production.sqlite3
 
+  cable:
+    <<: *default
+    database: storage/db/production_cable.sqlite3
+    migrations_paths: db/cable_migrate
+    schema_dump: cable_schema.rb
+    # The background checkpoint contender tracks the primary database; keep
+    # SQLite's normal checkpointing for cable writes.
+    pragmas:
+      wal_autocheckpoint: 1000
   queue:
     <<: *default
     database: storage/db/production_queue.sqlite3
+    # One worker execution thread plus the polling and heartbeat threads.
+    pool: 3
     migrations_paths: db/queue_migrate
     schema_dump: queue_schema.rb
     # The background checkpoint contender tracks the primary database; keep
     # SQLite's normal checkpointing for queue writes.
+    pragmas:
+      wal_autocheckpoint: 1000
+  cache:
+    <<: *default
+    database: storage/db/production_cache.sqlite3
+    migrations_paths: db/cache_migrate
+    schema_dump: cache_schema.rb
+    # The background checkpoint contender tracks the primary database; keep
+    # SQLite's normal checkpointing for cache writes.
     pragmas:
       wal_autocheckpoint: 1000

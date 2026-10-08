@@ -9,7 +9,9 @@ gem "benchmark"
 
 # Drivers
 gem "sqlite3"
-gem "redis", "~> 5.4"
+
+# Caching
+gem "solid_cache", "~> 1.0.10"
 
 # Deployment
 gem "puma", "~> 8.0"
@@ -24,6 +26,7 @@ gem "importmap-rails", github: "rails/importmap-rails"
 # Hotwire
 gem "turbo-rails", github: "hotwired/turbo-rails"
 gem "stimulus-rails"
+gem "solid_cable", "~> 4.1.0"
 
 # Rich text
 gem "lexxy", "~> 0.9.24"
@@ -43,7 +46,6 @@ gem "rails_autolink"
 gem "geared_pagination"
 gem "jbuilder"
 gem "surfguard", github: "basecamp/surfguard" # The SSRF address policy behind RestrictedHTTP
-gem "kredis"
 gem "platform_agent"
 gem "thruster"
 
