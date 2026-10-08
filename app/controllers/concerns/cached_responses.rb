@@ -35,6 +35,10 @@ module CachedResponses
   end
 
   private
+    def read_record_cache_version
+      @response_cache_version if request.get? || request.head?
+    end
+
     def capture_response_cache_version
       # Capture for native HTML/JSON/stream renders too, even with page reuse off.
       # Detached renderers do not run callbacks and therefore render uncached.
@@ -81,6 +85,10 @@ module CachedResponses
     def cache_completed_response(key, original_session, encoding)
       if response.status == 200 && response.media_type == "text/html" && session.to_hash == original_session && !response.headers["Content-Encoding"]
         body = encoding == "gzip" ? Zlib.gzip(response.body) : response.body
+        unless body.empty? || response.headers["ETag"] || response.headers["Last-Modified"]
+          # Match Rack::ETag once, rather than hashing the same bytes on each hit.
+          response.headers["ETag"] = %(W/"#{Digest::SHA256.hexdigest(body).byteslice(0, 32)}")
+        end
         response.headers["Content-Encoding"] = "gzip" if encoding == "gzip"
         response.headers["Vary"] = (response.headers["Vary"].to_s.split(/,\s*/) | [ "Accept-Encoding" ]).join(", ")
         headers = response.headers.slice(*CACHE_HEADERS).to_h.freeze

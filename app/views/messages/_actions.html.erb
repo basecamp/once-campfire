@@ -11,8 +11,9 @@
 
     <div class="message__actions-menu border shadow" data-popup-target="menu">
       <div class="quick-boosts">
+        <% boost_path = message_boosts_path(message) %>
         <% EmojiHelper::REACTIONS.each do |character, title| %>
-          <%= form_with model: [ message, Boost.new ], data: { turbo_frame: dom_id(message, :boosting), action: "popup#close"} do |form| %>
+          <%= form_with url: boost_path, data: { turbo_frame: dom_id(message, :boosting), action: "popup#close"} do |form| %>
             <%= hidden_field_tag "boost[content]", character %>
             <%= form.button type: "submit", title: title, class: "btn message__action-btn", data: { emoji: character } do %>
               <figure class="margin-none boost-character"><%= character %></figure>

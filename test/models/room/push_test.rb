@@ -89,6 +89,16 @@ class Room::PushTest < ActiveSupport::TestCase
     assert_includes pushed_users { post_to_designers_mentioning_kevin }, users(:kevin)
   end
 
+  test "does not build notification payloads without recipients" do
+    Push::Subscription.delete_all
+    message = messages(:first)
+    message.expects(:plain_text_body).never
+    message.expects(:creator).never
+    Rails.configuration.x.web_push_pool.expects(:queue).never
+
+    Room::MessagePusher.new(room: message.room, message: message).push
+  end
+
   private
     def post_to_designers_mentioning_kevin
       rooms(:designers).messages.create! body: "Hey #{mention_attachment_for(:kevin)}", client_message_id: "earth", creator: users(:david)
