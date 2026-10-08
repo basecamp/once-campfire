@@ -186,7 +186,7 @@ docker exec campfire script/admin/prepare-backup
 
 (If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
 
-Then archive the whole storage volume to a file on the host:
+Then archive the storage volume to a file on the host, excluding the disposable cache database:
 
 ```sh
 docker run --rm \
