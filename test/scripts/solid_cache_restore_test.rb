@@ -12,13 +12,17 @@ class SolidCacheRestoreTest < ActiveSupport::TestCase
     FileUtils.remove_entry(@app_root)
   end
 
-  test "restores the primary database and removes disposable cache database and sidecars" do
+  test "restores the primary database and removes disposable cache and cable databases" do
     write_file("storage/backups/production.sqlite3", "restored primary")
     write_file("storage/db/production.sqlite3", "current primary")
     write_file("storage/db/production_cache.sqlite3", "stale cache")
     write_file("storage/db/production_cache.sqlite3-wal", "stale cache wal")
     write_file("storage/db/production_cache.sqlite3-shm", "stale cache shm")
     write_file("storage/db/production_cache.sqlite3-journal", "stale cache journal")
+    write_file("storage/db/production_cable.sqlite3", "stale cable")
+    write_file("storage/db/production_cable.sqlite3-wal", "stale cable wal")
+    write_file("storage/db/production_cable.sqlite3-shm", "stale cable shm")
+    write_file("storage/db/production_cable.sqlite3-journal", "stale cable journal")
 
     _output, status = run_hook
 
@@ -28,6 +32,10 @@ class SolidCacheRestoreTest < ActiveSupport::TestCase
     refute File.exist?(path("storage/db/production_cache.sqlite3-wal"))
     refute File.exist?(path("storage/db/production_cache.sqlite3-shm"))
     refute File.exist?(path("storage/db/production_cache.sqlite3-journal"))
+    refute File.exist?(path("storage/db/production_cable.sqlite3"))
+    refute File.exist?(path("storage/db/production_cable.sqlite3-wal"))
+    refute File.exist?(path("storage/db/production_cable.sqlite3-shm"))
+    refute File.exist?(path("storage/db/production_cable.sqlite3-journal"))
   end
 
   private

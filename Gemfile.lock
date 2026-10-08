@@ -214,10 +214,6 @@ GEM
     json (2.21.2)
     jwt (3.2.0)
       base64
-    kredis (1.8.0)
-      activemodel (>= 6.0.0)
-      activesupport (>= 6.0.0)
-      redis (>= 4.2, < 6)
     language_server-protocol (3.17.0.5)
     lexxy (0.9.24)
       rails (>= 8.0.2)
@@ -312,10 +308,6 @@ GEM
       prism (>= 1.6.0)
       rbs (>= 4.0.0)
       tsort
-    redis (5.4.1)
-      redis-client (>= 0.22.0)
-    redis-client (0.30.1)
-      connection_pool
     regexp_parser (2.11.2)
     reline (0.7.0)
       io-console (~> 0.5)
@@ -371,6 +363,11 @@ GEM
     sentry-ruby (5.26.0)
       bigdecimal
       concurrent-ruby (~> 1.0, >= 1.0.2)
+    solid_cable (4.1.0)
+      actioncable (>= 7.2)
+      activejob (>= 7.2)
+      activerecord (>= 7.2)
+      railties (>= 7.2)
     solid_cache (1.0.10)
       activejob (>= 7.2)
       activerecord (>= 7.2)
@@ -437,7 +434,6 @@ DEPENDENCIES
   image_processing (>= 1.2)
   importmap-rails!
   jbuilder
-  kredis
   lexxy (~> 0.9.24)
   mocha
   ostruct
@@ -446,12 +442,12 @@ DEPENDENCIES
   puma (~> 8.0)
   rails!
   rails_autolink
-  redis (~> 5.4)
   rqrcode
   rubocop-rails-omakase
   selenium-webdriver
   sentry-rails
   sentry-ruby
+  solid_cable (~> 4.1.0)
   solid_cache (~> 1.0.10)
   solid_queue (~> 1.7.0)
   sqlite3
