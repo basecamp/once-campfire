@@ -76,7 +76,8 @@ class Opengraph::FetchTest < ActiveSupport::TestCase
 
   test "#fetch_document connects to the resolved IP even when a proxy is configured" do
     url = URI.parse("http://www.example.com/")
-    saved = ENV.slice("http_proxy", "HTTP_PROXY")
+    saved = ENV.slice("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY")
+    %w[ no_proxy NO_PROXY ].each { |k| ENV.delete(k) }
     %w[ http_proxy HTTP_PROXY ].each { |k| ENV[k] = "http://proxy.internal:3128" }
 
     WebMock.disable_net_connect! allow: [ url.host ]
@@ -87,7 +88,7 @@ class Opengraph::FetchTest < ActiveSupport::TestCase
       @fetch.fetch_document(url, ip: "1.2.3.4")
     end
   ensure
-    %w[ http_proxy HTTP_PROXY ].each { |k| ENV.delete(k) }
+    %w[ http_proxy HTTP_PROXY no_proxy NO_PROXY ].each { |k| ENV.delete(k) }
     saved.each { |k, v| ENV[k] = v }
   end
 
