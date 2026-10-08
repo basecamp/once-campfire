@@ -196,7 +196,7 @@ docker run --rm \
 This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files.
 Copy it somewhere safe, ideally off the machine.
 
-To restore, extract the archive back into a (stopped) instance's volume, and replace the live database with the snapshot:
+To restore, extract the archive back into a (stopped) instance's volume, and run the restore hook, which replaces the live database with the snapshot:
 
 ```sh
 docker run --rm \
@@ -205,8 +205,7 @@ docker run --rm \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
   bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
-           cp /rails/storage/backups/production.sqlite3 /rails/storage/db/production.sqlite3 &&
-           rm -f /rails/storage/db/production.sqlite3-wal /rails/storage/db/production.sqlite3-shm &&
+           /hooks/post-restore &&
            chown -R rails:rails /rails/storage"
 ```
 
