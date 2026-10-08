@@ -7,5 +7,7 @@ class QrCodeController < ApplicationController
 
     expires_in 1.year, public: true
     render plain: qr_code, content_type: "image/svg+xml"
+  rescue ArgumentError, RQRCodeCore::QRCodeRunTimeError
+    head :bad_request
   end
 end
