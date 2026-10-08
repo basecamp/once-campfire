@@ -189,7 +189,7 @@ docker exec campfire script/admin/prepare-backup
 
 (If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
 
-Then archive the storage volume to a file on the host, excluding the disposable Solid Queue database:
+Then archive the storage volume to a file on the host, excluding the disposable queue and cache databases:
 
 ```sh
 docker run --rm \
