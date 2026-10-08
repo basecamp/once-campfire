@@ -61,11 +61,11 @@ Campfire also has implementations in Django, Laravel, Express, Elixir, Go, Rust 
 
 | HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) | [C](https://github.com/basecamp/once-campfire-c) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 2,063 | 478 | 3,038 | 43,925 | 5,350 | 53,060 | 106,494 | 137,524 |
-| Messages page | 2,063 | 486 | 3,081 | 74,176 | 5,712 | 54,800 | 102,697 | 144,642 |
-| Sidebar | 2,545 | 601 | 3,832 | 94,322 | 5,949 | 59,144 | 120,294 | 152,002 |
-| Search | 2,528 | 594 | 3,710 | 82,937 | 5,848 | 60,509 | 121,378 | 149,487 |
-| Post a message | 234 | 112 | 577 | 2,098 | 1,278 | 9,021 | 8,037 | 7,530 |
+| Room page | 4,121 | 478 | 3,872 | 42,636 | 5,350 | 53,060 | 106,494 | 137,524 |
+| Messages page | 4,026 | 486 | 3,995 | 74,362 | 5,712 | 54,800 | 102,697 | 144,642 |
+| Sidebar | 4,195 | 601 | 4,493 | 94,329 | 5,949 | 59,144 | 120,294 | 152,002 |
+| Search | 4,098 | 594 | 4,172 | 84,665 | 5,848 | 60,509 | 121,378 | 149,487 |
+| Post a message | 323 | 112 | 794 | 2,155 | 1,278 | 9,021 | 8,037 | 7,530 |
 
 [Shared verification](https://github.com/basecamp/once-campfire-verification) · [Detailed results](https://github.com/basecamp/once-campfire-verification/blob/main/docs/performance-review.md).
 

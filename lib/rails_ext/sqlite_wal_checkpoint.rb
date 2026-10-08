@@ -8,7 +8,12 @@
 module SqliteWalCheckpoint
   INTERVAL = 0.25
   MAX_BACKOFF = 30.0
+  STOP_TIMEOUT = 5.0
   LOCK_PATH = Rails.root.join("tmp/pids/sqlite_wal_checkpoint.lock")
+  LIFECYCLE_MUTEX = Mutex.new
+  private_constant :LIFECYCLE_MUTEX
+
+  class StopTimeout < StandardError; end
 
   class << self
     attr_writer :lock_path, :database_path_override
@@ -16,28 +21,34 @@ module SqliteWalCheckpoint
     def start(interval: INTERVAL, enabled: !Rails.env.test?)
       return unless enabled
 
-      @mutex ||= Mutex.new
-      @mutex.synchronize do
-        return if @thread&.alive?
+      LIFECYCLE_MUTEX.synchronize do
+        if @thread&.alive?
+          raise StopTimeout, "SQLite WAL checkpointer is still stopping" if @wakeup.closed?
 
-        @stop = false
+          return @thread
+        end
+
+        @wakeup = Thread::Queue.new
         install_exit_checkpoint
-        @thread = Thread.new { run(interval) }
+        @thread = Thread.new(@wakeup) { |wakeup| run(interval, wakeup) }
         @thread.report_on_exception = false
+        @thread
       end
-
-      @thread
     end
 
     # Signal the contender to exit and wait until it has released the flock and
     # closed its SQLite connection. before_fork must not return while those are open.
-    def stop
-      @stop = true
-      thread = @mutex&.synchronize { @thread }
-      return unless thread
+    def stop(timeout: STOP_TIMEOUT)
+      LIFECYCLE_MUTEX.synchronize do
+        return unless @thread
 
-      thread.join
-      @mutex&.synchronize { @thread = nil if @thread.equal?(thread) }
+        @wakeup.close
+        unless @thread.join(timeout)
+          # Never let a caller fork with live SQLite or flock ownership.
+          raise StopTimeout, "SQLite WAL checkpointer did not stop within #{timeout}s"
+        end
+        @thread = @wakeup = nil
+      end
     end
 
     def checkpoint
@@ -47,13 +58,14 @@ module SqliteWalCheckpoint
     # One leadership attempt for tests: acquire the lock, checkpoint once, release.
     def tick
       return :no_database unless database_path
-      return :busy unless acquire_lock
+      lock = acquire_lock
+      return :busy unless lock
 
       begin
         result = checkpoint
         result.nil? ? :no_database : :checkpointed
       ensure
-        release_lock
+        release_lock(lock)
       end
     end
 
@@ -65,25 +77,24 @@ module SqliteWalCheckpoint
       stop
       @lock_path = nil
       @database_path_override = nil
-      @stop = false
-      @exit_checkpoint_installed = false
     end
 
     private
-      def run(interval)
+      def run(interval, wakeup)
         Thread.current.name = "sqlite-wal-checkpoint"
         backoff = interval
 
-        until @stop
+        until wakeup.closed?
           begin
             path = database_path
             unless path && File.exist?(path)
-              sleep interval
+              wait(wakeup, interval)
               next
             end
 
-            unless acquire_lock
-              sleep interval
+            lock = acquire_lock
+            unless lock
+              wait(wakeup, interval)
               next
             end
 
@@ -91,27 +102,29 @@ module SqliteWalCheckpoint
               ran = false
               with_database do |database|
                 ran = true
-                until @stop
+                until wakeup.closed?
                   checkpoint_on(database)
                   backoff = interval
-                  sleep interval
+                  wait(wakeup, interval)
                 end
               end
             ensure
-              release_lock
+              release_lock(lock)
             end
 
             # with_database no-ops if the file vanished between the exist? check
             # and open; sleep so we do not spin on the lock file.
-            sleep interval unless ran || @stop
+            wait(wakeup, interval) unless ran || wakeup.closed?
           rescue => error
             Rails.logger.warn "SQLite WAL checkpoint failed: #{error.class}: #{error.message}"
-            sleep backoff
+            wait(wakeup, backoff)
             backoff = [ backoff * 2, MAX_BACKOFF ].min
           end
         end
-      ensure
-        release_lock
+      end
+
+      def wait(wakeup, timeout)
+        wakeup.pop(timeout: timeout)
       end
 
       def checkpoint_on(database)
@@ -124,7 +137,7 @@ module SqliteWalCheckpoint
 
         result = nil
         SQLite3::Database.new(path) do |database|
-          # Keep below stop's join timeout so before_fork can finish cleanly.
+          # Bounds busy-handler retries, not PASSIVE checkpoint I/O.
           database.busy_handler_timeout = 1_000
           result = yield database
         end
@@ -144,21 +157,22 @@ module SqliteWalCheckpoint
         FileUtils.mkdir_p(File.dirname(lock_path))
         file = File.open(lock_path, File::RDWR | File::CREAT, 0644)
         if file.flock(File::LOCK_EX | File::LOCK_NB)
-          @lock_file = file
-          true
+          file
         else
           file.close
-          false
+          nil
         end
+      rescue
+        file&.close
+        raise
       end
 
-      def release_lock
-        return unless @lock_file
+      def release_lock(file)
+        return unless file
 
-        @lock_file.flock(File::LOCK_UN)
-        @lock_file.close
+        file.flock(File::LOCK_UN)
       ensure
-        @lock_file = nil
+        file&.close
       end
 
       # Best-effort PASSIVE for short-lived console/rake writers that exit before
