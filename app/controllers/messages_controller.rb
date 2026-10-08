@@ -14,8 +14,7 @@ class MessagesController < ApplicationController
     if @messages.any?
       body = render_to_string(:index)
       # Creator, body and boost edits can change HTML without touching messages.
-      # Masked CSRF tokens remain fresh while the presentation validator stays stable.
-      fresh_when etag: Digest::SHA256.hexdigest(csrf_neutral_body(body, "")), template: false
+      fresh_when etag: Digest::SHA256.hexdigest(body), template: false
       unless performed?
         response.content_type = "text/html"
         self.response_body = body

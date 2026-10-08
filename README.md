@@ -80,3 +80,13 @@ Please see our [development guide](docs/development.md) for how to get Campfire 
 ## Security
 
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability and a description of our trust model.
+
+## Request protection
+
+Browser writes use Rails' `Sec-Fetch-Site` header-only forgery protection and its
+`Origin` check. HTTPS requires modern browser metadata; plain HTTP retains the
+missing-header fallback with the existing `SameSite=Lax` cookies. Authenticated
+bot APIs and signed disk-upload capabilities keep their existing exemptions.
+Forms contain no CSRF tokens. Authenticated page caches reuse complete HTML and
+gzip bodies while checking current sessions, permissions and SQLite changes.
+Existing installation cookies remain valid, including old token-bearing cookies.

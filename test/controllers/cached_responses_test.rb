@@ -14,7 +14,7 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
     ActionController::Base.perform_caching = true
     @room = rooms(:watercooler)
-    # Establish last-room and CSRF cookies before checking reuse.
+    # Establish last-room cookies before checking reuse.
     2.times { get room_url(@room) }
     ResponseCache.instance.clear
   end
@@ -48,37 +48,54 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
-  test "clients without a persisted CSRF session still reuse token-neutral HTML" do
+  test "clients without token state reuse complete HTML and post without tokens" do
     cookies["_campfire_session"] = @login_cookie
     get room_url(@room)
-    first = css_select('meta[name="csrf-token"]').first["content"]
+    first = response.body
+    assert_select 'meta[name="csrf-token"]', count: 0
+    assert_select 'input[name="authenticity_token"]', count: 0
     cookies["_campfire_session"] = @login_cookie
     ResponseCache.instance.expects(:write).never
     get room_url(@room)
-    second = css_select('meta[name="csrf-token"]').first["content"]
     assert_response :success
-    assert_not_equal first, second
-    assert_no_match /campfire-csrf-/, response.body
+    assert_equal first, response.body
     post room_messages_url(@room, format: :turbo_stream), params: {
-      authenticity_token: second, message: { body: "fresh replay token works", client_message_id: "cache-replay-token" } }
+      message: { body: "tokenless replay works", client_message_id: "cache-replay" } },
+      headers: { "Sec-Fetch-Site" => "same-origin", "Origin" => "http://once.campfire.test" }
     assert_response :success
   end
 
-  test "cached tokens stay fresh and literal token-like text survives" do
-    get room_url(@room)
-    literal = css_select('meta[name="csrf-token"]').first["content"]
+  test "literal token-like text survives complete page reuse" do
+    literal = "campfire-csrf-literal authenticity_token csrf-token"
     @room.messages.create!(creator: users(:david), body: "literal #{literal}")
     get room_url(@room)
-    first = css_select('meta[name="csrf-token"]').first["content"]
+    first = response.body
     get room_url(@room)
-    second = css_select('meta[name="csrf-token"]').first["content"]
-    assert_not_equal first, second
+    assert_equal first, response.body
     assert_includes response.body, "literal #{literal}"
-    assert_no_match /campfire-csrf-/, response.body
+  end
 
-    post room_messages_url(@room, format: :turbo_stream), params: {
-      authenticity_token: second, message: { body: "cached token works", client_message_id: "cache-token" } }
-    assert_response :success
+  test "gzip bytes are reused and identity negotiation stays separate" do
+    require "stringio"
+    get room_url(@room), headers: { "Accept-Encoding" => "gzip" }
+    assert_equal "gzip", response.headers["Content-Encoding"]
+    encoded = response.body
+    decoded = Zlib::GzipReader.new(StringIO.new(encoded)).read
+    assert_includes decoded, "<html"
+    assert_includes response.headers["Vary"], "Accept-Encoding"
+    get room_url(@room)
+    assert_equal decoded, response.body
+    ResponseCache.instance.expects(:write).never
+    get room_url(@room), headers: { "Accept-Encoding" => "gzip" }
+    assert_equal encoded, response.body
+    get room_url(@room)
+    assert_nil response.headers["Content-Encoding"]
+    assert_equal decoded, response.body
+    get room_url(@room), headers: { "Accept-Encoding" => "gzip;q=0, identity;q=1" }
+    assert_nil response.headers["Content-Encoding"]
+    assert_equal decoded, response.body
+    get room_url(@room), headers: { "Accept-Encoding" => "*;q=0" }
+    assert_nil response.headers["Content-Encoding"]
   end
 
   test "local and foreign commits invalidate pages and nested fragments" do

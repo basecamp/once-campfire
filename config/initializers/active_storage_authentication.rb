@@ -7,6 +7,7 @@
 # can read the public login page. Require a valid Campfire session before an
 # anonymous caller can allocate a Blob or persist bytes to disk.
 Rails.application.config.to_prepare do
+  ActiveStorage::BaseController.forgery_protection_verification_strategy = :header_only
   ActiveStorage::DirectUploadsController.include ActiveStorageAuthentication
   ActiveStorage::DirectUploadsController.before_action :require_active_storage_authentication
 
