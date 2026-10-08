@@ -163,6 +163,9 @@ To support entirely distinct groups of customers, you would deploy multiple inst
 
 All of Campfire's state lives in the mounted volume, so upgrading is a matter of pulling a newer image and recreating the container:
 
+> [!IMPORTANT]
+> Before upgrading from Resque to Solid Queue, follow the [queue migration notes](upgrades/solid-queue.md). The old queue must be drained while the old container is still running.
+
 ```sh
 docker pull ghcr.io/basecamp/once-campfire:latest
 ```
@@ -205,9 +208,10 @@ docker run --rm \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
   bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
-           cp /rails/storage/backups/production.sqlite3 /rails/storage/db/production.sqlite3 &&
-           rm -f /rails/storage/db/production.sqlite3-wal /rails/storage/db/production.sqlite3-shm &&
+           /hooks/post-restore &&
            chown -R rails:rails /rails/storage"
 ```
 
 Then start Campfire again.
+
+Backups made before the Solid Queue migration do not contain a queue database. When restoring one after upgrading, follow the instructions in the [queue migration notes](upgrades/solid-queue.md) to explicitly reset the queue database before running the restore hook.

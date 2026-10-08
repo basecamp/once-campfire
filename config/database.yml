@@ -32,3 +32,9 @@ production:
   primary:
     <<: *default
     database: storage/db/production.sqlite3
+
+  queue:
+    <<: *default
+    database: storage/db/production_queue.sqlite3
+    migrations_paths: db/queue_migrate
+    schema_dump: queue_schema.rb

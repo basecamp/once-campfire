@@ -15,8 +15,7 @@ gem "redis", "~> 5.4"
 gem "puma", "~> 7.2", ">= 7.2.1"
 
 # Jobs
-gem "resque", "~> 2.7.0"
-gem "resque-pool", "~> 0.7.1"
+gem "solid_queue", "~> 1.7.0"
 
 # Assets
 gem "propshaft", github: "rails/propshaft"
