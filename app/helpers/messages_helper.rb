@@ -56,14 +56,14 @@ module MessagesHelper
     local_datetime_tag message.created_at, **attributes
   end
 
-  def message_presentation(message)
+  def message_presentation(message, fragment_cached: false)
     case message.content_type
     when "attachment"
       message_attachment_presentation(message)
     when "sound"
       message_sound_presentation(message)
     else
-      text_message_presentation(message)
+      text_message_presentation(message.body.body, fragment_cached: fragment_cached)
     end
   rescue Exception => e
     Sentry.capture_exception(e, extra: { message: message })
@@ -80,8 +80,10 @@ module MessagesHelper
     # consecutive runs: attachments, mentions and direct-room names have further
     # dependencies and render fresh without costing their neighbours a cache hit.
     cached = ->(message) { message_fragment_cache_key(message) }
-    safe_join messages.chunk_while { |a, b| message_fragment_cacheable?(a) == message_fragment_cacheable?(b) }.map { |run|
-      render partial: "messages/message", collection: run, cached: (cached if message_fragment_cacheable?(run.first))
+    runs = messages.map { |message| [ message, message_fragment_cacheable?(message) ] }.chunk_while { |a, b| a.last == b.last }
+    safe_join runs.map { |run|
+      fragment_cached = run.first.last
+      render partial: "messages/message", collection: run.map(&:first), cached: (cached if fragment_cached), locals: { fragment_cached: fragment_cached }
     }
   end
 
@@ -89,25 +91,17 @@ module MessagesHelper
     # Read actual presentation inputs, not just updated_at: SQL writers can edit
     # leaf rows without touching their parents. Unrelated commits retain reuse.
     dependencies = [ message.attributes, message.room.attributes.slice("id", "type", "name"),
-      message.creator.attributes.slice("id", "name", "bio", "updated_at"), message_body_html(message),
+      message.creator.attributes.slice("id", "name", "bio", "updated_at"), message.body.body&.to_html,
       message.boosts.sort_by(&:created_at).map { |boost| [ boost.attributes, boost.booster.attributes.slice("id", "name", "bio", "updated_at") ] } ]
     [ "message-presentation-v8", Digest::SHA256.hexdigest(ActiveSupport::JSON.encode(dependencies)) ]
   end
 
   private
     def message_fragment_cacheable?(message)
-      !message.room.direct? && !message.attachment? && !message_body_html(message).to_s.include?("<action-text-attachment")
+      !message.room.direct? && !message.attachment? && !message.body.body&.to_html.to_s.include?("<action-text-attachment")
     end
 
-    # Serializing rich text walks the whole document; the fragment key, the
-    # cacheability check and the presentation all need it once per render.
-    def message_body_html(message)
-      @message_body_html ||= {}.compare_by_identity
-      @message_body_html.fetch(message) { @message_body_html[message] = message.body.body&.to_html }
-    end
-
-    def text_message_presentation(message)
-      body = message.body.body
+    def text_message_presentation(body, fragment_cached: false)
       render = -> do
         auto_link h(ContentFilters::TextMessagePresentationFilters.apply(body)),
           html: { target: "_blank" }, sanitize_options: { tags: AUTO_LINK_ALLOWED_TAGS, attributes: AUTO_LINK_ALLOWED_ATTRIBUTES }
@@ -115,10 +109,12 @@ module MessagesHelper
 
       # Collection-cached messages already store this inside their fragment, so
       # only messages rendered fresh, such as in direct rooms, cache it separately.
+      return render.call if fragment_cached || !controller.perform_caching
+
       # Embedded attachments render database-backed metadata and signed URLs.
       # Plain text HTML depends only on its content, even after a foreign edit.
-      html = message_body_html(message).to_s
-      if controller.perform_caching && !message_fragment_cacheable?(message) && !html.include?("<action-text-attachment") && html.bytesize <= 1.megabyte
+      html = body.to_html
+      if !html.include?("<action-text-attachment") && html.bytesize <= 1.megabyte
         Rails.cache.fetch([ "text-presentation-v2", Rails.configuration.x.presentation_cache_version, I18n.locale, Digest::SHA256.hexdigest(html) ]) { render.call }
       else
         render.call
