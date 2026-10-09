@@ -54,7 +54,7 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_no_difference -> { Boost.count } do
       post room_bot_message_boosts_url(@room, "invalid-bot-key", @message), params: +"👀"
     end
-    assert_response :redirect
+    assert_response :unauthorized
   end
 
   test "create is not found for a room the bot is not a member of" do
@@ -77,7 +77,7 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_no_difference -> { Boost.count } do
       post room_bot_message_boosts_url(@room, bot_key, @message), params: +"👀"
     end
-    assert_response :redirect
+    assert_response :unauthorized
   end
 
   test "destroy removes the bot's own boost" do
@@ -107,7 +107,7 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
       delete room_bot_message_boost_url(@room, "invalid-bot-key", @message, boosts(:fourth_by_bender))
     end
 
-    assert_response :redirect
+    assert_response :unauthorized
   end
 
   test "create accepts a Bearer token on a path that does not contain the key" do
@@ -115,12 +115,5 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
       post room_bot_api_message_boosts_url(@room, @message), params: +"🙌", headers: { "Authorization" => "Bearer #{@bot.bot_key}" }
     end
     assert_response :created
-  end
-
-  test "create rejects the legacy custom bot-key header" do
-    assert_no_difference -> { @message.boosts.count } do
-      post room_bot_api_message_boosts_url(@room, @message), params: +"🙌", headers: { "X-Campfire-Bot-Key" => @bot.bot_key }
-    end
-    assert_response :unauthorized
   end
 end

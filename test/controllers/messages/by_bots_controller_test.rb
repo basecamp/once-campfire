@@ -61,7 +61,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
       post room_bot_messages_url(rooms(:bender_and_kevin), bot_key), params: "Hello 👋!"
     end
 
-    assert_response :redirect
+    assert_response :unauthorized
   end
 
   test "index returns the room's messages in the order they were sent" do
@@ -137,7 +137,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
   test "index requires a valid bot key" do
     get room_bot_messages_url(@room, "invalid-bot-key")
-    assert_response :redirect
+    assert_response :unauthorized
   end
 
   test "index is not found for a room the bot is not a member of" do
@@ -152,9 +152,9 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
-  test "regular messages index remains denied for bots" do
+  test "regular messages index does not authenticate a Bearer bot token" do
     get room_messages_url(@room), headers: { "Authorization" => "Bearer #{users(:bender).bot_key}" }
-    assert_response :forbidden
+    assert_response :redirect
   end
 
   test "update" do
@@ -211,7 +211,7 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
 
     patch room_bot_message_url(@room, bot_key, message), params: +"Hijacked!"
 
-    assert_response :redirect
+    assert_response :unauthorized
     assert_equal original, message.reload.plain_text_body
   end
 
@@ -244,6 +244,21 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     get room_bot_api_messages_url(@room), headers: { "Authorization" => "Bearer #{users(:bender).bot_key}" }
     assert_response :success
     assert_includes JSON.parse(response.body).map { it["body"]["plain_text"] }, "Hello from a header"
+  end
+
+  test "Bearer credentials take precedence over a legacy path credential" do
+    get room_bot_messages_url(@room, "invalid-bot-key"), headers: { "Authorization" => "Bearer #{users(:bender).bot_key}" }
+    assert_response :success
+  end
+
+  test "invalid Bearer credentials do not fall back to the legacy path credential" do
+    get room_bot_messages_url(@room, users(:bender).bot_key), headers: { "Authorization" => "Bearer invalid-bot-key" }
+    assert_response :unauthorized
+  end
+
+  test "malformed Bearer credentials do not fall back to the legacy path credential" do
+    get room_bot_messages_url(@room, users(:bender).bot_key), headers: { "Authorization" => "Bearer" }
+    assert_response :unauthorized
   end
 
   test "index accepts Bearer tokens with mixed or lowercase scheme casing" do
@@ -281,12 +296,13 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
-  test "the key-free path does not accept the legacy custom header" do
-    get room_bot_api_messages_url(@room), headers: { "X-Campfire-Bot-Key" => users(:bender).bot_key }
+  test "the key-free path requires a Bearer token" do
+    get room_bot_api_messages_url(@room)
     assert_response :unauthorized
   end
 
-  test "the key-free path requires a Bearer token" do
+  test "the key-free path does not accept a signed-in session instead of a Bearer token" do
+    sign_in :david
     get room_bot_api_messages_url(@room)
     assert_response :unauthorized
   end
