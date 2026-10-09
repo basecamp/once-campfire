@@ -42,7 +42,7 @@ class WebPush::Connections
 
   def request(http, request)
     unless http.is_a?(HTTP) && http.ipaddr && !http.proxy? && http.use_ssl? && !http.started?
-      raise ArgumentError, "Only new, direct TLS connections pinned to an address are pooled"
+      raise ArgumentError, "Only new, direct TLS connections pinned to an address and opened as WebPush::Connections::HTTP are pooled"
     end
     address = [ http.address, http.port, http.ipaddr ]
 
