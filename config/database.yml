@@ -46,6 +46,21 @@ performance:
     schema_dump: cable_schema.rb
     pragmas:
       wal_autocheckpoint: 1000
+  queue:
+    <<: *default
+    database: storage/db/performance_queue.sqlite3
+    pool: 3
+    migrations_paths: db/queue_migrate
+    schema_dump: queue_schema.rb
+    pragmas:
+      wal_autocheckpoint: 1000
+  cache:
+    <<: *default
+    database: storage/db/performance_cache.sqlite3
+    migrations_paths: db/cache_migrate
+    schema_dump: cache_schema.rb
+    pragmas:
+      wal_autocheckpoint: 1000
 
 production:
   primary:
