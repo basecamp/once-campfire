@@ -9,7 +9,7 @@ default: &default
   writer_batch_delay: 0.001.seconds
 
 development:
-  <<: *default
+  adapter: async
 
 test:
   adapter: test
