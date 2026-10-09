@@ -50,6 +50,12 @@ plugin :tmp_restart
 # Reset all membership connections
 Membership.disconnect_all
 
+# Initializer starts a contender in this process. Stop before fork so workers
+# do not inherit the flock; each worker starts its own contender. Single-process
+# mode never forks, so the initializer's contender keeps running.
+before_fork { SqliteWalCheckpoint.stop }
+before_worker_boot { SqliteWalCheckpoint.start }
+
 Signal.trap :SIGPROF do
   Thread.list.each do |t|
     puts t

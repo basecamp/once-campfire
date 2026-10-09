@@ -172,7 +172,7 @@ class ContentFiltersTest < ActionView::TestCase
 
     filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body).to_html
 
-    assert_equal body, filtered
+    assert_dom_equal body, filtered
     assert_match %r{<table>.*<th><p>Name</p></th>.*<td><p>Jason</p></td>}m, message_presentation(message)
   end
 

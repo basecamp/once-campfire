@@ -49,17 +49,26 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 > that people have someone to contact if they need help with their account. If that bothers you, put in any
 > email address you want and create yourself a new admin account.
 
+Authenticated room, message, sidebar and search pages use a bounded 64 MiB cache per worker.
+Set `CAMPFIRE_RESPONSE_CACHE_MB=0` to disable it. Every request still checks authentication
+and room access; commits from any SQLite writer invalidate complete cached HTML and gzip bodies.
+Native HTML, JSON and stream fragments have a separate 64 MiB memory limit per worker;
+shared rate limits retain their existing store.
+
 ## Other implementations
 
 Campfire also has implementations in Django, Laravel, Express, Elixir, Go, Rust and C:
 
 | HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) | [C](https://github.com/basecamp/once-campfire-c) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 230 | 62 | 760 | 2,622 | 942 | 31,673 | 35,484 | 141,834 |
-| Messages page | 402 | 70 | 924 | 3,245 | 1,267 | 30,746 | 40,674 | 151,564 |
-| Sidebar | 468 | 229 | 1,383 | 34,938 | 2,515 | 18,586 | 34,479 | 159,850 |
-| Search | 399 | 118 | 1,135 | 6,613 | 1,814 | 29,765 | 34,432 | 155,456 |
-| Post a message | 248 | 112 | 498 | 2,088 | 1,400 | 9,073 | 8,998 | 7,460 |
+| Room page | 4,101 | 1,507 | 3,872 | 42,636 | 5,350 | 53,060 | 106,494 | 137,524 |
+| Messages page | 4,115 | 1,596 | 3,995 | 74,362 | 5,712 | 54,800 | 102,697 | 144,642 |
+| Sidebar | 4,333 | 1,873 | 4,493 | 94,329 | 5,949 | 59,144 | 120,294 | 152,002 |
+| Search | 4,282 | 1,862 | 4,172 | 84,665 | 5,848 | 60,509 | 121,378 | 149,487 |
+| Post a message | 330 | 262 | 794 | 2,155 | 1,278 | 9,021 | 8,037 | 7,530 |
+| Backend KLOC | 5.5 | 5.3 | 4.1 | 6.8 | 11.6 | 23.2 | 30.7 | 94.8 |
+
+KLOC counts backend code plus executable code in templates; excludes plain HTML, frontend, tests, dependencies and generated files.
 
 [Shared verification](https://github.com/basecamp/once-campfire-verification) · [Detailed results](https://github.com/basecamp/once-campfire-verification/blob/main/docs/performance-review.md).
 
@@ -74,3 +83,7 @@ Please see our [development guide](docs/development.md) for how to get Campfire 
 ## Security
 
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability and a description of our trust model.
+
+Browser writes use Rails’ `Sec-Fetch-Site` header-only protection and `Origin` check.
+HTTPS requires browser metadata; plain HTTP retains the missing-header fallback.
+Forms contain no CSRF tokens. Existing cookies, bot APIs and signed uploads remain compatible.

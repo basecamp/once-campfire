@@ -25,6 +25,20 @@ class RoomTest < ActiveSupport::TestCase
     assert room.users.include?(users(:david))
   end
 
+  test "a new message marks unread the members who had read the room and leaves the unread ones as they were" do
+    room = rooms(:watercooler)
+    reader = memberships(:jason_watercooler)
+    behind = memberships(:bender_watercooler)
+    behind.update_columns unread_at: 1.hour.ago, updated_at: 1.hour.ago
+    behind_before = behind.reload.attributes.slice("unread_at", "updated_at")
+
+    message = room.messages.create! creator: users(:david), body: "Hello", client_message_id: "unread-once"
+
+    assert_equal message.created_at, reader.reload.unread_at
+    assert_equal behind_before, behind.reload.attributes.slice("unread_at", "updated_at")
+    assert_not memberships(:david_watercooler).reload.unread?
+  end
+
   test "type" do
     assert Rooms::Open.new.open?
     assert_not Rooms::Open.new.direct?

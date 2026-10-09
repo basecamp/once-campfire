@@ -4,6 +4,7 @@ class MessagesController < ApplicationController
   before_action :set_room, except: :create
   before_action :set_message, only: %i[ show edit update destroy ]
   before_action :ensure_can_administer, only: %i[ edit update destroy ]
+  around_action :cache_read_response, only: :index
 
   layout false, only: :index
 
@@ -11,7 +12,13 @@ class MessagesController < ApplicationController
     @messages = find_paged_messages
 
     if @messages.any?
-      fresh_when @messages
+      body = render_to_string(:index)
+      # Creator, body and boost edits can change HTML without touching messages.
+      fresh_when etag: Digest::SHA256.hexdigest(body), template: false
+      unless performed?
+        response.content_type = "text/html"
+        self.response_body = body
+      end
     else
       head :no_content
     end
@@ -21,7 +28,9 @@ class MessagesController < ApplicationController
     set_room
     @message = @room.messages.create_with_attachment!(message_params)
 
-    @message.broadcast_create
+    # Both deliveries contain the same token-free, viewer-independent markup.
+    @message_html = render_to_string partial: "messages/message", formats: :html, locals: { message: @message }
+    @message.broadcast_create(html: @message_html)
     deliver_webhooks_to_bots
   rescue ActiveRecord::RecordNotFound
     render action: :room_not_found

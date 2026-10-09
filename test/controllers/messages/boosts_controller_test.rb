@@ -31,6 +31,32 @@ class Messages::BoostsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "quick boost controls submit their displayed reaction to the message" do
+    get room_url(@message.room)
+    forms = css_select("##{dom_id(@message)} .quick-boosts form")
+    assert_equal EmojiHelper::REACTIONS.size, forms.size
+    forms.each do |form|
+      assert_equal "post", form["method"]
+      assert_equal message_boosts_path(@message), form["action"]
+      assert_equal dom_id(@message, :boosting), form["data-turbo-frame"]
+      assert_equal "popup#close", form["data-action"]
+      input = form.at_css('input[name="boost[content]"]')
+      button = form.at_css('button[type="submit"]')
+      assert_equal input["value"], button["data-emoji"]
+      assert_equal EmojiHelper::REACTIONS.fetch(input["value"]), button["title"]
+      assert_nil form.at_css('input[name="authenticity_token"]')
+    end
+
+    form = forms.first
+    reaction = form.at_css('input[name="boost[content]"]')["value"]
+    assert_difference -> { @message.boosts.count }, 1 do
+      post form["action"], params: { boost: { content: reaction } }, headers: {
+        "Sec-Fetch-Site" => "same-origin", "Origin" => "http://www.example.com" }
+      assert_redirected_to message_boosts_url(@message)
+    end
+    assert_equal reaction, @message.boosts.order(:id).last.content
+  end
+
   test "destroy" do
     assert_turbo_stream_broadcasts [ @message.room, :messages ], count: 1 do
       assert_difference -> { @message.boosts.count }, -1 do

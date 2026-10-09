@@ -36,6 +36,11 @@ module ApplicationHelper
   end
 
   private
+    # Header-only forgery protection needs no secret in forms or cached HTML.
+    def token_tag(*)
+      ""
+    end
+
     def admin_body_class
       "admin" if Current.user&.can_administer?
     end

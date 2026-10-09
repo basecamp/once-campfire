@@ -63,8 +63,7 @@ module MessagesHelper
     when "sound"
       message_sound_presentation(message)
     else
-      auto_link h(ContentFilters::TextMessagePresentationFilters.apply(message.body.body)),
-        html: { target: "_blank" }, sanitize_options: { tags: AUTO_LINK_ALLOWED_TAGS, attributes: AUTO_LINK_ALLOWED_ATTRIBUTES }
+      text_message_presentation(message.body.body)
     end
   rescue Exception => e
     Sentry.capture_exception(e, extra: { message: message })
@@ -73,7 +72,50 @@ module MessagesHelper
     ""
   end
 
+  # These controls contain URLs and static markup, but no viewer or token state.
+  # Keep them across database commits; attachment controls still render afresh.
+  def cache_message_actions(message, &block)
+    return capture(&block) unless controller.perform_caching && !message.attachment?
+
+    key = fragment_name_with_digest([
+      "message-actions-v1", request.base_url, request.script_name, I18n.locale, message.id, message.room_id
+    ], nil)
+    FragmentCache.store.fetch(key) { capture(&block) }
+  end
+
+  def message_fragment_cache_key(message)
+    return message unless controller.perform_caching &&
+      %i[room creator rich_text_body boosts attachment_attachment].all? { |name| message.association(name).loaded? }
+
+    room = message.room
+    body = message.body.body
+    return message if room.direct? || message.attachment? || !body || body.to_html.include?("<action-text-attachment") ||
+      message.boosts.any? { |boost| !boost.association(:booster).loaded? }
+
+    # Collection caching preloads these rows before deriving keys. Read their
+    # actual content: foreign SQL writers need not touch Rails timestamps.
+    dependencies = [ message.attributes, room.attributes.slice("id", "type", "name"), message.creator.attributes,
+      body.to_html, message.boosts.sort_by(&:created_at).map { |boost| [ boost.attributes, boost.booster.attributes ] } ]
+    FragmentCache::ContentKey.new(Digest::SHA256.hexdigest(ActiveSupport::JSON.encode(dependencies)))
+  end
+
   private
+    def text_message_presentation(body)
+      render = -> do
+        auto_link h(ContentFilters::TextMessagePresentationFilters.apply(body)),
+          html: { target: "_blank" }, sanitize_options: { tags: AUTO_LINK_ALLOWED_TAGS, attributes: AUTO_LINK_ALLOWED_ATTRIBUTES }
+      end
+
+      # Embedded attachments render database-backed metadata and signed URLs.
+      # Plain text HTML depends only on its content, even after a foreign edit.
+      html = body.to_html
+      if controller.perform_caching && !html.include?("<action-text-attachment") && html.bytesize <= ResponseCache::MAX_ENTRY_BYTES
+        FragmentCache.store.fetch([ "text-presentation-v1", I18n.locale, Digest::SHA256.hexdigest(html) ]) { render.call }
+      else
+        render.call
+      end
+    end
+
     def messages_actions
       "turbo:before-stream-render@document->messages#beforeStreamRender keydown.up@document->messages#editMyLastMessage"
     end

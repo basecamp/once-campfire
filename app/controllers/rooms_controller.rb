@@ -2,6 +2,7 @@ class RoomsController < ApplicationController
   before_action :set_room, only: %i[ show destroy ]
   before_action :ensure_can_administer, only: %i[ destroy ]
   before_action :remember_last_room_visited, only: :show
+  around_action :cache_read_response, only: :show
 
   def index
     redirect_to room_url(Current.user.rooms.last)
@@ -20,7 +21,10 @@ class RoomsController < ApplicationController
 
   private
     def set_room
-      if room = room_scope.find_by(id: params[:room_id] || params[:id])
+      room = RecordCache.fetch([ "room", self.class.name, Current.user.id, params[:room_id] || params[:id] ], read_record_cache_version) do
+        [ room_scope.find_by(id: params[:room_id] || params[:id]) ]
+      end.first
+      if room
         @room = room
       else
         redirect_to root_url, alert: "Room not found or inaccessible"

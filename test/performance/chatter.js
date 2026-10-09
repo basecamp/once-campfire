@@ -87,18 +87,16 @@ export function sockets() {
 export function messages() {
   const cookie = `session_token=${dummyCookies[0][0]}`;
 
-  const response = http.get(`http://${host}${port}/rooms/1`, { headers: { "Cookie": cookie }, responseType: "text" });
-  const csrfToken = response.body.match(/<meta name="csrf-token" content="([^"]*)"/i)[1];
-
   const postHeaders = {
     "Cookie": cookie,
+    "Sec-Fetch-Site": "same-origin",
+    "Origin": `http://${host}${port}`,
     "Accept": "text/vnd.turbo-stream.html, text/html, application/xhtml+xml"
   }
 
   const payload = {
     "message[body]": "Hello from k6",
-    "message[client_message_id]": Math.random().toString(36),
-    "authenticity_token": csrfToken
+    "message[client_message_id]": Math.random().toString(36)
   };
 
   for (let i = 0; i < 100; i++) {

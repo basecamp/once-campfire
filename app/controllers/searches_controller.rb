@@ -1,4 +1,5 @@
 class SearchesController < ApplicationController
+  around_action :cache_read_response, only: :index
   before_action :set_messages
 
   def index

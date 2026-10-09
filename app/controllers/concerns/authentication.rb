@@ -7,7 +7,7 @@ module Authentication
     before_action :deny_bots
     helper_method :signed_in?
 
-    protect_from_forgery with: :exception, unless: -> { authenticated_by.bot_key? }
+    protect_from_forgery using: :header_only, with: :exception, unless: -> { authenticated_by.bot_key? }
   end
 
   class_methods do
