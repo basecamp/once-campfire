@@ -19,13 +19,6 @@ development:
   primary:
     <<: *default
     database: storage/db/development.sqlite3
-  cable:
-    <<: *default
-    database: storage/db/development_cable.sqlite3
-    migrations_paths: db/cable_migrate
-    schema_dump: cable_schema.rb
-    pragmas:
-      wal_autocheckpoint: 1000
 
 # Warning: The database defined as "test" will be erased and
 # re-generated from your development database when you run "rake".

@@ -28,7 +28,7 @@ You'll be able to access the app at http://localhost:3000.
 
 On first run you'll be guided through creating your admin account, and you can sign in with that account from then on.
 
-Campfire does not require a Redis service. Solid Cable uses the local SQLite database configured for the current environment; enabling development caching uses an in-memory store.
+Campfire does not require a Redis service. In development, Action Cable uses the in-process async adapter and background jobs run in the server process; enabling development caching uses an in-memory store.
 
 ### Web Push notifications
 
