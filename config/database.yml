@@ -33,6 +33,14 @@ performance:
     <<: *default
     database: storage/db/performance.sqlite3
 
+  cache:
+    <<: *default
+    database: storage/db/performance_cache.sqlite3
+    migrations_paths: db/cache_migrate
+    schema_dump: cache_schema.rb
+    pragmas:
+      wal_autocheckpoint: 1000
+
 production:
   primary:
     <<: *default

@@ -1,6 +1,6 @@
 # Migrating the Rails cache to Solid Cache
 
-Production `Rails.cache` moves from Redis to Solid Cache in a dedicated SQLite database at `storage/db/production_cache.sqlite3`. The normal startup `db:prepare` creates the database and loads `db/cache_schema.rb`; no cache data needs to be migrated.
+Production `Rails.cache` moves from Redis to Solid Cache in a dedicated SQLite database at `storage/db/production_cache.sqlite3`. The normal startup `db:prepare` creates the database and loads `db/cache_schema.rb`; no cache data needs to be migrated. Solid Cache's 256 MiB `max_size` is an estimated eviction target, not a hard limit on SQLite or WAL disk usage.
 
 ## Upgrade
 

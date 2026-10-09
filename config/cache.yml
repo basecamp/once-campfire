@@ -10,6 +10,10 @@ development:
 test:
   <<: *default
 
+performance:
+  database: cache
+  <<: *default
+
 production:
   database: <%= ENV.fetch("DATABASE", "cache") %>
   <<: *default
