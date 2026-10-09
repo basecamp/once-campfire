@@ -1,6 +1,7 @@
 <%# Be sure to check/update messages/_template.html.erb when changing this file %>
 
-<% cache_if !message.attachment?, [ "message-actions-v2", message.id, message.room_id, url ] do %>
+<%# Collection-cached messages already include these controls in their fragment. %>
+<% cache_if !message.attachment? && !message_fragment_cacheable?(message), [ "message-actions-v2", message.id, message.room_id, url ] do %>
 <div class="message__actions" data-controller="soft-keyboard">
   <%= tag.details class: "position-relative",
       data: { controller: "popup", action: "keydown.esc->popup#close toggle->popup#toggle click@document->popup#closeOnClickOutside", popup_orientation_top_class: "popup-orientation-top" } do %>

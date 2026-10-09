@@ -63,7 +63,7 @@ module MessagesHelper
     when "sound"
       message_sound_presentation(message)
     else
-      text_message_presentation(message.body.body)
+      text_message_presentation(message)
     end
   rescue Exception => e
     Sentry.capture_exception(e, extra: { message: message })
@@ -89,26 +89,36 @@ module MessagesHelper
     # Read actual presentation inputs, not just updated_at: SQL writers can edit
     # leaf rows without touching their parents. Unrelated commits retain reuse.
     dependencies = [ message.attributes, message.room.attributes.slice("id", "type", "name"),
-      message.creator.attributes.slice("id", "name", "bio", "updated_at"), message.body.body&.to_html,
+      message.creator.attributes.slice("id", "name", "bio", "updated_at"), message_body_html(message),
       message.boosts.sort_by(&:created_at).map { |boost| [ boost.attributes, boost.booster.attributes.slice("id", "name", "bio", "updated_at") ] } ]
     [ "message-presentation-v8", Digest::SHA256.hexdigest(ActiveSupport::JSON.encode(dependencies)) ]
   end
 
   private
     def message_fragment_cacheable?(message)
-      !message.room.direct? && !message.attachment? && !message.body.body&.to_html.to_s.include?("<action-text-attachment")
+      !message.room.direct? && !message.attachment? && !message_body_html(message).to_s.include?("<action-text-attachment")
     end
 
-    def text_message_presentation(body)
+    # Serializing rich text walks the whole document; the fragment key, the
+    # cacheability check and the presentation all need it once per render.
+    def message_body_html(message)
+      @message_body_html ||= {}.compare_by_identity
+      @message_body_html.fetch(message) { @message_body_html[message] = message.body.body&.to_html }
+    end
+
+    def text_message_presentation(message)
+      body = message.body.body
       render = -> do
         auto_link h(ContentFilters::TextMessagePresentationFilters.apply(body)),
           html: { target: "_blank" }, sanitize_options: { tags: AUTO_LINK_ALLOWED_TAGS, attributes: AUTO_LINK_ALLOWED_ATTRIBUTES }
       end
 
+      # Collection-cached messages already store this inside their fragment, so
+      # only messages rendered fresh, such as in direct rooms, cache it separately.
       # Embedded attachments render database-backed metadata and signed URLs.
       # Plain text HTML depends only on its content, even after a foreign edit.
-      html = body.to_html
-      if controller.perform_caching && !html.include?("<action-text-attachment") && html.bytesize <= 1.megabyte
+      html = message_body_html(message).to_s
+      if controller.perform_caching && !message_fragment_cacheable?(message) && !html.include?("<action-text-attachment") && html.bytesize <= 1.megabyte
         Rails.cache.fetch([ "text-presentation-v2", Rails.configuration.x.presentation_cache_version, I18n.locale, Digest::SHA256.hexdigest(html) ]) { render.call }
       else
         render.call
