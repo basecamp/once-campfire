@@ -200,13 +200,17 @@ This produces consistent primary and Solid Queue snapshots plus all uploaded fil
 
 To restore, extract the archive back into a stopped instance's volume and run the restore hook:
 
+> [!WARNING]
+> Restore into an empty storage volume. Reusing a volume can leave an old ONCE backup marker or queue snapshot behind, causing the restore hook to select stale database state. Preserve the existing volume separately before emptying it.
+
 ```sh
 docker run --rm \
   --user root \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
-  bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
+  bash -c "find /rails/storage -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + &&
+           tar xzf /backup/campfire-backup.tar.gz -C /rails &&
            /hooks/post-restore &&
            chown -R rails:rails /rails/storage"
 ```
