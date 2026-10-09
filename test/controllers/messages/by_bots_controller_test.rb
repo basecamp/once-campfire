@@ -261,6 +261,17 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  test "blank or unsupported Authorization headers do not fall back to the legacy path credential" do
+    key = users(:bender).bot_key
+
+    [ "", " ", "Basic dXNlcjpwYXNz" ].each do |authorization|
+      assert_no_difference -> { Message.count } do
+        post room_bot_messages_url(@room, key), params: +"Must not post", headers: { "Authorization" => authorization }
+      end
+      assert_response :unauthorized
+    end
+  end
+
   test "index accepts Bearer tokens with mixed or lowercase scheme casing" do
     key = users(:bender).bot_key
 
@@ -305,6 +316,49 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     sign_in :david
     get room_bot_api_messages_url(@room)
     assert_response :unauthorized
+  end
+
+  test "a valid Bearer token authenticates as the bot even with a signed-in session" do
+    sign_in :david
+
+    assert_difference -> { Message.count }, +1 do
+      post room_bot_api_messages_url(@room), params: +"Hello from the bot", headers: { "Authorization" => "Bearer #{users(:bender).bot_key}" }
+    end
+    assert_response :created
+    assert_equal users(:bender), Message.last.creator
+  end
+
+  test "a request-body bot_key does not authenticate the key-free path" do
+    assert_no_difference -> { Message.count } do
+      post room_bot_api_messages_url(@room), params: { bot_key: users(:bender).bot_key }.to_json, headers: { "Content-Type" => "application/json" }
+    end
+    assert_response :unauthorized
+  end
+
+  test "query-string or request-body bot_keys do not replace an invalid legacy path credential" do
+    key = users(:bender).bot_key
+
+    get "#{room_bot_messages_url(@room, 'invalid-bot-key')}?bot_key=#{key}"
+    assert_response :unauthorized
+
+    assert_no_difference -> { Message.count } do
+      post room_bot_messages_url(@room, "invalid-bot-key"), params: { bot_key: key }.to_json, headers: { "Content-Type" => "application/json" }
+    end
+    assert_response :unauthorized
+  end
+
+  test "follows a key-free pagination link with the Bearer token" do
+    (Message::PAGE_SIZE - @room.messages.count + 1).times do |i|
+      @room.messages.create!(body: "Pagination filler #{i}", creator: users(:jason), client_message_id: "pagination-filler-#{i}")
+    end
+    headers = { "Authorization" => "Bearer #{users(:bender).bot_key}" }
+
+    get room_bot_api_messages_url(@room), headers: headers
+    assert_response :success
+    next_page_url = response.headers["Link"][/<(.*)>/, 1]
+
+    get next_page_url, headers: headers
+    assert_response :success
   end
 
   private

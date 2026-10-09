@@ -116,4 +116,30 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
     end
     assert_response :created
   end
+
+  test "create does not fall back to the legacy path key for a blank Authorization header" do
+    assert_no_difference -> { @message.boosts.count } do
+      post room_bot_message_boosts_url(@room, @bot.bot_key, @message), params: +"🙌", headers: { "Authorization" => " " }
+    end
+    assert_response :unauthorized
+  end
+
+  test "create authenticates as the bot with a Bearer token even when a browser session exists" do
+    sign_in :david
+
+    assert_difference -> { @message.boosts.count }, +1 do
+      post room_bot_api_message_boosts_url(@room, @message), params: +"🙌", headers: { "Authorization" => "Bearer #{@bot.bot_key}" }
+    end
+    assert_response :created
+    assert_equal @bot, @message.boosts.last.booster
+  end
+
+  test "create does not authenticate from a signed-in session alone" do
+    sign_in :david
+
+    assert_no_difference -> { @message.boosts.count } do
+      post room_bot_api_message_boosts_url(@room, @message), params: +"🙌"
+    end
+    assert_response :unauthorized
+  end
 end

@@ -35,7 +35,7 @@ module Authentication
     end
 
     def require_bot_authentication
-      bot_key = request.authorization.present? ? bearer_bot_key : request.path_parameters[:bot_key]
+      bot_key = request.authorization.nil? ? request.path_parameters[:bot_key] : bearer_bot_key
       authenticate_bot_key(bot_key) || head(:unauthorized)
     end
 
