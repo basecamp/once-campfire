@@ -49,7 +49,7 @@ performance:
   queue:
     <<: *default
     database: storage/db/performance_queue.sqlite3
-    pool: 3
+    pool: 5
     migrations_paths: db/queue_migrate
     schema_dump: queue_schema.rb
     pragmas:
@@ -79,8 +79,8 @@ production:
   queue:
     <<: *default
     database: storage/db/production_queue.sqlite3
-    # One worker execution thread plus the polling and heartbeat threads.
-    pool: 3
+    # Three worker execution threads plus the polling and heartbeat threads.
+    pool: 5
     migrations_paths: db/queue_migrate
     schema_dump: queue_schema.rb
     # The background checkpoint contender tracks the primary database; keep
