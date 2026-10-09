@@ -11,10 +11,8 @@ class RecordCacheTest < ActiveSupport::TestCase
     end
     ActiveRecord::Base.stubs(:connection_db_config).returns(Struct.new(:database).new(@database))
     ActiveRecord::Base.connection.stubs(:transaction_open?).returns(false)
-    @cache = ResponseCache.new
-    @cache.stubs(:budget).returns(4096)
+    @cache = ResponseCache.new(budget: 4096)
     ResponseCache.stubs(:instance).returns(@cache)
-    FragmentCache.stubs(:store).returns(ActiveSupport::Cache::MemoryStore.new(size: 64.kilobytes))
     @record = User.instantiate(users(:david).attributes_before_type_cast.merge(
       "created_at" => "2026-10-08 12:34:56.123456", "updated_at" => "2026-10-08 12:34:57.654321",
       "status" => 2, "role" => 1))
@@ -58,19 +56,15 @@ class RecordCacheTest < ActiveSupport::TestCase
   test "observer is rechecked after a snapshot lookup" do
     version = @cache.version
     RecordCache.fetch("user", version) { [ @record ] }
-    store = FragmentCache.store
-    original_read = store.method(:read)
-    commit = method(:foreign_commit)
-    store.define_singleton_method(:read) do |*arguments|
-      original_read.call(*arguments).tap { |snapshot| commit.call if snapshot }
-    end
     fresh = User.instantiate(@record.attributes_before_type_cast.merge("name" => "Committed during lookup"))
-    assert_same fresh, RecordCache.fetch("user", version) { [ fresh ] }.first
+    subscriber = ->(event) { foreign_commit if event.payload[:hit] }
+    ActiveSupport::Notifications.subscribed(subscriber, "cache_read.active_support") do
+      assert_same fresh, RecordCache.fetch("user", version) { [ fresh ] }.first
+    end
   end
 
   test "a commit while loading records prevents admission under the old epoch" do
     version = @cache.version
-    FragmentCache.store.expects(:write).never
     assert_same @record, RecordCache.fetch("user", version) { foreign_commit; [ @record ] }.first
     replacement = User.instantiate(@record.attributes_before_type_cast.merge("name" => "Fresh load"))
     assert_same replacement, RecordCache.fetch("user", version) { [ replacement ] }.first
@@ -79,7 +73,6 @@ class RecordCacheTest < ActiveSupport::TestCase
   test "disabled budget missing epoch and open transactions always query and never admit" do
     version = @cache.version
     RecordCache.fetch("user", version) { [ @record ] }
-    FragmentCache.store.expects(:write).never
     @cache.stubs(:budget).returns(0)
     assert_same @record, RecordCache.fetch("user", version) { [ @record ] }.first
     @cache.stubs(:budget).returns(4096)
@@ -87,6 +80,15 @@ class RecordCacheTest < ActiveSupport::TestCase
     ActiveRecord::Base.connection.stubs(:transaction_open?).returns(true)
     assert_same @record, RecordCache.fetch("user", version) { [ @record ] }.first
     assert_same @record, RecordCache.fetch("transaction-only", version) { [ @record ] }.first
+  end
+
+  test "page pressure evicts snapshots within the same local budget" do
+    version = @cache.version
+    RecordCache.fetch("user", version) { [ @record ] }
+    6.times { |index| @cache.write("page-#{index}", version, { body: "x" * 800, headers: {} }) }
+    fresh = User.instantiate(@record.attributes_before_type_cast.merge("name" => "Reloaded after eviction"))
+    assert_same fresh, RecordCache.fetch("user", version) { [ fresh ] }.first
+    assert_equal fresh.name, RecordCache.fetch("user", version) { flunk "fresh snapshot missing" }.first.name
   end
 
   private

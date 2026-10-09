@@ -3,8 +3,8 @@ module Message::Pagination
 
   PAGE_SIZE = 40
 
-  # Expose Rails' collection-preloading hook while preserving Array pagination and
-  # validators. The renderer passes only cache misses to preload_associations.
+  # Expose Rails' collection-preloading hook while preserving Array pagination.
+  # Content-keyed renders preload all presentation inputs before validating hits.
   class Page < Array
     def self.load(relation, direction, size)
       new(relation.skip_preloading!.public_send(direction, size), relation)
@@ -25,7 +25,7 @@ module Message::Pagination
   end
 
   included do
-    # Keep presentation data lazy until the collection cache knows which messages missed.
+    # Defer presentation loading until rendering or content-key derivation.
     scope :last_page, -> { last_page_of(PAGE_SIZE) }
     scope :first_page, -> { Page.load(ordered, :first, PAGE_SIZE) }
 

@@ -169,7 +169,7 @@ docker pull ghcr.io/basecamp/once-campfire:latest
 
 Any pending database migrations run automatically when the container boots.
 
-Production `Rails.cache` uses Solid Cache in its own SQLite database, `storage/db/production_cache.sqlite3`. Startup's normal `db:prepare` creates it from the checked-in cache schema. Existing Redis entries are not copied; the cache starts cold and repopulates as requests arrive. Redis remains required for Action Cable. The bounded per-worker response and fragment caches remain in memory and are separate from `Rails.cache`.
+Production `Rails.cache` uses Solid Cache in its own SQLite database, `storage/db/production_cache.sqlite3`. Startup's normal `db:prepare` creates it from the checked-in cache schema. Existing Redis entries are not copied; the cache starts cold and repopulates as requests arrive. Redis remains required for Action Cable. Native view fragments use this shared store; complete responses and authorization snapshots share a separate, approximately 64 MiB in-memory budget per worker. Official images namespace presentation caches by `GIT_REVISION` and signing key. Set an immutable `GIT_REVISION` for custom builds to share fragments across workers; unversioned builds use a fresh boot namespace instead.
 
 See the [Solid Cache upgrade notes](upgrades/solid-cache.md) for backup and restore behavior.
 

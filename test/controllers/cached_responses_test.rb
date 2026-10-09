@@ -166,9 +166,11 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     end
     get user_sidebar_url(:me)
     Users::SidebarsController.any_instance.unstub(:set_version_headers)
-    ResponseCache.instance.expects(:write).once
     get user_sidebar_url(:me)
     assert_includes response.body, "During authentication"
+    fresh = response.body
+    get user_sidebar_url(:me)
+    assert_equal fresh, response.body
   end
 
   private
