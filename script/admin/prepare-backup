@@ -1,36 +1,25 @@
 #!/usr/bin/env ruby
-# Invoke only while all web and queue writers are quiesced: the primary and
-# Solid Queue databases are snapshotted separately and are not cross-DB atomic.
 require File.expand_path("../../config/environment", File.dirname(__FILE__))
 
 class Backup
   class << self
     def create
-      database_configs.each { |config| backup_database(config) }
+      dest = SQLite3::Database.new(backup_filename)
+      backup = SQLite3::Backup.new(dest, "main", Room.connection.raw_connection, "main")
+
+      backup.step(-1)
+      backup.finish
+      dest.close
     end
 
     private
-      def backup_database(config)
-        source_path = Rails.root.join(config.fetch("database"))
-        raise "Database does not exist: #{source_path}" unless source_path.file?
-
-        source = SQLite3::Database.new(source_path.to_s)
-        dest = SQLite3::Database.new(backup_filename(config))
-        backup = SQLite3::Backup.new(dest, "main", source, "main")
-
-        backup.step(-1)
-      ensure
-        backup&.finish
-        dest&.close
-        source&.close
+      def backup_filename
+        Rails.root.join("storage", "backups").tap(&:mkpath).join(primary_database_filename)
       end
 
-      def database_configs
-        Rails.application.config.database_configuration.fetch(Rails.env).values_at("primary", "queue").compact
-      end
-
-      def backup_filename(config)
-        Rails.root.join("storage", "backups").tap(&:mkpath).join(File.basename(config.fetch("database")))
+      def primary_database_filename
+        path = Rails.application.config.database_configuration[Rails.env]["primary"]["database"]
+        File.basename(path)
       end
   end
 end
