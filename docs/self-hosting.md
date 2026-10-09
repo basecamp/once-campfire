@@ -211,3 +211,28 @@ docker run --rm \
 ```
 
 Then start Campfire again.
+
+### Bot API credentials and logs
+
+Bots should authenticate with `Authorization: Bearer <bot-key>` when calling the
+key-free `/rooms/:id/bot/...` endpoints. For example:
+
+```sh
+curl -H 'Authorization: Bearer <bot-key>' -d 'Hello!' "$CAMPFIRE_URL/rooms/$ROOM_ID/bot/messages"
+```
+
+Bearer authentication is preferred and keeps the key out of the URL. To migrate a
+bot, use the key-free `/rooms/:id/bot/...` URL and send its key in the Authorization
+header. Keep sending that header when following pagination links. If no Authorization
+header is sent, `/rooms/:id/:bot_key/...` paths remain supported as a fallback; an
+empty, unsupported, or invalid Authorization header fails with `401` and does not
+fall back to the path key. Query-string and request-body `bot_key` credentials are
+not accepted. The bots page copies Bearer-authenticated curl commands. Webhooks
+retain `room.path` for legacy clients and include `room.api_path` + `room.bot_key`
+for clients to call the key-free path with the Authorization header. A browser
+session alone does not authenticate bot API requests.
+
+Thruster logs raw request paths, so legacy path credentials may be present in
+container logs. Moving a key to the Authorization header does not remove copies
+already written to logs. If a key may have been exposed there, generate a new key
+from the bot's edit page and update every client using that bot.
