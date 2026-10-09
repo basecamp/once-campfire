@@ -8,7 +8,7 @@ require_relative "response_contract"
 include BenchmarkSupport
 options = parse_options("Compare HTTP throughput with Ruby keep-alive clients; every response must be HTTP 200.",
   duration: 3.0, paths: "room,messages,sidebar,search", concurrencies: "1,16", client_cpus: "12-15",
-  output: File.join(WORK, "results/http"))
+  baseline_image: nil, output: File.join(WORK, "results/http"))
 labels = JSON.parse(File.read(File.join(options[:seed], "labels.json")))
 paths = {
   "room" => "/rooms/#{labels.fetch('rooms.watercooler')}",
@@ -48,7 +48,13 @@ begin
       }
       environment_variables[:REDIS_URL] = "redis://#{redis}:6379/0" if side == "before"
       command.concat environment(environment_variables)
-      command.concat [ options[:image], "bundle", "exec", "puma", "-C", "config/puma.rb" ]
+      # The Redis-backed baseline and the current Solid stack need different gem
+      # bundles, and frozen seeds lack the current cache/cable/queue databases.
+      if side == "before"
+        command.concat [ options[:baseline_image] || options[:image], "bundle", "exec", "puma", "-C", "config/puma.rb" ]
+      else
+        command.concat [ options[:image], "sh", "-c", "bin/rails db:prepare && exec bundle exec puma -C config/puma.rb" ]
+      end
       run(*command)
       deadline = clock + 45
       until client.ready?
