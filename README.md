@@ -66,9 +66,9 @@ Campfire also has implementations in Django, Laravel, Express, Elixir, Go, Rust 
 | Sidebar | 4,333 | 1,873 | 4,493 | 94,329 | 5,949 | 59,144 | 120,294 | 152,002 |
 | Search | 4,282 | 1,862 | 4,172 | 84,665 | 5,848 | 60,509 | 121,378 | 149,487 |
 | Post a message | 330 | 262 | 794 | 2,155 | 1,278 | 9,021 | 8,037 | 7,530 |
-| Backend KLOC | 4.4 | 5.0 | 3.9 | 6.5 | 10.3 | 22.9 | 29.8 | 94.8 |
+| Backend KLOC | 5.5 | 5.3 | 4.1 | 6.8 | 11.6 | 23.2 | 30.7 | 94.8 |
 
-KLOC counts backend application code only; excludes frontend, templates, tests, dependencies and generated files.
+KLOC counts backend code plus executable code in templates; excludes plain HTML, frontend, tests, dependencies and generated files.
 
 [Shared verification](https://github.com/basecamp/once-campfire-verification) · [Detailed results](https://github.com/basecamp/once-campfire-verification/blob/main/docs/performance-review.md).
 
