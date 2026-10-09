@@ -15,5 +15,5 @@ performance:
   <<: *default
 
 production:
-  database: <%= ENV.fetch("DATABASE", "cache") %>
+  database: cache
   <<: *default
