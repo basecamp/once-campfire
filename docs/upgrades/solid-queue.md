@@ -18,15 +18,15 @@ This release changes the Active Job backend from Resque to Solid Queue. It does 
 
    With Docker Compose, use `docker compose exec web` instead of `docker exec campfire`.
 3. Keep the instance in maintenance until `pending=0` and `working=0` on repeated checks at least 30 seconds apart. If `failed` is nonzero, inspect or export those failure records and decide how to handle them before proceeding; they are not transferred to Solid Queue.
-4. Once both queue counts are zero, stop the old container and take a normal Campfire backup using the [quiesced backup procedure](../self-hosting.md#backups). The pre-migration Resque payloads are not included; the application database and uploaded files are.
+4. Once both queue counts are zero, stop the old container and take a normal Campfire [backup](../self-hosting.md#backups). The pre-migration Resque payloads are not included; the application database and uploaded files are.
 5. Pull the new image and recreate the container. The new release prepares the Solid Queue database before starting the web server and worker. Confirm both are healthy before removing maintenance mode.
 
 This creates a short maintenance window, but avoids a dual-queue period and avoids losing work when the Redis-backed queue is replaced. Redis remains required for Action Cable and the Rails cache until their separate migrations; it is no longer the job store.
 
-After this migration, keep both the primary and queue databases quiesced together for backups. `script/admin/prepare-backup` snapshots them one after another and cannot by itself make live writes to separate databases atomic. The ONCE pre-backup hook intentionally fails to request ONCE's safe paused-volume copy; for other hosting setups, stop every web and queue process before calling the backup script and copying storage.
+## Backups and restores
 
-## If an upgrade or restore needs to be rolled back
+Queued jobs are treated as disposable. `script/admin/prepare-backup` snapshots only the primary database, and the self-hosting backup command excludes `production_queue.sqlite3` and its sidecars. During restore, `hooks/post-restore` removes any queue database left in the volume; the next `db:prepare` creates an empty one. Jobs still pending when a backup was taken (push notifications, webhooks) are not replayed after a restore, where they would be stale anyway.
 
-If the new release has not accepted traffic yet, it can be rolled back without moving jobs between backends. If traffic has resumed and jobs have been enqueued to Solid Queue, keep the `production_queue.sqlite3` database and its WAL files; the old Resque release cannot process those jobs. Restore a compatible Solid Queue release to resume them rather than deleting the queue database.
+## If an upgrade needs to be rolled back
 
-Backups created before this migration have no `production_queue.sqlite3` snapshot. The restore hook refuses to overwrite an existing queue database when that snapshot is missing. For a restore to a pre-migration point in time, first stop Campfire and preserve the current queue database separately; then remove `storage/db/production_queue.sqlite3` and its `-wal`/`-shm` files only if you have decided that post-backup Solid Queue jobs should be discarded. Run the restore hook after that, then start Campfire.
+If the new release has not accepted traffic yet, it can be rolled back without moving jobs between backends. If traffic has resumed and jobs have been enqueued to Solid Queue, the old Resque release cannot process them; let the Solid Queue release finish them before rolling back, or accept that they are dropped.

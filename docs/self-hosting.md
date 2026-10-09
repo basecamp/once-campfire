@@ -174,34 +174,18 @@ Any pending database migrations run automatically when the container boots.
 
 ### Backups
 
-Primary records and Solid Queue jobs live in separate SQLite databases, so separate online snapshots are not one point-in-time backup. Stop every Campfire web and job process before generating snapshots and copying the volume. The normal ONCE pre-backup hook deliberately requests ONCE's pause-before-copy fallback for the same reason; its nonzero hook result is intentional.
+To back up your instance, back up the contents of the `/rails/storage` volume.
 
-For a single Docker container, stop the app, run the snapshot command in a one-off container using its stopped volume, archive the volume, and restart the app:
+Because the SQLite database may be written to at any moment, you shouldn't copy its files directly while Campfire is running.
+Instead, first run `script/admin/prepare-backup` inside the running container to produce a consistent snapshot of the database (it's written to `storage/backups/` inside the volume):
 
 ```sh
-docker stop campfire
-trap 'docker start campfire' EXIT
-
-docker run --rm --volumes-from campfire \
-  ghcr.io/basecamp/once-campfire:latest \
-  script/admin/prepare-backup
-
-docker run --rm \
-  --user root \
-  --volumes-from campfire \
-  --volume "$PWD":/backup \
-  ghcr.io/basecamp/once-campfire:latest \
-  tar czf "/backup/campfire-backup.tar.gz" -C /rails storage
+docker exec campfire script/admin/prepare-backup
 ```
 
-If you're using Docker Compose, stop every service that can write to either database, run `script/admin/prepare-backup` in a one-off web container, archive the shared storage volume, then start the services again. Do not run the snapshot and archive commands against a live web/worker process.
+(If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
 
-This produces consistent primary and Solid Queue snapshots plus all uploaded files. Copy the archive somewhere safe, ideally off the machine.
-
-To restore, extract the archive back into a stopped instance's volume and run the restore hook:
-
-> [!WARNING]
-> Restore into an empty storage volume. Reusing a volume can leave an old ONCE backup marker or queue snapshot behind, causing the restore hook to select stale database state. Preserve the existing volume separately before emptying it.
+Then archive the storage volume to a file on the host, excluding the disposable Solid Queue database:
 
 ```sh
 docker run --rm \
@@ -209,10 +193,23 @@ docker run --rm \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
-  bash -c "find /rails/storage -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + &&
-           tar xzf /backup/campfire-backup.tar.gz -C /rails &&
+  tar czf "/backup/campfire-backup.tar.gz" --exclude='storage/db/production_queue.sqlite3*' -C /rails storage
+```
+
+This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files.
+Copy it somewhere safe, ideally off the machine. Queued background jobs are not part of the backup; see the [queue migration notes](upgrades/solid-queue.md#backups-and-restores).
+
+To restore, extract the archive back into a (stopped) instance's volume and run the restore hook, which replaces the live database with the snapshot and clears the queue database:
+
+```sh
+docker run --rm \
+  --user root \
+  --volume campfire:/rails/storage \
+  --volume "$PWD":/backup \
+  ghcr.io/basecamp/once-campfire:latest \
+  bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
            /hooks/post-restore &&
            chown -R rails:rails /rails/storage"
 ```
 
-Then start Campfire again. Backups created before the Solid Queue migration do not contain a queue snapshot. Follow the [queue migration notes](upgrades/solid-queue.md) before restoring one over an existing queue database.
+Then start Campfire again.

@@ -12,73 +12,34 @@ class PostRestoreTest < ActiveSupport::TestCase
     FileUtils.remove_entry(@app_root)
   end
 
-  test "refuses legacy backups before replacing the primary database when the queue database exists" do
+  test "restores the primary database and removes the disposable queue database" do
     write_file("storage/backups/production.sqlite3", "restored primary")
-    write_file("storage/db/production.sqlite3", "current primary")
-    write_file("storage/db/production_queue.sqlite3", "current queue")
-
-    output, status = run_hook
-
-    assert_not status.success?
-    assert_match "Queue database snapshot missing", output
-    assert_equal "current primary", read_file("storage/db/production.sqlite3")
-    assert_equal "current queue", read_file("storage/db/production_queue.sqlite3")
-  end
-
-  test "restores primary and queue databases and removes stale SQLite sidecars" do
-    write_file("storage/backups/production.sqlite3", "restored primary")
-    write_file("storage/backups/production_queue.sqlite3", "restored queue")
     write_file("storage/db/production.sqlite3", "current primary")
     write_file("storage/db/production.sqlite3-wal", "stale primary wal")
     write_file("storage/db/production.sqlite3-shm", "stale primary shm")
     write_file("storage/db/production_queue.sqlite3", "current queue")
     write_file("storage/db/production_queue.sqlite3-wal", "stale queue wal")
     write_file("storage/db/production_queue.sqlite3-shm", "stale queue shm")
+    write_file("storage/db/production_queue.sqlite3-journal", "stale queue journal")
 
     _output, status = run_hook
 
     assert status.success?
     assert_equal "restored primary", read_file("storage/db/production.sqlite3")
-    assert_equal "restored queue", read_file("storage/db/production_queue.sqlite3")
     refute File.exist?(path("storage/db/production.sqlite3-wal"))
     refute File.exist?(path("storage/db/production.sqlite3-shm"))
-    refute File.exist?(path("storage/db/production_queue.sqlite3-wal"))
-    refute File.exist?(path("storage/db/production_queue.sqlite3-shm"))
+    %w[ production_queue.sqlite3 production_queue.sqlite3-wal production_queue.sqlite3-shm production_queue.sqlite3-journal ].each do |name|
+      refute File.exist?(path("storage/db/#{name}")), name
+    end
   end
 
-  test "restores a legacy primary snapshot when no queue database exists" do
+  test "restores a backup taken before the queue database existed" do
     write_file("storage/backups/production.sqlite3", "restored primary")
 
     _output, status = run_hook
 
     assert status.success?
     assert_equal "restored primary", read_file("storage/db/production.sqlite3")
-    refute File.exist?(path("storage/db/production_queue.sqlite3"))
-  end
-
-  test "preserves database files and WAL sidecars from an ONCE paused-volume backup" do
-    write_file("storage/backups/.once-paused-volume-backup", "")
-    write_file("storage/db/production.sqlite3", "paused primary")
-    write_file("storage/db/production.sqlite3-wal", "paused primary wal")
-    write_file("storage/db/production.sqlite3-shm", "stale primary shm")
-    write_file("storage/db/production.sqlite3-journal", "primary journal")
-    write_file("storage/db/production_queue.sqlite3", "paused queue")
-    write_file("storage/db/production_queue.sqlite3-wal", "paused queue wal")
-    write_file("storage/db/production_queue.sqlite3-shm", "stale queue shm")
-    write_file("storage/db/production_queue.sqlite3-journal", "queue journal")
-
-    _output, status = run_hook
-
-    assert status.success?
-    assert_equal "paused primary", read_file("storage/db/production.sqlite3")
-    assert_equal "paused primary wal", read_file("storage/db/production.sqlite3-wal")
-    assert_equal "primary journal", read_file("storage/db/production.sqlite3-journal")
-    refute File.exist?(path("storage/db/production.sqlite3-shm"))
-    assert_equal "paused queue", read_file("storage/db/production_queue.sqlite3")
-    assert_equal "paused queue wal", read_file("storage/db/production_queue.sqlite3-wal")
-    assert_equal "queue journal", read_file("storage/db/production_queue.sqlite3-journal")
-    refute File.exist?(path("storage/db/production_queue.sqlite3-shm"))
-    refute File.exist?(path("storage/backups/.once-paused-volume-backup"))
   end
 
   private
