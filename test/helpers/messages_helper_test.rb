@@ -1,15 +1,26 @@
 require "test_helper"
 
 class MessagesHelperTest < ActionView::TestCase
-  test "plain text presentation is reused by content rather than database epoch" do
+  test "plain text presentation in direct rooms is reused by content rather than database epoch" do
     view.controller.stubs(:perform_caching).returns(true)
     previous_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
-    message = Message.create! room: rooms(:pets), body: "A reusable <strong>safe</strong> body", creator: users(:jason)
+    message = Message.create! room: rooms(:david_and_jason), body: "A reusable <strong>safe</strong> body", creator: users(:jason)
     first = view.message_presentation(message)
     assert_includes first, "A reusable <strong>safe</strong> body"
     ContentFilters::TextMessagePresentationFilters.expects(:apply).never
     assert_equal first, view.message_presentation(message)
+  ensure
+    Rails.cache = previous_cache
+  end
+
+  test "collection-cached messages do not cache their text presentation separately" do
+    view.controller.stubs(:perform_caching).returns(true)
+    previous_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    message = Message.create! room: rooms(:pets), body: "Cached with the whole message", creator: users(:jason)
+    Rails.cache.expects(:fetch).never
+    assert_includes view.message_presentation(message), "Cached with the whole message"
   ensure
     Rails.cache = previous_cache
   end
