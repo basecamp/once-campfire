@@ -72,19 +72,30 @@ module MessagesHelper
     ""
   end
 
-  def render_messages(messages)
-    return render(partial: "messages/message", collection: messages) unless controller.perform_caching
+  # Native collection caching cannot bypass individual entries, so pages render
+  # in consecutive runs: attachments, mentions and direct-room names have further
+  # dependencies and render fresh without costing their neighbours a cache hit.
+  def message_runs(messages)
+    return [ messages ] unless controller.perform_caching
 
     messages.preload_associations(messages) if messages.respond_to?(:preload_associations)
-    # Native collection caching cannot bypass individual entries, so render
-    # consecutive runs: attachments, mentions and direct-room names have further
-    # dependencies and render fresh without costing their neighbours a cache hit.
-    cached = ->(message) { message_fragment_cache_key(message) }
-    runs = messages.map { |message| [ message, message_fragment_cacheable?(message) ] }.chunk_while { |a, b| a.last == b.last }
-    safe_join runs.map { |run|
-      fragment_cached = run.first.last
-      render partial: "messages/message", collection: run.map(&:first), cached: (cached if fragment_cached), locals: { fragment_cached: fragment_cached }
-    }
+    messages.map { |message| [ message, message_fragment_cacheable?(message) ] }
+      .chunk_while { |a, b| a.last == b.last }
+      .map { |run| run.map(&:first) }
+  end
+
+  def message_run_fragment_cached?(run)
+    controller.perform_caching && message_fragment_cacheable?(run.first)
+  end
+
+  # These controls contain URLs and static markup, but no viewer or token state.
+  # Collection-cached messages already include them in their fragment.
+  def cache_message_actions(message, url, fragment_cached: false, &block)
+    if controller.perform_caching && !fragment_cached && !message.attachment?
+      Rails.cache.fetch([ "message-actions-v3", Rails.configuration.x.presentation_cache_version, I18n.locale, message.id, message.room_id, url ]) { capture(&block) }
+    else
+      capture(&block)
+    end
   end
 
   def message_fragment_cache_key(message)

@@ -1,5 +1,8 @@
 <%= turbo_stream.append dom_id(@room, :messages) do %>
-  <%= render_messages @new_messages %>
+  <% message_runs(@new_messages).each do |run| %>
+    <% fragment_cached = message_run_fragment_cached?(run) %>
+    <%= render partial: "messages/message", collection: run, cached: (->(message) { message_fragment_cache_key(message) } if fragment_cached), locals: { fragment_cached: fragment_cached } %>
+  <% end %>
 <% end if @new_messages.any? %>
 
 <% @updated_messages.each do |message| %>
