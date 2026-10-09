@@ -2,7 +2,8 @@ module Message::Mentionee
   extend ActiveSupport::Concern
 
   def mentionees
-    room.users.where(id: mentioned_users.map(&:id))
+    ids = mentioned_users.map(&:id)
+    ids.empty? ? User.none : room.users.where(id: ids)
   end
 
   private
