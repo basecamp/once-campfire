@@ -34,6 +34,11 @@ module Authentication
       restore_authentication || bot_authentication || request_authentication
     end
 
+    def require_bot_authentication
+      bot_key = request.authorization.present? ? bearer_bot_key : request.path_parameters[:bot_key]
+      authenticate_bot_key(bot_key) || head(:unauthorized)
+    end
+
     def restore_authentication
       if session = find_session_by_cookie
         resume_session session
@@ -41,19 +46,19 @@ module Authentication
     end
 
     def bot_authentication
-      if (bot_key = bot_key_from_request) && bot = User.authenticate_bot(bot_key.strip)
+      authenticate_bot_key(request.path_parameters[:bot_key])
+    end
+
+    def authenticate_bot_key(bot_key)
+      if bot_key.present? && bot = User.authenticate_bot(bot_key.strip)
         Current.user = bot
         set_authenticated_by(:bot_key)
       end
     end
 
     def request_authentication
-      if bot_api_request?
-        head :unauthorized
-      else
-        session[:return_to_after_authenticating] = request.url
-        redirect_to new_session_url
-      end
+      session[:return_to_after_authenticating] = request.url
+      redirect_to new_session_url
     end
 
     def redirect_signed_in_user_to_root
@@ -102,18 +107,8 @@ module Authentication
       cookies.delete(:session_token)
     end
 
-    def bot_key_from_request
-      # Path segment only — query/body bot_key would still hit Thruster's access log.
-      request.path_parameters[:bot_key].presence || bearer_bot_key
-    end
-
     def bearer_bot_key
       authenticate_with_http_token(scheme: :bearer) { |token, _options| token }
-    end
-
-    def bot_api_request?
-      request.path_parameters[:bot_key].blank? &&
-        request.path_parameters[:controller].in?(%w[ messages/by_bots messages/boosts/by_bots ])
     end
 
     def deny_bots

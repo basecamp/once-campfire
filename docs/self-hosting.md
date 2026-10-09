@@ -214,12 +214,17 @@ Then start Campfire again.
 
 ### Bot API credentials and logs
 
-Use `/rooms/:id/bot/messages` with `Authorization: Bearer <bot-key>` to keep the key
-out of access-log URLs. `X-Campfire-Bot-Key` is no longer accepted; update clients
-using it to send the Authorization header instead. The legacy
-`/rooms/:id/:bot_key/...` paths remain supported for existing clients, but Thruster
-logs the raw path, so container logs may contain those keys. The bots page copies
-curl commands using Bearer authentication. Webhooks retain `room.path` for legacy
-clients and include `room.api_path` + `room.bot_key` for clients to use with the
-Authorization header. Query-string `bot_key` credentials are not accepted because
-Thruster logs the raw query too.
+Bots should authenticate with `Authorization: Bearer <bot-key>` when calling the
+key-free `/rooms/:id/bot/...` endpoints. For example:
+
+```sh
+curl -H 'Authorization: Bearer <bot-key>' -d 'Hello!' "$CAMPFIRE_URL/rooms/$ROOM_ID/bot/messages"
+```
+
+Bearer authentication is preferred and keeps the key out of the URL. If no
+Authorization header is sent, `/rooms/:id/:bot_key/...` paths remain supported as a
+fallback, but Thruster logs the raw path, so container logs may contain those keys.
+Query-string `bot_key` credentials are not accepted because Thruster logs the raw
+query too. The bots page copies Bearer-authenticated curl commands. Webhooks retain `room.path` for
+legacy clients and include `room.api_path` + `room.bot_key` for clients to call the
+key-free path with the Authorization header.

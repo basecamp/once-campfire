@@ -1,6 +1,9 @@
 class Messages::ByBotsController < MessagesController
   include RawRequestBody
 
+  skip_before_action :require_authentication
+  prepend_before_action :require_bot_authentication
+
   allow_bot_access only: %i[ index create update destroy ]
 
   before_action :set_room
