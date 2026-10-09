@@ -8,6 +8,8 @@ No Redis data migration or queue-drain step is needed for this change. Deploy th
 
 Solid Cable polls for broadcasts every 100 ms by default, and the configured one-day message retention is only for its internal delivery window. These defaults trade a small amount of broadcast latency and database activity for not requiring a separate Redis service. The 100 ms interval is a starting point, not a Campfire-specific performance claim; measure under representative traffic before tuning it.
 
+Every web and job process must connect to the same Solid Cable database. Separate per-host SQLite files partition broadcasts and remote disconnects, and a rolling deployment that mixes Redis and Solid Cable processes cannot exchange broadcasts between them. Keep the processes on one adapter and a shared database for the cutover; if the deployment cannot provide shared SQLite storage, use a shared database service or retain Redis instead.
+
 After confirming the new release is healthy, remove the Redis service/container and any `REDIS_URL` configuration from your deployment. Redis remains necessary when running a release from before this migration.
 
 ## Backups and restores
