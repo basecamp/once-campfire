@@ -48,8 +48,12 @@ module Authentication
     end
 
     def request_authentication
-      session[:return_to_after_authenticating] = request.url
-      redirect_to new_session_url
+      if bot_api_request?
+        head :unauthorized
+      else
+        session[:return_to_after_authenticating] = request.url
+        redirect_to new_session_url
+      end
     end
 
     def redirect_signed_in_user_to_root
@@ -100,17 +104,16 @@ module Authentication
 
     def bot_key_from_request
       # Path segment only — query/body bot_key would still hit Thruster's access log.
-      request.path_parameters[:bot_key].presence ||
-        request.headers["X-Campfire-Bot-Key"].presence ||
-        bearer_bot_key
+      request.path_parameters[:bot_key].presence || bearer_bot_key
     end
 
     def bearer_bot_key
-      authorization = request.authorization
-      return unless authorization
+      authenticate_with_http_token(scheme: :bearer) { |token, _options| token }
+    end
 
-      scheme, token = authorization.split(" ", 2)
-      token.presence if scheme&.casecmp("Bearer")&.zero?
+    def bot_api_request?
+      request.path_parameters[:bot_key].blank? &&
+        request.path_parameters[:controller].in?(%w[ messages/by_bots messages/boosts/by_bots ])
     end
 
     def deny_bots

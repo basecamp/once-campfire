@@ -110,10 +110,17 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_response :redirect
   end
 
-  test "create accepts the bot key as a header on a path that does not contain it" do
+  test "create accepts a Bearer token on a path that does not contain the key" do
     assert_difference -> { @message.boosts.count }, +1 do
-      post room_bot_api_message_boosts_url(@room, @message), params: +"🙌", headers: { "X-Campfire-Bot-Key" => @bot.bot_key }
+      post room_bot_api_message_boosts_url(@room, @message), params: +"🙌", headers: { "Authorization" => "Bearer #{@bot.bot_key}" }
     end
     assert_response :created
+  end
+
+  test "create rejects the legacy custom bot-key header" do
+    assert_no_difference -> { @message.boosts.count } do
+      post room_bot_api_message_boosts_url(@room, @message), params: +"🙌", headers: { "X-Campfire-Bot-Key" => @bot.bot_key }
+    end
+    assert_response :unauthorized
   end
 end
