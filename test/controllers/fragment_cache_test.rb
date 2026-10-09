@@ -213,6 +213,22 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_select "##{dom_id(message)}", text: /renamed-moon.jpg/
   end
 
+  test "an attachment on the page keeps its neighbours cached" do
+    message = @room.messages.create! creator: users(:david), attachment: fixture_file_upload("moon.jpg", "image/jpeg")
+    get room_messages_url(@room)
+    assert_response :success
+    first = response.body
+
+    hits = []
+    ActiveSupport::Notifications.subscribed(->(event) { hits.concat(event.payload[:hits]) }, "cache_read_multi.active_support") do
+      get room_messages_url(@room)
+    end
+    assert_response :success
+    assert_equal first, response.body
+    assert_equal @room.messages.count - 1, hits.size
+    assert_select "##{dom_id(message)}", text: /moon.jpg/
+  end
+
   test "renders inside primary transactions do not populate shared fragments" do
     writes = []
     ActiveRecord::Base.transaction do

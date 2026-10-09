@@ -73,16 +73,16 @@ module MessagesHelper
   end
 
   def render_messages(messages)
-    cached = false
-    if controller.perform_caching
-      messages.preload_associations(messages) if messages.respond_to?(:preload_associations)
-      # Native collection caching cannot bypass individual entries. Attachments
-      # and direct-room names have additional dependencies, so render those fresh.
-      if messages.all? { |message| !message.room.direct? && !message.attachment? && !message.body.body&.to_html.to_s.include?("<action-text-attachment") }
-        cached = ->(message) { message_fragment_cache_key(message) }
-      end
-    end
-    render partial: "messages/message", collection: messages, cached: cached
+    return render(partial: "messages/message", collection: messages) unless controller.perform_caching
+
+    messages.preload_associations(messages) if messages.respond_to?(:preload_associations)
+    # Native collection caching cannot bypass individual entries, so render
+    # consecutive runs: attachments, mentions and direct-room names have further
+    # dependencies and render fresh without costing their neighbours a cache hit.
+    cached = ->(message) { message_fragment_cache_key(message) }
+    safe_join messages.chunk_while { |a, b| message_fragment_cacheable?(a) == message_fragment_cacheable?(b) }.map { |run|
+      render partial: "messages/message", collection: run, cached: (cached if message_fragment_cacheable?(run.first))
+    }
   end
 
   def message_fragment_cache_key(message)
@@ -95,6 +95,10 @@ module MessagesHelper
   end
 
   private
+    def message_fragment_cacheable?(message)
+      !message.room.direct? && !message.attachment? && !message.body.body&.to_html.to_s.include?("<action-text-attachment")
+    end
+
     def text_message_presentation(body)
       render = -> do
         auto_link h(ContentFilters::TextMessagePresentationFilters.apply(body)),
