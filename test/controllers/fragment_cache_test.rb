@@ -9,10 +9,15 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     @previous_caching = ActionController::Base.perform_caching
     @previous_message_caching = MessagesController.perform_caching
     @class_store = ApplicationController.cache_store
+    @message_store = MessagesController.cache_store
+    @collection_store = ActionView::PartialRenderer.collection_cache
     @global_store = Rails.cache
     ActionController::Base.perform_caching = true
     MessagesController.perform_caching = true
-    FragmentCache.store.clear
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    ApplicationController.cache_store = MessagesController.cache_store = Rails.cache
+    ActionView::PartialRenderer.collection_cache = Rails.cache
+    ResponseCache.instance.stubs(:budget).returns(0)
     ResponseCache.instance.clear
     @room = rooms(:watercooler)
     @message = @room.messages.ordered.last
@@ -21,36 +26,42 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
   teardown do
     ActionController::Base.perform_caching = @previous_caching
     MessagesController.perform_caching = @previous_message_caching
-    FragmentCache.store.clear
+    Rails.cache = @global_store
+    ApplicationController.cache_store = @class_store
+    MessagesController.cache_store = @message_store
+    ActionView::PartialRenderer.collection_cache = @collection_store
     ResponseCache.instance.clear
   end
 
-  test "native collection caching uses the bounded store without replacing shared stores" do
-    assert_same FragmentCache.store, ApplicationController.new.cache_store
-    assert_same FragmentCache.store, ActionView::PartialRenderer.collection_cache
-    assert_same @class_store, ApplicationController.cache_store
-    assert_same @global_store, Rails.cache
-    ResponseCache.instance.stubs(:budget).returns(0)
+  test "native collection fragments are shared between different authenticated viewers" do
     get room_messages_url(@room)
     assert_response :success
+    first = response.body
+    sign_in :jason
     hits = []
     ActiveSupport::Notifications.subscribed(->(event) { hits.concat(event.payload[:hits]) }, "cache_read_multi.active_support") do
       get room_messages_url(@room)
     end
     assert_response :success
     assert_not_empty hits
+    assert_equal first, response.body
     token = users(:david).sessions.order(:id).last.token
     assert_not_includes hits.join, token
   end
 
-  test "disabled page caching retains fresh native fragments after foreign leaf writes" do
-    ResponseCache.instance.stubs(:budget).returns(0)
+  test "native fragments remain fresh after foreign leaf writes" do
     get room_messages_url(@room)
     assert_response :success
     foreign_write("UPDATE action_text_rich_texts SET body = ? WHERE record_type = 'Message' AND record_id = ?", "foreign disabled body", @message.id)
     get room_messages_url(@room)
     assert_response :success
     assert_includes response.body, "foreign disabled body"
+    foreign_write("UPDATE rooms SET name = ? WHERE id = ?", "Fresh room label", @room.id)
+    foreign_write("UPDATE users SET name = ? WHERE id = ?", "Fresh booster", users(:bender).id)
+    get room_messages_url(@room)
+    assert_response :success
+    assert_includes response.body, "Fresh room label"
+    assert_select "##{dom_id(boosts(:fourth_by_bender))} a[title^=?]", "Fresh booster"
   end
 
   test "conditional pagination invalidates warmed native fragments without timestamp changes" do
@@ -75,7 +86,6 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
   end
 
   test "a commit in another room retains content-validated message collection hits" do
-    ResponseCache.instance.stubs(:budget).returns(0)
     get room_messages_url(@room)
     assert_response :success
     foreign_write("UPDATE rooms SET name = ? WHERE id = ?", "Unrelated room rename", rooms(:pets).id)
@@ -89,8 +99,7 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_equal @room.messages.count, messages[:cache_hits]
   end
 
-  test "a foreign commit after capture bypasses old native fragment lookups" do
-    ResponseCache.instance.stubs(:budget).returns(0)
+  test "a foreign commit after authentication renders current fragment dependencies" do
     get room_messages_url(@room)
     assert_response :success
     MessagesController.any_instance.stubs(:set_version_headers).with do
@@ -117,18 +126,14 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Foreign refreshed boost"
   end
 
-  test "Jbuilder fragments use the bounded store and do not create HTML token state" do
+  test "bot JSON reads current leaf rows and URLs without creating HTML token state" do
     api = open_session { |session| session.host! "once.campfire.test" }
     path = room_bot_messages_path(@room, users(:bender).bot_key)
     api.get path
     assert_equal 200, api.response.status
     assert_not api.cookies["_campfire_session"]
-    hits = []
-    ActiveSupport::Notifications.subscribed(->(event) { hits << event.payload[:key] if event.payload[:hit] }, "cache_read.active_support") do
-      api.get path
-    end
+    api.get path
     assert_equal 200, api.response.status
-    assert_not_empty hits
     foreign_write("UPDATE action_text_rich_texts SET body = ? WHERE record_type = 'Message' AND record_id = ?", "foreign JSON body", @message.id)
     foreign_write("UPDATE users SET name = ? WHERE id = ?", "Foreign JSON creator", @message.creator_id)
     api.get path
@@ -139,16 +144,12 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     api.get path
     json = JSON.parse(api.response.body).find { |message| message["id"] == @message.id }
     assert_includes json["url"], "another.campfire.test:8081"
-    assert_same @global_store, Rails.cache
+    assert_not api.cookies["_campfire_session"]
   end
 
   test "detached broadcasts bypass fragments without a pre-render model snapshot" do
     get room_messages_url(@room)
     foreign_write("UPDATE action_text_rich_texts SET body = ? WHERE record_type = 'Message' AND record_id = ?", "foreign broadcast body", @message.id)
-    FragmentCache.store.expects(:read).never
-    FragmentCache.store.expects(:write).never
-    FragmentCache.store.expects(:read_multi).never
-    FragmentCache.store.expects(:write_multi).never
     @message.reload.broadcast_create
     assert_rendered_turbo_stream_broadcast @room, :messages, action: "append", target: [ @room, :messages ] do |stream|
       assert_includes stream.to_html, "foreign broadcast body"
@@ -158,6 +159,70 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     collection = ApplicationController.render(partial: "messages/message", collection: [ @message.reload ], cached: true)
     assert_includes collection, "foreign broadcast body"
     assert_not ApplicationController.new.perform_caching
+  end
+
+  test "presentation deployment changes invalidate shared fragments" do
+    get room_messages_url(@room)
+    previous_version = Rails.configuration.x.presentation_cache_version
+    Rails.configuration.x.presentation_cache_version = "new-presentation"
+    collections = []
+    ActiveSupport::Notifications.subscribed(->(event) { collections << event.payload }, "render_collection.action_view") do
+      get room_messages_url(@room)
+    end
+    assert_response :success
+    rendered = collections.find { |payload| payload[:identifier].end_with?("messages/_message.html.erb") }
+    assert_equal 0, rendered[:cache_hits]
+  ensure
+    Rails.configuration.x.presentation_cache_version = previous_version
+  end
+
+  test "shared fragments separate URL origins" do
+    get room_messages_url(@room)
+    host! "another.campfire.test:8081"
+    post session_path, params: { email_address: users(:david).email_address, password: "secret123456" }
+    assert_response :redirect
+    get room_messages_path(@room)
+    assert_response :success
+    assert_includes response.body, "http://another.campfire.test:8081/rooms/"
+    assert_not_includes response.body, "http://once.campfire.test/rooms/"
+  end
+
+  test "shared fragments separate mounted URL prefixes" do
+    get room_messages_url(@room)
+    get room_messages_path(@room), env: { "SCRIPT_NAME" => "/campfire" }
+    assert_response :success
+    assert_includes response.body, "http://once.campfire.test/campfire/rooms/"
+    assert_select "form[action=?]", "/campfire/messages/#{@message.id}/boosts"
+  end
+
+  test "direct sidebar participants stay fresh without membership timestamp changes" do
+    get user_sidebar_url(:me)
+    foreign_write("UPDATE users SET name = ? WHERE id = ?", "Renamed Jason", users(:jason).id)
+    get user_sidebar_url(:me)
+    assert_response :success
+    assert_select "##{dom_id(rooms(:david_and_jason), :list)}", text: /Renamed/
+  end
+
+  test "mixed attachment collections read current blob metadata" do
+    message = @room.messages.create! creator: users(:david), attachment: fixture_file_upload("moon.jpg", "image/jpeg")
+    get room_messages_url(@room)
+    assert_response :success
+    foreign_write("UPDATE active_storage_blobs SET filename = ? WHERE id = ?", "renamed-moon.jpg", message.attachment.blob.id)
+    get room_messages_url(@room)
+    assert_response :success
+    assert_select "##{dom_id(message)}", text: /renamed-moon.jpg/
+  end
+
+  test "renders inside primary transactions do not populate shared fragments" do
+    writes = []
+    ActiveRecord::Base.transaction do
+      ActiveSupport::Notifications.subscribed(->(event) { writes << event.payload[:key] }, /cache_write.*\.active_support/) do
+        get room_messages_url(@room)
+      end
+      assert_response :success
+      assert_empty writes
+      raise ActiveRecord::Rollback
+    end
   end
 
   private

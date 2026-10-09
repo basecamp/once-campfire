@@ -10,8 +10,7 @@ class ResponseCacheTest < ActiveSupport::TestCase
       database.execute("CREATE TABLE values_for_test (value TEXT)")
     end
     ActiveRecord::Base.stubs(:connection_db_config).returns(Struct.new(:database).new(@database))
-    @cache = ResponseCache.new
-    @cache.stubs(:budget).returns(1024)
+    @cache = ResponseCache.new(budget: 1024)
   end
 
   teardown do
@@ -31,9 +30,10 @@ class ResponseCacheTest < ActiveSupport::TestCase
     assert_equal "fresh", @cache.read("page", @cache.version)[:body]
   end
 
-  test "byte budget evicts oldest and bypasses oversized entries and keys" do
+  test "byte budget evicts entries and rejects oversized entries without flushing useful pages" do
+    @cache.clear
+    @cache = ResponseCache.new(budget: 512)
     version = @cache.version
-    @cache.stubs(:budget).returns(512)
     @cache.write("first", version, entry("a" * 100))
     @cache.write("second", version, entry("b" * 100))
     assert_nil @cache.read("first", version)
@@ -42,6 +42,7 @@ class ResponseCacheTest < ActiveSupport::TestCase
     assert_nil @cache.read("oversized", version)
     @cache.write("k" * 2049, version, entry("small"))
     assert_nil @cache.read("k" * 2049, version)
+    assert_equal "b" * 100, @cache.read("second", version)[:body]
   end
 
   test "clearing the observer gives later pages a distinct namespace" do
@@ -83,6 +84,6 @@ class ResponseCacheTest < ActiveSupport::TestCase
 
   private
     def entry(body)
-      { body: body, marker: "unexposed-marker", headers: {} }
+      { body: body.freeze, headers: {}.freeze }.freeze
     end
 end

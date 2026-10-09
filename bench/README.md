@@ -17,7 +17,8 @@ Use `--image` to override `campfire-reference:app`, and `--cpus` to override ser
 
 The rendering probe checks exact response bodies, selected headers and unread payloads,
 and records timing, queries and allocations with MemoryStore, frozen time and fixture-only
-CSRF disabling. Unread fanout excludes adapter I/O.
+CSRF disabling. Cold iterations clear all actual stores, including legacy private fragment
+stores when comparing older revisions. Unread fanout excludes adapter I/O.
 
 The HTTP driver uses production Puma/Redis with one worker and five threads. Ruby threads
 each maintain a keep-alive connection, request uncompressed responses, and consume the

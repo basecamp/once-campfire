@@ -4,7 +4,7 @@ Production `Rails.cache` moves from Redis to Solid Cache in a dedicated SQLite d
 
 ## Upgrade
 
-Deploy the release normally. Existing Redis entries are not copied, so the cache starts cold and repopulates as requests arrive. Redis remains required for Action Cable. Campfire's bounded per-worker response and fragment caches are separate in-memory stores and are unchanged.
+Deploy the release normally. Existing Redis entries are not copied, so the cache starts cold and repopulates as requests arrive. Redis remains required for Action Cable. Native presentation fragments and rate limits use Solid Cache. Complete responses and authorization snapshots remain local, sharing one approximately 64 MiB Rails MemoryStore budget per worker. SQLite commits invalidate this local cache; native message fragments use content-derived keys rather than process-local generations. No application-data migration is needed for these cache changes.
 
 ## Backups and restores
 

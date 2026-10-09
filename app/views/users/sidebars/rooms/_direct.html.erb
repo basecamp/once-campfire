@@ -1,5 +1,4 @@
-<% cache membership do %>
-  <% members = membership.room.users.without(membership.user).presence || [ membership.user ] %>
+  <% members = membership.room.users.reject { |user| user.id == membership.user_id }.presence || [ Current.user ] %>
 
   <%= link_to_room membership.room, class: [ "direct", "unread": membership.unread? ], id: dom_id(membership.room, :list),
         data: { sorted_list_number: membership.room.updated_at.to_fs(:epoch) } do %>
@@ -28,4 +27,3 @@
       </span>
     </span>
   <% end %>
-<% end %>
