@@ -1,7 +1,7 @@
 require "test_helper"
 
 class MessagesHelperTest < ActionView::TestCase
-  test "plain text presentation in direct rooms is reused by content rather than database epoch" do
+  test "plain text presentation rendered outside a cached fragment is reused by content rather than database epoch" do
     view.controller.stubs(:perform_caching).returns(true)
     previous_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -20,7 +20,7 @@ class MessagesHelperTest < ActionView::TestCase
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
     message = Message.create! room: rooms(:pets), body: "Cached with the whole message", creator: users(:jason)
     Rails.cache.expects(:fetch).never
-    assert_includes view.message_presentation(message), "Cached with the whole message"
+    assert_includes view.message_presentation(message, fragment_cached: true), "Cached with the whole message"
   ensure
     Rails.cache = previous_cache
   end

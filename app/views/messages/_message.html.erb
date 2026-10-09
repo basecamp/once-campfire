@@ -22,9 +22,9 @@
                 <%= link_to room_display_name(message.room, for_user: nil), room_at_message_path(message.room, message), target: "_top", data: { reply_target: "link" } %>
               </span>
             </h3>
-            <%= render "messages/actions", message: message, url: room_at_message_url(message.room, message) %>
+            <%= render "messages/actions", message: message, url: room_at_message_url(message.room, message), fragment_cached: local_assigns[:fragment_cached] %>
           </div>
-          <%= render "messages/presentation", message: message %>
+          <%= render "messages/presentation", message: message, fragment_cached: local_assigns[:fragment_cached] %>
           <%= render "messages/boosts/boosts", message: message %>
         </div>
       </div>
