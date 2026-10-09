@@ -97,14 +97,15 @@ class WebPush::ConnectionsTest < ActiveSupport::TestCase
     end
   end
 
-  test "only new, direct TLS connections pinned to an address are pooled" do
+  test "only new, direct TLS connections pinned to an address and opened as WebPush::Connections::HTTP are pooled" do
     with_push_service do |server|
-      unpinned = Net::HTTP.new(HOST, server.port, nil).tap { it.use_ssl = true }
-      proxied = Net::HTTP.new(HOST, server.port, "127.0.0.1", 3128).tap { it.ipaddr = IP; it.use_ssl = true }
+      unpinned = WebPush::Connections::HTTP.new(HOST, server.port, nil).tap { it.use_ssl = true }
+      proxied = WebPush::Connections::HTTP.new(HOST, server.port, "127.0.0.1", 3128).tap { it.ipaddr = IP; it.use_ssl = true }
       plain = pinned_connection(server).tap { it.use_ssl = false }
       started = pinned_connection(server).tap(&:start)
+      untracked = Net::HTTP.new(HOST, server.port, nil).tap { it.ipaddr = IP; it.use_ssl = true }
 
-      [ unpinned, proxied, plain, started ].each do |http|
+      [ unpinned, proxied, plain, started, untracked ].each do |http|
         assert_raises(ArgumentError) { @connections.request(http, push_request) }
       end
       assert_empty server.requests
