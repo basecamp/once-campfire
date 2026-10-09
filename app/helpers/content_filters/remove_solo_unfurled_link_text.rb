@@ -3,7 +3,9 @@ class ContentFilters::RemoveSoloUnfurledLinkText < ActionText::Content::Filter
   TWITTER_DOMAIN_MAPPING = { "x.com" => "twitter.com" }
 
   def applicable?
-    normalize_tweet_url(solo_unfurled_url) == normalize_tweet_url(content.to_plain_text)
+    if url = solo_unfurled_url
+      normalize_tweet_url(url) == normalize_tweet_url(content.to_plain_text)
+    end
   end
 
   def apply
