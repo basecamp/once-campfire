@@ -163,11 +163,18 @@ To support entirely distinct groups of customers, you would deploy multiple inst
 
 All of Campfire's state lives in the mounted volume, so upgrading is a matter of pulling a newer image and recreating the container:
 
+> [!IMPORTANT]
+> Before upgrading from Resque to Solid Queue, follow the [queue migration notes](upgrades/solid-queue.md). The old queue must be drained while the old container is still running.
+
 ```sh
 docker pull ghcr.io/basecamp/once-campfire:latest
 ```
 
 Any pending database migrations run automatically when the container boots.
+
+Production Rails cache, background jobs, and Action Cable each use a separate SQLite database: `production_cache.sqlite3`, `production_queue.sqlite3`, and `production_cable.sqlite3`. Startup's normal `db:prepare` creates them from the checked-in schemas. Solid Cache's 256 MiB `max_size` is an estimated eviction target, not a cap on SQLite/WAL disk usage. Cache entries and Action Cable broadcasts are disposable and are not migrated; Solid Cable delivers broadcasts through database polling, so allow for its configured polling interval (100 ms by default). The bounded per-worker response and fragment caches remain in memory and are separate from `Rails.cache`. Redis is no longer required.
+
+See the [Solid Cache](upgrades/solid-cache.md), [Solid Queue](upgrades/solid-queue.md), and [Solid Cable](upgrades/solid-cable.md) upgrade notes for migration and backup/restore behavior.
 
 ### Backups
 
@@ -182,7 +189,7 @@ docker exec campfire script/admin/prepare-backup
 
 (If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
 
-Then archive the whole storage volume to a file on the host:
+Then archive the storage volume to a file on the host, excluding the disposable queue, cache and Action Cable databases:
 
 ```sh
 docker run --rm \
@@ -190,13 +197,13 @@ docker run --rm \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
-  tar czf "/backup/campfire-backup.tar.gz" -C /rails storage
+  tar czf "/backup/campfire-backup.tar.gz" --exclude='storage/db/production_queue.sqlite3*' --exclude='storage/db/production_cache.sqlite3*' --exclude='storage/db/production_cable.sqlite3*' -C /rails storage
 ```
 
 This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files.
-Copy it somewhere safe, ideally off the machine.
+Copy it somewhere safe, ideally off the machine. Queued jobs, cache entries and Action Cable broadcasts are not part of the backup.
 
-To restore, extract the archive back into a (stopped) instance's volume, and replace the live database with the snapshot:
+To restore, extract the archive back into a (stopped) instance's volume and run the restore hook, which replaces the live database with the snapshot and clears the disposable databases:
 
 ```sh
 docker run --rm \
@@ -205,8 +212,7 @@ docker run --rm \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
   bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
-           cp /rails/storage/backups/production.sqlite3 /rails/storage/db/production.sqlite3 &&
-           rm -f /rails/storage/db/production.sqlite3-wal /rails/storage/db/production.sqlite3-shm &&
+           /hooks/post-restore &&
            chown -R rails:rails /rails/storage"
 ```
 

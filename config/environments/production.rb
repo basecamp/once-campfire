@@ -68,8 +68,8 @@ Rails.application.configure do
   # Don't log any deprecations.
   config.active_support.report_deprecations = false
 
-  # Cache in memory for now
-  config.cache_store = :redis_cache_store
+  # Persist the Rails cache in its own SQLite database.
+  config.cache_store = :solid_cache_store
 
   # Assets are cacheable
   config.public_file_server.headers = {
@@ -93,5 +93,6 @@ Rails.application.configure do
   # Only use :id for inspections in production.
   config.active_record.attributes_for_inspect = [ :id ]
 
-  config.active_job.queue_adapter = :resque
+  config.active_job.queue_adapter = :solid_queue
+  config.solid_queue.connects_to = { database: { writing: :queue } }
 end

@@ -19,8 +19,10 @@ The rendering probe checks exact response bodies, selected headers and unread pa
 and records timing, queries and allocations with MemoryStore, frozen time and fixture-only
 CSRF disabling. Unread fanout excludes adapter I/O.
 
-The HTTP driver uses production Puma/Redis with one worker and five threads. Ruby threads
-each maintain a keep-alive connection, request uncompressed responses, and consume the
+The HTTP driver uses production Puma with one worker and five threads. Its Redis container
+is for the frozen Redis-backed baseline only; the current app prepares its configured
+Solid databases before starting. Pass `--baseline-image` when the baseline needs a different
+gem bundle (for example, Redis/Resque) than `--image`. Ruby threads each maintain a keep-alive connection, request uncompressed responses, and consume the
 whole body. Login uses normal CSRF protection; all warmup and measured responses must be
 HTTP 200 without transport errors, complete HTML, exact independently seeded message windows
 and the visible sidebar rooms; this applies to every warmup and measured response. Measurements exclude Thruster, TLS and gzip. Client

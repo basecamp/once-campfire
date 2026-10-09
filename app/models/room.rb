@@ -61,7 +61,7 @@ class Room < ApplicationRecord
 
   # Deleting the memberships skips the reset that revoking one does, so the former members get it here, all at once,
   # before the messages go: their connections stop receiving the room's streams. It's done in the job, not the
-  # request, because it costs a Redis round trip per member.
+  # request, because it costs a broadcast through the Action Cable adapter per member.
   def reset_remote_connections_of(user_ids)
     User.where(id: user_ids).find_each(&:reset_remote_connections)
   end

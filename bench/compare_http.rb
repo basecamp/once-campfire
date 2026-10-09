@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Compare warm production Puma/Redis requests using isolated seeded containers.
+# Compare warm production HTTP requests against the frozen Redis-backed baseline.
 require "socket"
 require_relative "support"
 require_relative "http_client"
@@ -8,7 +8,7 @@ require_relative "response_contract"
 include BenchmarkSupport
 options = parse_options("Compare HTTP throughput with Ruby keep-alive clients; every response must be HTTP 200.",
   duration: 3.0, paths: "room,messages,sidebar,search", concurrencies: "1,16", client_cpus: "12-15",
-  output: File.join(WORK, "results/http"))
+  baseline_image: nil, output: File.join(WORK, "results/http"))
 labels = JSON.parse(File.read(File.join(options[:seed], "labels.json")))
 paths = {
   "room" => "/rooms/#{labels.fetch('rooms.watercooler')}",
@@ -43,10 +43,18 @@ begin
         "--cpuset-cpus", options[:cpus], "-p", "127.0.0.1:#{port}:3000" ]
       command.concat mounts(source => "/rails", File.join(data, "storage") => "/rails/storage",
         File.join(data, "tmp") => "/rails/tmp", File.join(data, "log") => "/rails/log", assets => "/rails/public/assets")
-      command.concat environment(RAILS_ENV: "production", SECRET_KEY_BASE: "isolated-benchmark-fixture-key", DISABLE_SSL: true,
-        SKIP_TELEMETRY: true, RAILS_LOG_LEVEL: "fatal", WEB_CONCURRENCY: 1, JOB_CONCURRENCY: 1, RAILS_MAX_THREADS: 5,
-        REDIS_URL: "redis://#{redis}:6379/0")
-      command.concat [ options[:image], "bundle", "exec", "puma", "-C", "config/puma.rb" ]
+      environment_variables = { RAILS_ENV: "production", SECRET_KEY_BASE: "isolated-benchmark-fixture-key", DISABLE_SSL: true,
+        SKIP_TELEMETRY: true, RAILS_LOG_LEVEL: "fatal", WEB_CONCURRENCY: 1, JOB_CONCURRENCY: 1, RAILS_MAX_THREADS: 5
+      }
+      environment_variables[:REDIS_URL] = "redis://#{redis}:6379/0" if side == "before"
+      command.concat environment(environment_variables)
+      # The Redis-backed baseline and the current Solid stack need different gem
+      # bundles, and frozen seeds lack the current cache/cable/queue databases.
+      if side == "before"
+        command.concat [ options[:baseline_image] || options[:image], "bundle", "exec", "puma", "-C", "config/puma.rb" ]
+      else
+        command.concat [ options[:image], "sh", "-c", "bin/rails db:prepare && exec bundle exec puma -C config/puma.rb" ]
+      end
       run(*command)
       deadline = clock + 45
       until client.ready?

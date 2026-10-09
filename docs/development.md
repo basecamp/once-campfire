@@ -8,7 +8,7 @@ First, get everything installed and configured with:
 bin/setup
 ```
 
-This installs the system packages Campfire needs (SQLite, ffmpeg), the right Ruby version (via [mise](https://mise.jdx.dev)), and the app's gems; prepares the database; and starts Redis (in a Docker container called `campfire-redis`, if it isn't already running locally).
+This installs the system packages Campfire needs (SQLite, ffmpeg), the right Ruby version (via [mise](https://mise.jdx.dev)), and the app's gems, then prepares the databases.
 
 If you want to start over at any point, run:
 
@@ -28,7 +28,7 @@ You'll be able to access the app at http://localhost:3000.
 
 On first run you'll be guided through creating your admin account, and you can sign in with that account from then on.
 
-Note that Campfire needs Redis (for Action Cable, caching, and background jobs), so if you've restarted your machine or stopped the container, `docker start campfire-redis` will bring it back.
+Campfire does not require a Redis service. In development, Action Cable uses the in-process async adapter and background jobs run in the server process; enabling development caching uses an in-memory store.
 
 ### Web Push notifications
 
