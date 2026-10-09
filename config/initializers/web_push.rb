@@ -29,7 +29,7 @@ module WebPush::PersistentRequest
     # itself and re-resolve the endpoint host, so http.ipaddr would no longer
     # pin the destination and the DNS-rebinding guarantee would be lost.
     # Push delivery to public vendor endpoints goes direct.
-    http = Net::HTTP.new(uri.host, uri.port, nil)
+    http = (@options[:connection] ? WebPush::Connections::HTTP : Net::HTTP).new(uri.host, uri.port, nil)
     http.ipaddr = endpoint_ip
     http.use_ssl = true
     http.ssl_timeout = @options[:ssl_timeout] unless @options[:ssl_timeout].nil?
