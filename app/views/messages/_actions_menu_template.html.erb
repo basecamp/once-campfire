@@ -1,0 +1,4 @@
+<%# The one menu the room's messages share. The messages controller copies it into a message, with the message's id for $messageId$, when the message's menu is first opened. %>
+<script type="text/template" data-messages-target="actionsMenuTemplate">
+  <%= render "messages/actions_menu", message_id: "$messageId$", room: room, attachment: nil %>
+</script>

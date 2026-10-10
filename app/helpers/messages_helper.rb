@@ -72,17 +72,6 @@ module MessagesHelper
     ""
   end
 
-  # These controls contain URLs and static markup, but no viewer or token state.
-  # Keep them across database commits; attachment controls still render afresh.
-  def cache_message_actions(message, &block)
-    return capture(&block) unless controller.perform_caching && !message.attachment?
-
-    key = fragment_name_with_digest([
-      "message-actions-v1", request.base_url, request.script_name, I18n.locale, message.id, message.room_id
-    ], nil)
-    FragmentCache.store.fetch(key) { capture(&block) }
-  end
-
   def message_fragment_cache_key(message)
     return message unless controller.perform_caching &&
       %i[room creator rich_text_body boosts attachment_attachment].all? { |name| message.association(name).loaded? }
