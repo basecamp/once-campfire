@@ -33,7 +33,8 @@ class Messages::BoostsControllerTest < ActionDispatch::IntegrationTest
 
   test "quick boost controls submit their displayed reaction to the message" do
     get room_url(@message.room)
-    forms = css_select("##{dom_id(@message)} .quick-boosts form")
+    assert_select "##{dom_id(@message)} .quick-boosts", count: 0
+    forms = message_menu_for(@message).css(".quick-boosts form")
     assert_equal EmojiHelper::REACTIONS.size, forms.size
     forms.each do |form|
       assert_equal "post", form["method"]
