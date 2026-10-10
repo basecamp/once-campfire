@@ -35,6 +35,19 @@ class MessageMenuTest < ApplicationSystemTestCase
     end
   end
 
+  # Only the room page carries the menu the messages copy. Search results hide a message's actions, and a
+  # message opened on its own is the source of its edit frame, never formatted into view.
+  test "a message's menu is out of reach on the pages that don't carry the room's" do
+    message = rooms(:designers).messages.create! body: "A needle in the haystack", client_message_id: "needle", creator: users(:jz)
+
+    visit searches_url(q: "needle")
+    assert_selector "#search-results .message", text: "A needle in the haystack"
+    assert_selector "#search-results .message__actions", visible: :hidden
+
+    visit room_message_url(message.room, message)
+    assert_selector "##{dom_id(message)} .message__actions", visible: :hidden
+  end
+
   test "a message with a file opens the menu it came with" do
     message = rooms(:designers).messages.create_with_attachment! creator: users(:jz), client_message_id: "moon",
       attachment: { io: file_fixture("moon.jpg").open, filename: "moon.jpg", content_type: "image/jpeg" }
