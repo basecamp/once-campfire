@@ -33,7 +33,28 @@ performance:
     <<: *default
     database: storage/db/performance.sqlite3
 
+  queue:
+    <<: *default
+    database: storage/db/performance_queue.sqlite3
+    pool: 5
+    migrations_paths: db/queue_migrate
+    schema_dump: queue_schema.rb
+    pragmas:
+      wal_autocheckpoint: 1000
+
 production:
   primary:
     <<: *default
     database: storage/db/production.sqlite3
+
+  queue:
+    <<: *default
+    database: storage/db/production_queue.sqlite3
+    # Three worker execution threads plus the polling and heartbeat threads.
+    pool: 5
+    migrations_paths: db/queue_migrate
+    schema_dump: queue_schema.rb
+    # The background checkpoint contender tracks the primary database; keep
+    # SQLite's normal checkpointing for queue writes.
+    pragmas:
+      wal_autocheckpoint: 1000
