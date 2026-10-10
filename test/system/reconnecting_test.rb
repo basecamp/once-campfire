@@ -22,6 +22,20 @@ class ReconnectingTest < ApplicationSystemTestCase
     assert_cable_disconnected
   end
 
+  test "a room that loses its connection twice before getting it back isn't left offline" do
+    page.execute_script(<<~JS)
+      const element = document.querySelector("[data-controller~='refresh-room']")
+      const { channel } = Stimulus.getControllerForElementAndIdentifier(element, "refresh-room")
+
+      channel.disconnected({ willAttemptReconnect: false })
+      channel.disconnected({ willAttemptReconnect: false })
+      channel.connected()
+    JS
+
+    sleep 5.5 # Past the moment a lost connection takes the room offline.
+    assert_no_selector "fieldset[data-composer-target='fields'][disabled]"
+  end
+
   private
     def assert_cable_disconnected
       assert_no_selector "turbo-cable-stream-source[connected]", visible: false

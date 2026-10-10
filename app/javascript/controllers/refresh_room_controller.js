@@ -65,6 +65,7 @@ export default class extends Controller {
   }
 
   #channelDisconnected() {
+    clearTimeout(this.#offlineTimer)
     this.#offlineTimer = setTimeout(() => {
       this.dispatch("offline", { target: window })
     }, OFFLINE_AFTER_DISCONNECTED_TIMEOUT)
