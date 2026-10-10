@@ -49,11 +49,13 @@ If you'd rather run the Docker image yourself, you can read more about that in t
 > that people have someone to contact if they need help with their account. If that bothers you, put in any
 > email address you want and create yourself a new admin account.
 
-Authenticated room, message, sidebar and search pages use a bounded 64 MiB cache per worker.
-Set `CAMPFIRE_RESPONSE_CACHE_MB=0` to disable it. Every request still checks authentication
-and room access; commits from any SQLite writer invalidate complete cached HTML and gzip bodies.
-Native HTML, JSON and stream fragments have a separate 64 MiB memory limit per worker;
-shared rate limits retain their existing store.
+Authenticated room, message, sidebar and search pages and authorization snapshots share
+one approximately 64 MiB Rails MemoryStore budget per worker. Set `CAMPFIRE_RESPONSE_CACHE_MB=0`
+to disable this local cache. Every request checks authentication and room access against the
+captured SQLite generation; commits from any writer invalidate local snapshots and complete HTML/gzip responses.
+Native HTML/stream fragments and shared rate limits use `Rails.cache` (Solid Cache in production).
+Message fragments fingerprint their rendered inputs, so unrelated commits retain reuse and SQL edits
+without timestamp changes remain visible. Attachment/direct-room fragments and JSON render fresh.
 
 ## Other implementations
 

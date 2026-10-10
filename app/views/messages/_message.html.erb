@@ -1,7 +1,6 @@
 <%# Be sure to check/update messages/_template.html.erb when changing this file %>
 
-<%# Bump this version when the message presentation filters change what they emit. Editing this line changes the template digest, which busts BOTH this fragment cache and the collection cache that keys on this partial's digest (helper Ruby changes alone don't). %>
-<% cache [ message_fragment_cache_key(message), "presentation-v7" ] do %>
+<%# Full-message HTML is cached once, by the collection renderer. Bump message_fragment_cache_key when presentation helpers change. %>
   <%= message_tag message do %>
     <h2 class="message__day-separator"><%= local_datetime_tag message.created_at, style: :date %></h2>
 
@@ -23,12 +22,11 @@
                 <%= link_to room_display_name(message.room, for_user: nil), room_at_message_path(message.room, message), target: "_top", data: { reply_target: "link" } %>
               </span>
             </h3>
-            <%= render "messages/actions", message: message, url: room_at_message_url(message.room, message) %>
+            <%= render "messages/actions", message: message, url: room_at_message_url(message.room, message), fragment_cached: local_assigns[:fragment_cached] %>
           </div>
-          <%= render "messages/presentation", message: message %>
+          <%= render "messages/presentation", message: message, fragment_cached: local_assigns[:fragment_cached] %>
           <%= render "messages/boosts/boosts", message: message %>
         </div>
       </div>
     </turbo-frame>
   <% end %>
-<% end %>

@@ -54,7 +54,10 @@
   </div>
 
   <%= search_results_tag do %>
-    <%= render partial: "messages/message", collection: @messages, cached: ->(message) { message_fragment_cache_key(message) } %>
+    <% message_runs(@messages).each do |run| %>
+      <% fragment_cached = message_run_fragment_cached?(run) %>
+      <%= render partial: "messages/message", collection: run, cached: (->(message) { message_fragment_cache_key(message) } if fragment_cached), locals: { fragment_cached: fragment_cached } %>
+    <% end %>
   <% end %>
 </div>
 

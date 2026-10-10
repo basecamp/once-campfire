@@ -1,9 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-db_name="${RAILS_ENV:-production}.sqlite3"
-snapshot="/rails/storage/backups/$db_name"
-db="/rails/storage/db/$db_name"
+env="${RAILS_ENV:-production}"
+app_root="${APP_ROOT:-/rails}"
+db_name="$env.sqlite3"
+snapshot="$app_root/storage/backups/$db_name"
+db="$app_root/storage/db/$db_name"
+cache_db="$app_root/storage/db/${env}_cache.sqlite3"
+
+# Cache entries are disposable and may belong to a different point in time than the restored app DB.
+rm -f "$cache_db" "$cache_db-wal" "$cache_db-shm" "$cache_db-journal"
 
 if [ -f "$snapshot" ]; then
   mkdir -p "$(dirname "$db")"

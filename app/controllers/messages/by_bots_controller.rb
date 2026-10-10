@@ -10,6 +10,7 @@ class Messages::ByBotsController < MessagesController
 
   def index
     @messages = find_paged_messages
+    @messages.preload_associations(@messages)
     set_pagination_headers
   end
 
