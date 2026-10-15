@@ -5,7 +5,7 @@ module ContentFilters
   #
   #   * SanitizeTags strips disallowed markup from the message body
   #   * Action Text sanitizes the rendered content (lib/rails_ext/action_text_allowed_tags.rb)
-  #   * auto_link re-sanitizes the final html (MessagesHelper#message_presentation)
+  #   * the final html is re-sanitized before its text is linked (MessagesHelper#auto_link_text)
   EDITOR_FORMATTING_TAGS = %w[ s u mark table thead tbody tfoot tr th td ]
   EDITOR_FORMATTING_ATTRIBUTES = %w[ data-language ]
 
