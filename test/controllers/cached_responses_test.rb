@@ -26,6 +26,18 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     ActionController::Base.perform_caching = @previous_caching
   end
 
+  test "a reused page carries the same enforcing policy, with no nonce" do
+    get room_messages_url(@room)
+    first = response.headers["Content-Security-Policy"]
+    assert_match "script-src 'self' 'sha256-", first
+    assert_no_match "nonce-", first
+
+    MessagesController.any_instance.expects(:find_paged_messages).never
+    get room_messages_url(@room)
+    assert_response :success
+    assert_equal first, response.headers["Content-Security-Policy"]
+  end
+
   test "all four read actions reuse completed pages" do
     urls = [ room_url(@room), room_messages_url(@room), user_sidebar_url(:me), searches_url(q: "hello") ]
     urls.each do |url|
