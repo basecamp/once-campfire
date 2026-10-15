@@ -58,6 +58,12 @@ class MessagesHelperTest < ActionView::TestCase
     end
   end
 
+  test "linking text doesn't eat a code block's leading blank line" do
+    linked = view.send(:auto_link_text, "<pre>\n\n\nfirst https://example.com</pre>".html_safe)
+
+    assert_equal "\nfirst https://example.com", Nokogiri::HTML5.fragment(linked).at_css("pre").text
+  end
+
   test "message_presentation leaves an existing link's text alone" do
     message = Message.create! room: rooms(:pets), body: '<div><a href="https://example.com/">https://example.org/</a></div>', client_message_id: "0015", creator: users(:jason)
 

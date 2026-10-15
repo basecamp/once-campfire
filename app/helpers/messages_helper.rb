@@ -130,7 +130,8 @@ module MessagesHelper
         end
       end
 
-      fragment.to_html.html_safe
+      # A <pre> starting with a newline needs an extra one written out to survive the next parse
+      fragment.to_html(preserve_newline: true).html_safe
     end
 
     def messages_actions
