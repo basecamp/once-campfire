@@ -16,11 +16,11 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
     assert_match "base-uri 'self'", policy
     assert_no_match "unsafe-inline", policy
     assert_no_match "nonce-", policy
-    assert_equal "http://www.example.com/service-worker.js", policy[/worker-src ([^;]+)/, 1]
+    assert_equal "www.example.com/service-worker.js", policy[/worker-src ([^;]+)/, 1]
 
     script_src = policy[/script-src ([^;]+)/, 1].split
     assert_not_includes script_src, "'self'"
-    assert_includes script_src, "http://www.example.com/assets/"
+    assert_includes script_src, "www.example.com/assets/"
     inline = Nokogiri::HTML5(response.body).css("script").reject { |s| s["src"] || s["type"] == "text/template" }
     assert_operator inline.size, :>=, 2
     inline.each do |script|
@@ -67,9 +67,19 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
       urls = JSON.parse(page.at_css("script[type=importmap]").text)["imports"].values + page.css("link[rel=modulepreload]").map { it["href"] }
 
       assert urls.all? { it.start_with?("/chat/assets/") }, urls.inspect
-      assert_includes script_src, "http://www.example.com/chat/assets/"
+      assert_includes script_src, "www.example.com/chat/assets/"
       assert_scripts_allowed_by_path script_src, urls.map { URI.join(request.base_url, it).to_s }
     end
+  end
+
+  test "this origin's sources keep a non-default port and take the page's scheme" do
+    host! "www.example.com:8443"
+    get PAGE_PATH
+    follow_redirect! while response.redirect?
+
+    policy = response.headers["Content-Security-Policy"]
+    assert_includes policy[/script-src ([^;]+)/, 1].split, "www.example.com:8443/assets/"
+    assert_equal "www.example.com:8443/service-worker.js", policy[/worker-src ([^;]+)/, 1]
   end
 
   test "uploads can't load as scripts" do
@@ -118,16 +128,19 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
 
     # Every page script is allowed by a source with a path, never by a bare origin
     def assert_scripts_allowed_by_path(script_src, urls, message = nil)
-      assert_empty script_src.grep(%r{\A[a-z]+://[^/]+/?\z}), message
+      assert_empty script_src.grep(%r{\A([a-z]+://)?[^/']+/?\z}), message
       urls.each { assert allowed_by_path?(script_src, it), "#{it} not allowed by #{script_src.inspect} #{message}" }
     end
 
     # CSP source matching on a first request: 'self' and a bare origin match any
-    # path, a path ending in / matches as a prefix, any other path exactly
+    # path, a path ending in / matches as a prefix, any other path exactly. A
+    # source without a scheme takes the page's.
     def allowed_by_path?(script_src, url)
       url = URI(url)
       script_src.any? do |source|
-        source = URI(source == "'self'" ? request.base_url : source) if source == "'self'" || source.match?(%r{\A[a-z]+://})
+        unless source.start_with?("'") && source != "'self'"
+          source = URI(source == "'self'" ? request.base_url : (source.include?("://") ? source : "#{request.scheme}://#{source}"))
+        end
         source.is_a?(URI) && source.origin == url.origin &&
           (source.path.empty? || (source.path.end_with?("/") ? url.path.start_with?(source.path) : url.path == source.path))
       end

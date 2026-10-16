@@ -15,7 +15,7 @@ module InlineScriptHashes
       if sources = policy.directives["script-src"]
         importmap = Rails.application.importmap.to_json(resolver: helpers)
         policy.directives["script-src"] = (sources - [ "'self'" ]) | script_locations(importmap) | script_hashes(importmap, ENTRY_POINT_SCRIPT)
-        policy.worker_src service_worker_url(format: :js)
+        policy.worker_src "#{request.host_with_port}#{service_worker_path(format: :js)}"
       end
     end
   end
@@ -26,6 +26,9 @@ module InlineScriptHashes
     # with or without a scheme, protocol-relative, a %d set, or a proc. Each
     # is allowed up to its asset directory; one outside it is allowed exactly.
     #
+    # This origin's own sources leave out the scheme, so they match the page's
+    # scheme even behind a proxy that terminates TLS without saying so.
+    #
     # A path only limits the first request: browsers check just the origin
     # after a redirect. Nothing under the asset directory redirects.
     def script_locations(importmap)
@@ -33,8 +36,9 @@ module InlineScriptHashes
 
       JSON.parse(importmap)["imports"].values.map do |url|
         url = URI.join(request.base_url, url)
+        origin = url.origin == request.base_url ? request.host_with_port : url.origin
         directory = url.path[0, url.path.index(assets) + assets.length] if url.path.include?(assets)
-        "#{url.origin}#{directory || url.path}"
+        "#{origin}#{directory || url.path}"
       end.uniq
     end
 
