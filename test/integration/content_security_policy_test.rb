@@ -56,6 +56,27 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "an asset host whose path contains the asset directory is limited to the directory it serves" do
+    with_asset_host("https://cdn.example.test/assets") do
+      get PAGE_PATH
+      follow_redirect! while response.redirect?
+
+      script_src = response.headers["Content-Security-Policy"][/script-src ([^;]+)/, 1].split
+      assert_includes script_src, "https://cdn.example.test/assets/assets/"
+      assert_not allowed_by_path?(script_src, "https://cdn.example.test/assets/rails/active_storage/blobs/proxy/x/upload.js")
+    end
+  end
+
+  test "the sign-in page is limited to the asset directory too" do
+    cookies.delete(:session_token)
+    get new_session_url
+    assert_response :success
+
+    script_src = response.headers["Content-Security-Policy"][/script-src ([^;]+)/, 1].split
+    assert_not_includes script_src, "'self'"
+    assert_includes script_src, "www.example.com/assets/"
+  end
+
   test "scripts are limited to the asset directory under a relative root" do
     with_relative_url_root("/chat") do
       get PAGE_PATH
