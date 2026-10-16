@@ -1,20 +1,18 @@
-# Uploaded files are served from this origin, so under script-src 'self' an
-# upload served with any JavaScript MIME type would run as one of our scripts.
-# Browsers accept sixteen spellings of that type, and Disk URLs sign the type
-# they were minted with, so a list of types to refuse can't cover old links.
-# Instead, anything Active Storage serves that isn't plainly media goes out as
-# a download, whatever its URL says. A multi-range response keeps its
+# Uploaded files are served from this origin. Application pages only allow
+# scripts from the asset directory (InlineScriptHashes), so an upload can't
+# load as a script whatever type it's served with. This guard is the second
+# layer: browsers accept sixteen spellings of a JavaScript type, and Disk URLs
+# sign the type they were minted with, so instead of refusing a list of types,
+# anything Active Storage serves that isn't plainly media goes out as a
+# download, whatever its URL says. A multi-range response keeps its
 # multipart/byteranges type and boundary, which no browser runs as a script.
-# Only reads are touched: uploading
-# (direct upload JSON, Disk PUT) answers in its own types.
+# Only reads are touched: uploading (direct upload JSON, Disk PUT) answers in
+# its own types.
 #
-# Accepted on upgrade: a cache that stored an upload under a script type
-# before this guard shipped can still serve it as one until the entry expires.
-# For Disk URLs that's up to an hour (config/initializers/active_storage.rb).
-# Blob proxy URLs are cached publicly and as immutable for a hundred years
-# (Rails' http_cache_forever), so a copy a browser or a shared cache took that
-# way doesn't expire. Revalidation doesn't help, since a 304 carries no
-# content type.
+# A cache that stored an upload under a script type before this shipped can
+# still serve it that way until the entry expires (an hour for Disk URLs, and
+# never for blob proxy URLs, which Rails caches as immutable). The policy's
+# path restriction is what keeps such a copy from running.
 class UploadedScriptGuard
   SERVABLE = %r{\A(image|video|audio)/|\A(application/pdf|application/octet-stream|text/plain|multipart/byteranges)\z}
 

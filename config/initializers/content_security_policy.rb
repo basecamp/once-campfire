@@ -1,6 +1,9 @@
-# Enforcing baseline policy. Scripts run only from this origin; the two inline
-# scripts the importmap helper emits are allowed by hash (InlineScriptHashes),
-# so there is no per-request nonce and rendered HTML stays cacheable.
+# Enforcing baseline policy. Application pages narrow script-src from this
+# origin to its asset directory, since uploads are served from this origin
+# too, and allow the two inline scripts the importmap helper emits by hash
+# (InlineScriptHashes). There is no per-request nonce, so rendered HTML stays
+# cacheable. 'self' remains for responses outside ApplicationController, none
+# of which render user content.
 #
 # Nothing else is restricted: images, media, fonts, styles (including an
 # account's custom styles) and connections behave as before.
