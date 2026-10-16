@@ -21,6 +21,11 @@ class UploadedScriptGuardTest < ActiveSupport::TestCase
     end
   end
 
+  test "multi-range responses keep their boundary" do
+    type = "multipart/byteranges; boundary=AaB03x"
+    assert_equal type, served_type(type, "#{ActiveStorage.routes_prefix}/blobs/proxy/key/movie.mp4")
+  end
+
   test "direct upload responses keep their JSON type" do
     assert_equal "application/json", served_type("application/json", "#{ActiveStorage.routes_prefix}/direct_uploads", method: "POST")
   end
