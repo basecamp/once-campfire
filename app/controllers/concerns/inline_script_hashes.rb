@@ -1,7 +1,8 @@
-# Allows the scripts the importmap helper emits: the inline importmap and its
-# entry-point module by content hash, and the origins its URLs point to. The
-# hashes change only when the importmap does (a deploy), so cached HTML stays
-# valid, unlike a per-request nonce.
+# Allows the scripts the importmap helper emits and nothing else: the inline
+# importmap and its entry-point module by content hash, and the asset
+# directory its URLs point into. Not the whole origin, because uploads are
+# served from this origin too. The hashes change only when the importmap does
+# (a deploy), so cached HTML stays valid, unlike a per-request nonce.
 module InlineScriptHashes
   extend ActiveSupport::Concern
 
@@ -13,19 +14,27 @@ module InlineScriptHashes
     content_security_policy if: -> { request.content_security_policy } do |policy|
       if sources = policy.directives["script-src"]
         importmap = Rails.application.importmap.to_json(resolver: helpers)
-        policy.directives["script-src"] = sources | script_origins(importmap) | script_hashes(importmap, ENTRY_POINT_SCRIPT)
+        policy.directives["script-src"] = (sources - [ "'self'" ]) | script_locations(importmap) | script_hashes(importmap, ENTRY_POINT_SCRIPT)
+        policy.worker_src service_worker_url(format: :js)
       end
     end
   end
 
   private
     # The importmap is resolved by Rails' asset helpers, so its URLs already
-    # carry any configured asset host, however it's written: with or without a
-    # scheme, protocol-relative, a %d set, or a proc.
-    def script_origins(importmap)
-      JSON.parse(importmap)["imports"].values.filter_map do |url|
-        origin = URI.join(request.base_url, url).origin
-        origin unless origin == request.base_url
+    # carry any relative root and asset host, however the host is written:
+    # with or without a scheme, protocol-relative, a %d set, or a proc. Each
+    # is allowed up to its asset directory; one outside it is allowed exactly.
+    #
+    # A path only limits the first request: browsers check just the origin
+    # after a redirect. Nothing under the asset directory redirects.
+    def script_locations(importmap)
+      assets = File.join(config.relative_url_root.to_s, Rails.application.config.assets.prefix, "")
+
+      JSON.parse(importmap)["imports"].values.map do |url|
+        url = URI.join(request.base_url, url)
+        directory = url.path[0, url.path.index(assets) + assets.length] if url.path.include?(assets)
+        "#{url.origin}#{directory || url.path}"
       end.uniq
     end
 

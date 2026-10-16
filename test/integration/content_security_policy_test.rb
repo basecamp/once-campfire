@@ -16,8 +16,11 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
     assert_match "base-uri 'self'", policy
     assert_no_match "unsafe-inline", policy
     assert_no_match "nonce-", policy
+    assert_equal "http://www.example.com/service-worker.js", policy[/worker-src ([^;]+)/, 1]
 
     script_src = policy[/script-src ([^;]+)/, 1].split
+    assert_not_includes script_src, "'self'"
+    assert_includes script_src, "http://www.example.com/assets/"
     inline = Nokogiri::HTML5(response.body).css("script").reject { |s| s["src"] || s["type"] == "text/template" }
     assert_operator inline.size, :>=, 2
     inline.each do |script|
@@ -46,12 +49,40 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
         origins = urls.map { URI.join(request.base_url, it).origin }.uniq - [ request.base_url ]
 
         assert_not_empty origins, asset_host.inspect
-        origins.each do |origin|
-          assert_match expected_origin, origin, asset_host.inspect
-          assert_includes script_src, origin, asset_host.inspect
-        end
+        origins.each { assert_match expected_origin, it, asset_host.inspect }
+        assert_scripts_allowed_by_path script_src, urls.map { URI.join(request.base_url, it).to_s }, asset_host.inspect
         assert_includes script_src, "'sha256-#{Digest::SHA256.base64digest(page.at_css("script[type=importmap]").text)}'", asset_host.inspect
       end
+    end
+  end
+
+  test "scripts are limited to the asset directory under a relative root" do
+    with_relative_url_root("/chat") do
+      get PAGE_PATH
+      follow_redirect! while response.redirect?
+      assert_response :success
+
+      script_src = response.headers["Content-Security-Policy"][/script-src ([^;]+)/, 1].split
+      page = Nokogiri::HTML5(response.body)
+      urls = JSON.parse(page.at_css("script[type=importmap]").text)["imports"].values + page.css("link[rel=modulepreload]").map { it["href"] }
+
+      assert urls.all? { it.start_with?("/chat/assets/") }, urls.inspect
+      assert_includes script_src, "http://www.example.com/chat/assets/"
+      assert_scripts_allowed_by_path script_src, urls.map { URI.join(request.base_url, it).to_s }
+    end
+  end
+
+  test "uploads can't load as scripts" do
+    get PAGE_PATH
+    follow_redirect! while response.redirect?
+
+    script_src = response.headers["Content-Security-Policy"][/script-src ([^;]+)/, 1].split
+    blob = ActiveStorage::Blob.create_and_upload!(io: StringIO.new("alert(1)"), filename: "upload.js", content_type: "text/javascript")
+
+    disk_url = ActiveStorage::Current.set(url_options: { protocol: "http", host: "www.example.com" }) { blob.url }
+
+    [ rails_blob_url(blob), rails_blob_url(blob, disposition: :inline), rails_storage_proxy_url(blob), disk_url ].each do |url|
+      assert_not allowed_by_path?(script_src, url), "#{url} allowed by #{script_src.inspect}"
     end
   end
 
@@ -83,6 +114,32 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
       yield
     ensure
       Rails.application.env_config["action_dispatch.content_security_policy"] = previous
+    end
+
+    # Every page script is allowed by a source with a path, never by a bare origin
+    def assert_scripts_allowed_by_path(script_src, urls, message = nil)
+      assert_empty script_src.grep(%r{\A[a-z]+://[^/]+/?\z}), message
+      urls.each { assert allowed_by_path?(script_src, it), "#{it} not allowed by #{script_src.inspect} #{message}" }
+    end
+
+    # CSP source matching on a first request: 'self' and a bare origin match any
+    # path, a path ending in / matches as a prefix, any other path exactly
+    def allowed_by_path?(script_src, url)
+      url = URI(url)
+      script_src.any? do |source|
+        source = URI(source == "'self'" ? request.base_url : source) if source == "'self'" || source.match?(%r{\A[a-z]+://})
+        source.is_a?(URI) && source.origin == url.origin &&
+          (source.path.empty? || (source.path.end_with?("/") ? url.path.start_with?(source.path) : url.path == source.path))
+      end
+    end
+
+    def with_relative_url_root(root)
+      previous, ApplicationController.config.relative_url_root = ApplicationController.config.relative_url_root, root
+      Rails.application.importmap.send(:clear_cache)
+      yield
+    ensure
+      ApplicationController.config.relative_url_root = previous
+      Rails.application.importmap.send(:clear_cache)
     end
 
     def with_asset_host(asset_host)
