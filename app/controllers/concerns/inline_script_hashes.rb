@@ -8,7 +8,9 @@ module InlineScriptHashes
   ENTRY_POINT_SCRIPT = %(import "application")
 
   included do
-    content_security_policy do |policy|
+    # With the policy turned off there's nothing to add to, so leave the
+    # request without one rather than starting an empty policy
+    content_security_policy if: -> { request.content_security_policy } do |policy|
       if sources = policy.directives["script-src"]
         importmap = Rails.application.importmap.to_json(resolver: helpers)
         policy.directives["script-src"] = sources | script_origins(importmap) | script_hashes(importmap, ENTRY_POINT_SCRIPT)
