@@ -24,7 +24,9 @@ module InlineScriptHashes
     # The importmap is resolved by Rails' asset helpers, so its URLs already
     # carry any relative root and asset host, however the host is written:
     # with or without a scheme, protocol-relative, a %d set, or a proc. Each
-    # is allowed up to its asset directory; one outside it is allowed exactly.
+    # is allowed up to its asset directory, the last one in its path, since an
+    # asset host's own path may contain one too; a URL outside it is allowed
+    # exactly.
     #
     # This origin's own sources leave out the scheme, so they match the page's
     # scheme even behind a proxy that terminates TLS without saying so.
@@ -37,7 +39,7 @@ module InlineScriptHashes
       JSON.parse(importmap)["imports"].values.map do |url|
         url = URI.join(request.base_url, url)
         origin = url.origin == request.base_url ? request.host_with_port : url.origin
-        directory = url.path[0, url.path.index(assets) + assets.length] if url.path.include?(assets)
+        directory = url.path[0, url.path.rindex(assets) + assets.length] if url.path.include?(assets)
         "#{origin}#{directory || url.path}"
       end.uniq
     end
