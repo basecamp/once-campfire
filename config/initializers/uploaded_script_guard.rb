@@ -6,10 +6,13 @@
 # a download, whatever its URL says. Only reads are touched: uploading
 # (direct upload JSON, Disk PUT) answers in its own types.
 #
-# Accepted on upgrade: a browser that cached an upload under a script type
-# before this guard shipped can still run it from that cache until the entry
-# expires, up to an hour after it was fetched (config/initializers/active_storage.rb).
-# Revalidation doesn't help, since a 304 carries no content type.
+# Accepted on upgrade: a cache that stored an upload under a script type
+# before this guard shipped can still serve it as one until the entry expires.
+# For Disk URLs that's up to an hour (config/initializers/active_storage.rb).
+# Blob proxy URLs are cached publicly and as immutable for a hundred years
+# (Rails' http_cache_forever), so a copy a browser or a shared cache took that
+# way doesn't expire. Revalidation doesn't help, since a 304 carries no
+# content type.
 class UploadedScriptGuard
   SERVABLE = %r{\A(image|video|audio)/|\A(application/pdf|application/octet-stream|text/plain)\z}
 
