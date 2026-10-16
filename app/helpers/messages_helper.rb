@@ -118,13 +118,13 @@ module MessagesHelper
 
     # auto_link finds URLs and email addresses with regular expressions, which
     # can't tell an attribute value from text. Hand it one text node at a time,
-    # escaped, so a link can only land between tags.
+    # escaped as the serializer writes text, so a link can only land between tags.
     def auto_link_text(html)
       fragment = Nokogiri::HTML5.fragment(sanitize(html, tags: AUTO_LINK_ALLOWED_TAGS, attributes: AUTO_LINK_ALLOWED_ATTRIBUTES))
 
       fragment.xpath(".//text()[not(ancestor::a)]").each do |node|
         if node.text.match?(LINKABLE_TEXT)
-          text = h(node.text)
+          text = node.to_html
           linked = auto_link(text, html: { target: "_blank" })
           node.replace Nokogiri::HTML5.fragment(linked) unless linked == text
         end

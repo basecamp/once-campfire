@@ -46,6 +46,13 @@ class MessagesHelperTest < ActionView::TestCase
     assert_equal [ "https://example.com/a?b=1&c=2", "me@example.com" ], links.map(&:text)
   end
 
+  test "message_presentation links an email address with an apostrophe whole" do
+    message = Message.create! room: rooms(:pets), body: "<div>Write to o'brien@example.com</div>", client_message_id: "0015", creator: users(:jason)
+
+    links = Nokogiri::HTML5.fragment(view.message_presentation(message)).css("a")
+    assert_equal [ [ "mailto:o%27brien@example.com", "o'brien@example.com" ] ], links.map { [ it["href"], it.text ] }
+  end
+
   test "message_presentation leaves URLs and email addresses in attribute values as they are" do
     [ "class", "title" ].product([ "https://example.com", "www.example.com", "me@example.com" ]).each do |attribute, linkable|
       value = "a> #{linkable} <em>b</em> "
