@@ -1,25 +1,21 @@
-# Be sure to restart your server when you modify this file.
-
-# Define an application-wide content security policy.
-# See the Securing Rails Applications Guide for more information:
-# https://guides.rubyonrails.org/security.html#content-security-policy-header
-
-# Rails.application.configure do
-#   config.content_security_policy do |policy|
-#     policy.default_src :self, :https
-#     policy.font_src    :self, :https, :data
-#     policy.img_src     :self, :https, :data
-#     policy.object_src  :none
-#     policy.script_src  :self, :https
-#     policy.style_src   :self, :https
-#     # Specify URI for violation reports
-#     # policy.report_uri "/csp-violation-report-endpoint"
-#   end
+# Enforcing baseline policy. Application pages narrow script-src from this
+# origin to its asset directory, since uploads are served from this origin
+# too, and allow the two inline scripts the importmap helper emits by hash
+# (InlineScriptHashes). There is no per-request nonce, so rendered HTML stays
+# cacheable. 'self' remains for responses outside ApplicationController, none
+# of which render user content.
 #
-#   # Generate session nonces for permitted importmap and inline scripts
-#   config.content_security_policy_nonce_generator = ->(request) { request.session.id.to_s }
-#   config.content_security_policy_nonce_directives = %w(script-src)
+# Nothing else is restricted: images, media, fonts, styles (including an
+# account's custom styles) and connections behave as before.
 #
-#   # Report violations without enforcing the policy.
-#   # config.content_security_policy_report_only = true
-# end
+# DISABLE_CONTENT_SECURITY_POLICY=true is the escape hatch for an install whose
+# proxy or customization injects scripts the policy would block.
+unless ENV["DISABLE_CONTENT_SECURITY_POLICY"] == "true"
+  Rails.application.configure do
+    config.content_security_policy do |policy|
+      policy.script_src :self
+      policy.object_src :none
+      policy.base_uri   :self
+    end
+  end
+end
