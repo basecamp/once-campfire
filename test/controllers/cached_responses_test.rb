@@ -29,7 +29,7 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
   test "a reused page carries the same enforcing policy, with no nonce" do
     get room_messages_url(@room)
     first = response.headers["Content-Security-Policy"]
-    assert_match %r{script-src http://[^/ ]+/assets/ 'sha256-}, first
+    assert_match %r{script-src [^/ ]+/assets/ 'sha256-}, first
     assert_no_match "nonce-", first
 
     MessagesController.any_instance.expects(:find_paged_messages).never
