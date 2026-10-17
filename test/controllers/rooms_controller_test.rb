@@ -15,6 +15,32 @@ class RoomsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "show carries the message menu once and each message only its button" do
+    room = rooms(:watercooler)
+    message = room.messages.ordered.last
+    get room_url(room)
+
+    assert_response :success
+    assert_select ".message .message__options-btn", count: room.messages.count
+    assert_select ".message .message__actions-menu", count: 0
+
+    menu = message_menu_for(message)
+    assert_equal 1, menu.css(".message__actions-menu[data-popup-target='menu']").size
+    assert_not_includes menu.to_html, "$messageId$"
+
+    new_boost = menu.at_css("a.message__boost-btn")
+    assert_equal new_message_boost_path(message), new_boost["href"]
+    assert_equal dom_id(message, :new_boost), new_boost["data-turbo-frame"]
+
+    edit = menu.at_css("a.message__edit-btn")
+    assert_equal edit_room_message_path(room, message), edit["href"]
+    assert_equal dom_id(message, :edit), edit["data-turbo-frame"]
+
+    assert menu.at_css("button[title='Reply'][data-action='reply#reply']")
+    assert_nil menu.at_css("[title='Download']")
+    assert_nil menu.at_css("[title='Share']")
+  end
+
   test "show renders notification help for each platform" do
     {
       "Firefox on Android" => "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0",

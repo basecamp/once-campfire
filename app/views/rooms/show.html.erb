@@ -11,6 +11,7 @@
 
 <%= message_area_tag(@room) do %>
   <%= render "messages/template" %>
+  <%= render "messages/actions_menu_template", room: @room %>
 
   <%= messages_tag(@room) do %>
     <%= render "rooms/show/invitation", room: @room %>

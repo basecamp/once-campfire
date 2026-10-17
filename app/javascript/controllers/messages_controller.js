@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { parseHTMLFragment } from "helpers/dom_helpers"
 import { nextEventLoopTick } from "helpers/timing_helpers"
 import ClientMessage from "models/client_message"
 import MessageFormatter, { ThreadStyle } from "models/message_formatter"
@@ -6,7 +7,7 @@ import MessagePaginator from "models/message_paginator"
 import ScrollManager from "models/scroll_manager"
 
 export default class extends Controller {
-  static targets = [ "latest", "message", "body", "messages", "template" ]
+  static targets = [ "latest", "message", "body", "messages", "template", "actionsMenuTemplate" ]
   static classes = [ "firstOfDay", "formatted", "me", "mentioned", "threaded" ]
   static values = { pageUrl: String }
 
@@ -93,8 +94,15 @@ export default class extends Controller {
     const editorEmpty = document.querySelector("#composer lexxy-editor").isBlank
 
     if (editorEmpty && this.#paginator.upToDate) {
-      this.#myLastMessage?.querySelector(".message__edit-btn")?.click()
+      const message = this.#myLastMessage
+
+      this.#ensureActionsMenu(message?.querySelector(".message__actions details"))
+      message?.querySelector(".message__edit-btn")?.click()
     }
+  }
+
+  addActionsMenu({ currentTarget }) {
+    this.#ensureActionsMenu(currentTarget)
   }
 
 
@@ -142,6 +150,18 @@ export default class extends Controller {
       this.messagesTarget.querySelectorAll(selector).forEach((pending) => {
         if (pending !== target) pending.remove()
       })
+    }
+  }
+
+  // A message arrives with the button of its menu but, unless it has a file, without
+  // the menu: that is the same for every message but for the message's id, so the room
+  // carries it once and a message gets its copy the first time the menu is wanted.
+  #ensureActionsMenu(details) {
+    if (details && !details.querySelector(".message__actions-menu")) {
+      const { messageId } = details.closest(".message").dataset
+      const menu = this.actionsMenuTemplateTarget.innerHTML.replaceAll("$messageId$", messageId)
+
+      details.append(parseHTMLFragment(menu))
     }
   }
 
