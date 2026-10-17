@@ -108,8 +108,8 @@ module PushServiceTestHelper
     end
 
     # Built as WebPush::PersistentRequest builds it for a delivery.
-    def pinned_connection(server, ip = IP)
-      WebPush::Connections::HTTP.new(HOST, server.port, nil).tap do |http|
+    def pinned_connection(server, ip = IP, http_class: WebPush::Connections::HTTP)
+      http_class.new(HOST, server.port, nil).tap do |http|
         http.ipaddr = ip
         http.use_ssl = true
       end
