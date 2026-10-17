@@ -174,6 +174,20 @@ class ComposerTest < ApplicationSystemTestCase
     assert_selector last_message_selector("cite"), text: "JZ"
   end
 
+  test "replying quotes a mention's text as text" do
+    message = rooms(:designers).messages.create! creator: users(:kevin), client_message_id: "reply-mention",
+      body: %(<div><span class="mention">&lt;em&gt;Kevin&lt;/em&gt;</span> says hi</div>)
+    join_room rooms(:designers)
+
+    within_message message do
+      reveal_message_actions
+      find("[aria-label='Reply']").click
+    end
+
+    assert_composer_text "<em>Kevin</em> says hi"
+    assert_no_selector "#composer lexxy-editor em"
+  end
+
   test "arrow up edits my last message when the composer is empty" do
     composer_editor.click
     press_in_composer :up

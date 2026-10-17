@@ -25,6 +25,47 @@ class MessagesHelperTest < ActionView::TestCase
     assert_match /<strong>bold<\/strong>/, presentation
   end
 
+  test "message_presentation links URLs and email addresses in text" do
+    message = Message.create! room: rooms(:pets), body: "<div>See https://example.com/a?b=1&amp;c=2, or write to me@example.com.</div>", client_message_id: "0015", creator: users(:jason)
+
+    links = Nokogiri::HTML5.fragment(view.message_presentation(message)).css("a")
+    assert_equal [ "https://example.com/a?b=1&c=2", "mailto:me@example.com" ], links.map { it["href"] }
+    assert_equal [ "_blank", "_blank" ], links.map { it["target"] }
+    assert_equal [ "https://example.com/a?b=1&c=2", "me@example.com" ], links.map(&:text)
+  end
+
+  test "message_presentation links an email address with an apostrophe whole" do
+    message = Message.create! room: rooms(:pets), body: "<div>Write to o'brien@example.com</div>", client_message_id: "0015", creator: users(:jason)
+
+    links = Nokogiri::HTML5.fragment(view.message_presentation(message)).css("a")
+    assert_equal [ [ "mailto:o%27brien@example.com", "o'brien@example.com" ] ], links.map { [ it["href"], it.text ] }
+  end
+
+  test "message_presentation leaves URLs and email addresses in attribute values as they are" do
+    [ "class", "title" ].product([ "https://example.com", "www.example.com", "me@example.com" ]).each do |attribute, linkable|
+      value = "a> #{linkable} <em>b</em> "
+      message = Message.create! room: rooms(:pets), body: %(<div><span #{attribute}="#{value}">c</span> https://example.org</div>), client_message_id: "0015", creator: users(:jason)
+
+      presentation = Nokogiri::HTML5.fragment(view.message_presentation(message))
+      assert_equal [ value ], presentation.css("span[#{attribute}]").map { it[attribute] }, "#{attribute} with #{linkable}"
+      assert_empty presentation.css("em"), "#{attribute} with #{linkable}"
+      assert_equal [ "https://example.org" ], presentation.css("a").map { it["href"] }, "#{attribute} with #{linkable}"
+    end
+  end
+
+  test "linking text doesn't eat a code block's leading blank line" do
+    linked = view.send(:auto_link_text, "<pre>\n\n\nfirst https://example.com</pre>".html_safe)
+
+    assert_equal "\nfirst https://example.com", Nokogiri::HTML5.fragment(linked).at_css("pre").text
+  end
+
+  test "message_presentation leaves an existing link's text alone" do
+    message = Message.create! room: rooms(:pets), body: '<div><a href="https://example.com/">https://example.org/</a></div>', client_message_id: "0015", creator: users(:jason)
+
+    links = Nokogiri::HTML5.fragment(view.message_presentation(message)).css("a")
+    assert_equal [ [ "https://example.com/", "https://example.org/" ] ], links.map { [ it["href"], it.text ] }
+  end
+
   test "message_presentation shows an image's thumbnail made when it was posted" do
     presentation = view.message_presentation(attachment_message("moon.jpg", "image/jpeg", processed: true))
 
