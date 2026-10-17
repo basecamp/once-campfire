@@ -76,11 +76,13 @@ class WebPush::ConnectionsTest < ActiveSupport::TestCase
     end
   end
 
-  test "a TLS failure on a new connection before the push is written is reported as it is" do
-    failing_check = Module.new { private def begin_transport(*) = raise(OpenSSL::SSL::SSLError, "alert right after the handshake") }
+  class FailingCheckHTTP < WebPush::Connections::HTTP
+    private def begin_transport(*) = raise(OpenSSL::SSL::SSLError, "alert right after the handshake")
+  end
 
+  test "a TLS failure on a new connection before the push is written is reported as it is" do
     with_push_service do |server|
-      assert_raises(OpenSSL::SSL::SSLError) { @connections.request(pinned_connection(server).extend(failing_check), push_request) }
+      assert_raises(OpenSSL::SSL::SSLError) { @connections.request(pinned_connection(server, http_class: FailingCheckHTTP), push_request) }
       assert_empty server.requests
     end
   end
