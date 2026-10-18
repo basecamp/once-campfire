@@ -30,35 +30,28 @@ class Rooms::RefreshesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "refresh appends a whole page of new messages" do
+  test "refresh appends a whole page of new messages as all there is" do
     missed = post_messages(Message::PAGE_SIZE)
 
     get room_refresh_url(rooms(:hq), format: :turbo_stream), params: { since: 10.minutes.ago.to_fs(:epoch) }
 
     assert_response :success
-    assert_select "turbo-stream[action='update']", count: 0
-    assert_equal missed.size, missed.count { |message| css_select("turbo-stream[action='append'] #" + dom_id(message)).any? }
+    assert_select "turbo-stream[action='append'][incomplete]", count: 0
+    assert_select "turbo-stream[action='append'][target='#{dom_id(rooms(:hq), :messages)}']" do
+      missed.each { |message| assert_select "#" + dom_id(message) }
+    end
   end
 
-  test "refresh replaces the messages with the latest page when more than a page was posted" do
-    travel_to 1.day.ago do
-      @old_message = rooms(:hq).messages.create!(creator: users(:jason), body: "Old message", client_message_id: "old")
-    end
-    travel_to(1.minute.ago) { @old_message.touch }
+  test "refresh says when more was posted than the page it appends" do
     missed = post_messages(Message::PAGE_SIZE + 5)
 
     get room_refresh_url(rooms(:hq), format: :turbo_stream), params: { since: 10.minutes.ago.to_fs(:epoch) }
 
     assert_response :success
-    assert_select "turbo-stream[action='append']", count: 0
-    assert_select "turbo-stream[action='update'][target='#{dom_id(rooms(:hq), :messages)}']" do
+    assert_select "turbo-stream[action='append'][incomplete][target='#{dom_id(rooms(:hq), :messages)}']" do
       assert_select "[data-message-id]", count: Message::PAGE_SIZE
-      missed.last(Message::PAGE_SIZE).each { |message| assert_select "#" + dom_id(message) }
+      missed.first(Message::PAGE_SIZE).each { |message| assert_select "#" + dom_id(message) }
     end
-
-    # Only for a message the page already had: someone reading older messages keeps them on screen.
-    assert_select "turbo-stream[action='replace']", count: 1
-    assert_select "turbo-stream[action='replace'][target='#{dom_id(@old_message)}']"
   end
 
   private

@@ -14,6 +14,7 @@ export default class extends Controller {
   #paginator
   #formatter
   #scrollManager
+  #heldMessages = []
 
   // Lifecycle
 
@@ -62,19 +63,21 @@ export default class extends Controller {
     if (target === this.messagesTarget.id) {
       const render = event.detail.render
       const upToDate = this.#paginator.upToDate
-      const replacing = event.detail.newStream.getAttribute("action") === "update"
 
       if (upToDate) {
-        event.detail.render = async (streamElement) => {
-          const kept = replacing ? this.#messagesUnknownTo(streamElement) : []
+        // A refresh that missed more than it sends: the rest loads in order as the end of the list comes into view.
+        if (event.detail.newStream.hasAttribute("incomplete")) {
+          this.#paginator.upToDate = false
+          this.latestTarget.hidden = false
+        }
 
+        event.detail.render = async (streamElement) => {
           const didScroll = await this.#scrollManager.autoscroll(false, async () => {
             await render(streamElement)
             await nextEventLoopTick()
 
             this.#positionLastMessage()
             this.#playSoundForLastMessage()
-            this.messagesTarget.append(...kept)
             this.#paginator.trimExcessMessages(true)
           })
           if (!didScroll) {
@@ -82,9 +85,10 @@ export default class extends Controller {
           }
         }
       } else {
-        // Older messages are on screen, so the latest page would only take the reader's place. Returning to the
-        // latest loads it anyway.
-        if (replacing) event.detail.render = () => {}
+        // The end of the list isn't the latest message, so one appended there would leave a gap above it. It waits
+        // until the list has caught up.
+        this.#heldMessages.push(event.detail.newStream.templateContent)
+        event.detail.render = () => {}
         this.latestTarget.hidden = false
       }
     }
@@ -128,6 +132,7 @@ export default class extends Controller {
 
   #allContentViewed() {
     this.latestTarget.hidden = true
+    this.#appendHeldMessages()
   }
 
 
@@ -155,6 +160,22 @@ export default class extends Controller {
   async #ensureUpToDate() {
     if (!this.#paginator.upToDate) {
       await this.#paginator.resetToLastPage()
+      this.#appendHeldMessages()
+    }
+  }
+
+  // Messages that arrived while the list was catching up, once it has. Only those past its end: the others it fetched on
+  // the way, or they sit above the latest page and load on scrolling up.
+  #appendHeldMessages() {
+    let end = Math.max(0, ...Array.from(this.messagesTarget.children, (element) => this.#sortValue(element)))
+
+    for (const fragment of this.#heldMessages.splice(0)) {
+      for (const message of fragment.querySelectorAll(".message")) {
+        if (this.#sortValue(message) > end) {
+          this.messagesTarget.append(message)
+          end = this.#sortValue(message)
+        }
+      }
     }
   }
 
@@ -209,24 +230,6 @@ export default class extends Controller {
     }
 
     return followingMessage
-  }
-
-  // A refresh that missed more than a page replaces the messages with the latest one. That page can't know about
-  // messages that arrived live after it was rendered, or about our own still being sent or that failed to send, whose
-  // text is nowhere else: those stay.
-  #messagesUnknownTo(streamElement) {
-    const page = Array.from(streamElement.templateElement.content.querySelectorAll(".message"))
-    const pageIds = new Set(page.map((message) => message.id))
-    const pageClientMessageIds = new Set(page.map((message) => message.dataset.clientMessageId))
-    const pageEnd = Math.max(0, ...page.map((message) => this.#sortValue(message)))
-
-    return Array.from(this.messagesTarget.children).filter((element) => {
-      if (element.dataset.pendingMessage) {
-        return !pageClientMessageIds.has(element.dataset.clientMessageId)
-      } else {
-        return element.dataset.messageId && !pageIds.has(element.id) && this.#sortValue(element) >= pageEnd
-      }
-    })
   }
 
   #sortValue(node) {

@@ -162,6 +162,11 @@ export default class MessagePaginator {
       const lastNewElement = page.lastElementChild
 
       keepScroll(this.#container, top, () => {
+        // A message appended live just before a refresh sits above the ones the refresh missed. Keep the copy in order.
+        for (const message of page.querySelectorAll(".message")) {
+          this.#container.querySelector(`#${CSS.escape(message.id)}`)?.remove()
+        }
+
         insertHTMLFragment(page, this.#container, top)
 
         // Ensure formatting is correct over page boundaries
