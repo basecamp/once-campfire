@@ -1,6 +1,12 @@
-<%= turbo_stream.append dom_id(@room, :messages) do %>
-  <%= render partial: "messages/message", collection: @new_messages, cached: ->(message) { message_fragment_cache_key(message) } %>
-<% end if @new_messages.any? %>
+<% if @last_page %>
+  <%= turbo_stream.update dom_id(@room, :messages) do %>
+    <%= render partial: "messages/message", collection: @last_page, cached: ->(message) { message_fragment_cache_key(message) } %>
+  <% end %>
+<% else %>
+  <%= turbo_stream.append dom_id(@room, :messages) do %>
+    <%= render partial: "messages/message", collection: @new_messages, cached: ->(message) { message_fragment_cache_key(message) } %>
+  <% end if @new_messages.any? %>
+<% end %>
 
 <% @updated_messages.each do |message| %>
   <%= turbo_stream.replace dom_id(message), partial: "messages/message", locals: { message: message } %>

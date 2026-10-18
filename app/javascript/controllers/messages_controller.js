@@ -62,15 +62,19 @@ export default class extends Controller {
     if (target === this.messagesTarget.id) {
       const render = event.detail.render
       const upToDate = this.#paginator.upToDate
+      const replacing = event.detail.newStream.getAttribute("action") === "update"
 
       if (upToDate) {
         event.detail.render = async (streamElement) => {
+          const kept = replacing ? this.#messagesUnknownTo(streamElement) : []
+
           const didScroll = await this.#scrollManager.autoscroll(false, async () => {
             await render(streamElement)
             await nextEventLoopTick()
 
             this.#positionLastMessage()
             this.#playSoundForLastMessage()
+            this.messagesTarget.append(...kept)
             this.#paginator.trimExcessMessages(true)
           })
           if (!didScroll) {
@@ -78,6 +82,9 @@ export default class extends Controller {
           }
         }
       } else {
+        // Older messages are on screen, so the latest page would only take the reader's place. Returning to the
+        // latest loads it anyway.
+        if (replacing) event.detail.render = () => {}
         this.latestTarget.hidden = false
       }
     }
@@ -202,6 +209,24 @@ export default class extends Controller {
     }
 
     return followingMessage
+  }
+
+  // A refresh that missed more than a page replaces the messages with the latest one. That page can't know about
+  // messages that arrived live after it was rendered, or about our own still being sent or that failed to send, whose
+  // text is nowhere else: those stay.
+  #messagesUnknownTo(streamElement) {
+    const page = Array.from(streamElement.templateElement.content.querySelectorAll(".message"))
+    const pageIds = new Set(page.map((message) => message.id))
+    const pageClientMessageIds = new Set(page.map((message) => message.dataset.clientMessageId))
+    const pageEnd = Math.max(0, ...page.map((message) => this.#sortValue(message)))
+
+    return Array.from(this.messagesTarget.children).filter((element) => {
+      if (element.dataset.pendingMessage) {
+        return !pageClientMessageIds.has(element.dataset.clientMessageId)
+      } else {
+        return element.dataset.messageId && !pageIds.has(element.id) && this.#sortValue(element) >= pageEnd
+      }
+    })
   }
 
   #sortValue(node) {
