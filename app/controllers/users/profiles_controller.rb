@@ -8,8 +8,6 @@ class Users::ProfilesController < ApplicationController
 
   def update
     @user.update user_params
-    disconnect_remote_connections if @user.saved_change_to_password_digest?
-
     redirect_to user_profile_url, notice: update_notice
   end
 

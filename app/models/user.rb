@@ -21,6 +21,7 @@ class User < ApplicationRecord
 
   after_create_commit :grant_membership_to_open_rooms
   after_update :sign_out_other_sessions, if: :saved_change_to_password_digest?
+  after_update_commit :disconnect_signed_out_sessions, if: :saved_change_to_password_digest?
 
   scope :ordered, -> { order("LOWER(name)") }
   scope :filtered_by, ->(query) { where("name like ?", "%#{query}%") }
@@ -55,6 +56,14 @@ class User < ApplicationRecord
     # with the old one. The session it was changed from, if any, stays.
     def sign_out_other_sessions
       sessions.excluding(Current.session).delete_all
+    end
+
+    # After commit, so a connection that drops can't come back on a session that's still there. The password is
+    # saved by then, so a realtime service that can't be reached mustn't fail the change.
+    def disconnect_signed_out_sessions
+      reset_remote_connections
+    rescue => error
+      Rails.logger.warn "Could not disconnect remote connections after a password change: #{error.class}"
     end
 
     # One statement, which SQLite runs under the write lock, so no room is closed between reading the open ones and
