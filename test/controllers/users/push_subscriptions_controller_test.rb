@@ -74,4 +74,98 @@ class Users::PushSubscriptionsControllerTest < ActionDispatch::IntegrationTest
       assert_redirected_to user_push_subscriptions_url
     end
   end
+
+  test "a signed-out session can't register a subscription" do
+    Session.delete_all
+
+    assert_no_difference -> { Push::Subscription.count } do
+      post user_push_subscriptions_url, params: { push_subscription: new_subscription_params }
+    end
+
+    assert_redirected_to new_session_url
+  end
+
+  test "a session signed out while its request is in flight doesn't register a subscription" do
+    Push::Subscription.any_instance.stubs(:valid?).with { Session.delete_all; true }.returns(true)
+
+    assert_no_difference -> { Push::Subscription.count } do
+      post user_push_subscriptions_url, params: { push_subscription: new_subscription_params }
+    end
+
+    assert_response :unauthorized
+  end
+
+  test "a session signed out while its request is in flight doesn't keep an existing subscription alive" do
+    subscription = push_subscriptions(:david_chrome)
+    Push::Subscription.any_instance.stubs(:valid?).with { Session.delete_all; true }.returns(true)
+
+    assert_no_changes -> { subscription.reload.updated_at } do
+      post user_push_subscriptions_url, params: { push_subscription: subscription.attributes.slice("endpoint", "p256dh_key", "auth_key") }
+    end
+
+    assert_response :unauthorized
+  end
+
+  test "pages name their session for the browser to post its subscription again in a new one" do
+    get user_profile_url
+    assert_equal user_push_subscriptions_path, css_select("[data-push-subscription-sync-url-value]").first["data-push-subscription-sync-url-value"]
+
+    get room_url(rooms(:watercooler))
+    first_marker = css_select("[data-push-subscription-sync-session-value]").first["data-push-subscription-sync-session-value"]
+
+    assert_match(/\A\h{64}\z/, first_marker)
+    assert_not_includes response.body, users(:david).sessions.order(:id).last.token
+
+    sign_in :david
+    get room_url(rooms(:watercooler))
+    assert_not_equal first_marker, css_select("[data-push-subscription-sync-session-value]").first["data-push-subscription-sync-session-value"]
+  end
+
+  test "two posts of the same new subscription at once register it once" do
+    Push::Subscription.any_instance.stubs(:valid?).with do
+      users(:david).push_subscriptions.build(new_subscription_params).save!(validate: false) unless Push::Subscription.exists?(endpoint: new_subscription_params["endpoint"])
+      true
+    end.returns(true)
+
+    assert_difference -> { Push::Subscription.where(endpoint: new_subscription_params["endpoint"]).count }, +1 do
+      post user_push_subscriptions_url, params: { push_subscription: new_subscription_params }
+    end
+
+    assert_response :ok
+  end
+
+  private
+    def new_subscription_params
+      { "endpoint" => "https://fcm.googleapis.com/fcm/send/abc123", "p256dh_key" => "123", "auth_key" => "456" }
+    end
+end
+
+class Users::PushSubscriptionsControllerForeignWriteTest < ActionDispatch::IntegrationTest
+  self.use_transactional_tests = false
+
+  setup do
+    sign_in :david
+    stub_web_push_dns_resolution
+  end
+
+  test "a subscription another connection registers while this one validates isn't registered twice" do
+    params = { "endpoint" => "https://fcm.googleapis.com/fcm/send/foreign", "p256dh_key" => "123", "auth_key" => "456" }
+    Push::Subscription.any_instance.stubs(:valid?).with { foreign_insert(params); true }.returns(true)
+
+    post user_push_subscriptions_url, params: { push_subscription: params }
+
+    assert_response :ok
+    assert_equal 1, Push::Subscription.where(endpoint: params["endpoint"]).count
+  end
+
+  private
+    def foreign_insert(params)
+      unless @inserted
+        SQLite3::Database.new(ActiveRecord::Base.connection_db_config.database) do |database|
+          database.execute "INSERT INTO push_subscriptions (user_id, endpoint, p256dh_key, auth_key, created_at, updated_at) " \
+            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))", [ users(:david).id, *params.values ]
+        end
+        @inserted = true
+      end
+    end
 end

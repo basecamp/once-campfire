@@ -106,7 +106,8 @@ export default class extends Controller {
 
   async #syncPushSubscription(subscription) {
     const response = await post(this.subscriptionsUrlValue, { body: this.#extractJsonPayloadAsString(subscription), responseKind: "turbo-stream" })
-    if (!response.ok) subscription.unsubscribe()
+    // Only a refused endpoint is for good. A session signed out mid-request posts it again after signing in.
+    if (response.unprocessableEntity) subscription.unsubscribe()
   }
 
   async #requestPermissionAndSubscribe(registration) {

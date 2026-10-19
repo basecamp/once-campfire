@@ -18,8 +18,10 @@ class User < ApplicationRecord
   enum :status, %i[ active deactivated banned ], default: :active
 
   has_secure_password validations: false
+  validate :password_challenge_matches, unless: -> { password_challenge.nil? }
 
   after_create_commit :grant_membership_to_open_rooms
+  after_update :sign_out_all_sessions, if: :saved_change_to_password_digest?
 
   scope :ordered, -> { order("LOWER(name)") }
   scope :filtered_by, ->(query) { where("name like ?", "%#{query}%") }
@@ -50,6 +52,30 @@ class User < ApplicationRecord
   end
 
   private
+    # The profile sets password_challenge whenever it changes the password; scripts that reset one don't.
+    def password_challenge_matches
+      unless password_digest_was.present? && BCrypt::Password.new(password_digest_was).is_password?(password_challenge)
+        errors.add :password_challenge, :invalid
+      end
+    end
+
+    # A new password is how someone shuts out whoever else got into their account, so it ends every session, copies
+    # of the changing browser's cookie included, and every push subscription; browsers still signed in post theirs
+    # again. Connections close once that commits, registered on the transaction because a later save in it would
+    # replace the saved change an after_commit condition reads.
+    def sign_out_all_sessions
+      sessions.delete_all
+      push_subscriptions.delete_all
+      self.class.current_transaction.after_commit { disconnect_signed_out_sessions }
+    end
+
+    # The password is saved by now, so a realtime service that can't be reached mustn't fail the change.
+    def disconnect_signed_out_sessions
+      reset_remote_connections
+    rescue => error
+      Rails.logger.warn "Could not disconnect remote connections after a password change: #{error.class}"
+    end
+
     # One statement, which SQLite runs under the write lock, so no room is closed between reading the open ones and
     # inserting. A room that Room#destroy_later closes is either closed before, and skipped, or after, and takes this
     # membership away with the others. A room that granted itself to every user when it was created is skipped too,

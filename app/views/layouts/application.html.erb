@@ -62,6 +62,11 @@
 
     <%= render "layouts/lightbox" %>
 
+    <% if Current.session %>
+      <%= tag.div hidden: true, data: { controller: "push-subscription-sync",
+            push_subscription_sync_url_value: user_push_subscriptions_path, push_subscription_sync_session_value: push_subscription_session_marker } %>
+    <% end %>
+
     <a href="https://once.com" id="app-logo" target="_blank" aria-label="Once software from 37signals home page">
       <%= image_tag "campfire-icon.png", alt: "Campfire logo", width: 256, height: 216 %>
     </a>

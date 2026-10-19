@@ -5,17 +5,14 @@ class Users::PushSubscriptionsController < ApplicationController
   end
 
   def create
-    if subscription = @push_subscriptions.find_by(push_subscription_params)
-      # Existing endpoints must pass current validations
-      if subscription.valid?
-        subscription.touch
-        head :ok
-      else
-        head :unprocessable_entity
-      end
+    subscription = @push_subscriptions.find_or_initialize_by(push_subscription_params)
+    subscription.user_agent = request.user_agent if subscription.new_record?
+
+    # Existing endpoints must pass current validations too
+    if subscription.valid?
+      head register_while_signed_in(subscription) ? :ok : :unauthorized
     else
-      subscription = @push_subscriptions.create push_subscription_params.merge(user_agent: request.user_agent)
-      head subscription.persisted? ? :ok : :unprocessable_entity
+      head :unprocessable_entity
     end
   end
 
@@ -27,6 +24,24 @@ class Users::PushSubscriptionsController < ApplicationController
   private
     def set_push_subscriptions
       @push_subscriptions = Current.user.push_subscriptions
+    end
+
+    # A password change ends every session and subscription. A request that authenticated just before it mustn't
+    # put one back, so the session is checked under the same write lock as the save, and the endpoint is looked up
+    # again there, past the query cache, so two tabs posting at once register it once. Validation, which resolves
+    # the endpoint's address, runs before taking the lock.
+    def register_while_signed_in(subscription)
+      Push::Subscription.uncached do
+        Push::Subscription.transaction do
+          if Session.exists?(Current.session.id)
+            if existing = @push_subscriptions.find_by(push_subscription_params)
+              existing.touch
+            else
+              subscription.save!(validate: false)
+            end
+          end
+        end
+      end
     end
 
     def push_subscription_params

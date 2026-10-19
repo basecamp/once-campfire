@@ -136,6 +136,29 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     assert_redirected_to new_session_url
   end
 
+  test "a session signed out by a password change isn't served from a cached snapshot or page" do
+    other_device = open_session { |session| session.host! "once.campfire.test" }
+    other_device.post session_url, params: { email_address: users(:david).email_address, password: "secret123456" }
+    other_device.get user_sidebar_url(:me)
+    other_device.assert_response :success
+
+    Session.expects(:find_by).never
+    ResponseCache.instance.expects(:write).never
+    other_device.get user_sidebar_url(:me)
+    other_device.assert_response :success
+    Session.unstub(:find_by)
+    ResponseCache.instance.unstub(:write)
+
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } },
+      headers: { "Sec-Fetch-Site" => "same-origin", "Origin" => "http://once.campfire.test" }
+    assert_redirected_to user_profile_url
+
+    other_device.get user_sidebar_url(:me)
+    other_device.assert_redirected_to new_session_url
+    get user_sidebar_url(:me)
+    assert_response :success
+  end
+
   test "conditional requests keep native validators" do
     get room_messages_url(@room)
     etag = response.headers["ETag"]
