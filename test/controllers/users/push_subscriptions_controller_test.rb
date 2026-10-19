@@ -139,3 +139,33 @@ class Users::PushSubscriptionsControllerTest < ActionDispatch::IntegrationTest
       { "endpoint" => "https://fcm.googleapis.com/fcm/send/abc123", "p256dh_key" => "123", "auth_key" => "456" }
     end
 end
+
+class Users::PushSubscriptionsControllerForeignWriteTest < ActionDispatch::IntegrationTest
+  self.use_transactional_tests = false
+
+  setup do
+    sign_in :david
+    stub_web_push_dns_resolution
+  end
+
+  test "a subscription another connection registers while this one validates isn't registered twice" do
+    params = { "endpoint" => "https://fcm.googleapis.com/fcm/send/foreign", "p256dh_key" => "123", "auth_key" => "456" }
+    Push::Subscription.any_instance.stubs(:valid?).with { foreign_insert(params); true }.returns(true)
+
+    post user_push_subscriptions_url, params: { push_subscription: params }
+
+    assert_response :ok
+    assert_equal 1, Push::Subscription.where(endpoint: params["endpoint"]).count
+  end
+
+  private
+    def foreign_insert(params)
+      unless @inserted
+        SQLite3::Database.new(ActiveRecord::Base.connection_db_config.database) do |database|
+          database.execute "INSERT INTO push_subscriptions (user_id, endpoint, p256dh_key, auth_key, created_at, updated_at) " \
+            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))", [ users(:david).id, *params.values ]
+        end
+        @inserted = true
+      end
+    end
+end

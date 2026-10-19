@@ -28,15 +28,17 @@ class Users::PushSubscriptionsController < ApplicationController
 
     # A password change ends every session and subscription. A request that authenticated just before it mustn't
     # put one back, so the session is checked under the same write lock as the save, and the endpoint is looked up
-    # again there so two tabs posting at once register it once. Validation, which resolves the endpoint's address,
-    # runs before taking the lock.
+    # again there, past the query cache, so two tabs posting at once register it once. Validation, which resolves
+    # the endpoint's address, runs before taking the lock.
     def register_while_signed_in(subscription)
-      Push::Subscription.transaction do
-        if Session.exists?(Current.session.id)
-          if existing = @push_subscriptions.find_by(push_subscription_params)
-            existing.touch
-          else
-            subscription.save!(validate: false)
+      Push::Subscription.uncached do
+        Push::Subscription.transaction do
+          if Session.exists?(Current.session.id)
+            if existing = @push_subscriptions.find_by(push_subscription_params)
+              existing.touch
+            else
+              subscription.save!(validate: false)
+            end
           end
         end
       end
