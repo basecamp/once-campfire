@@ -1,6 +1,7 @@
 <span>
   <span class="button_to_change_notifying"
-      data-controller="notifications" data-notifications-subscriptions-url-value="<%= user_push_subscriptions_path %>" data-notifications-attention-class="btn--pulsing">
+      data-controller="notifications" data-notifications-subscriptions-url-value="<%= user_push_subscriptions_path %>"
+      data-notifications-session-value="<%= push_subscription_session_marker %>" data-notifications-attention-class="btn--pulsing">
     <%= turbo_frame_tag dom_id(room, :involvement), data: {
           controller: "turbo-frame", action: "notifications:ready@window->turbo-frame#load", turbo_frame_url_param: room_involvement_path(room) } do %>
       <button class="btn" data-action="click->notifications#attemptToSubscribe" data-notifications-target="bell">

@@ -4,8 +4,10 @@ import { pageIsTurboPreview } from "helpers/turbo_helpers"
 import { onNextEventLoopTick } from "helpers/timing_helpers"
 import { getCookie, setCookie } from "lib/cookie"
 
+const PUSH_SUBSCRIPTION_SYNCED_KEY = "push-subscription-synced-session"
+
 export default class extends Controller {
-  static values = { subscriptionsUrl: String }
+  static values = { subscriptionsUrl: String, session: String }
   static targets = [ "notAllowedNotice", "bell", "details" ]
   static classes = [ "attention" ]
 
@@ -25,6 +27,8 @@ export default class extends Controller {
           this.#showBellAlert()
         }
       }
+
+      this.#resyncPushSubscriptionOncePerSession()
     }
   }
 
@@ -107,6 +111,21 @@ export default class extends Controller {
   async #syncPushSubscription(subscription) {
     const response = await post(this.subscriptionsUrlValue, { body: this.#extractJsonPayloadAsString(subscription), responseKind: "turbo-stream" })
     if (!response.ok) subscription.unsubscribe()
+  }
+
+  // A password change removes the account's subscriptions, the one this browser holds included. Post it again
+  // once per session, so a browser that's still signed in keeps getting notifications. A failure here leaves the
+  // browser's own subscription alone: the next session tries again.
+  async #resyncPushSubscriptionOncePerSession() {
+    if (this.#allowed && this.sessionValue && localStorage.getItem(PUSH_SUBSCRIPTION_SYNCED_KEY) !== this.sessionValue) {
+      const registration = await this.#serviceWorkerRegistration
+      const subscription = await registration?.pushManager?.getSubscription()
+
+      if (Notification.permission === "granted" && subscription) {
+        await post(this.subscriptionsUrlValue, { body: this.#extractJsonPayloadAsString(subscription), responseKind: "turbo-stream" })
+        localStorage.setItem(PUSH_SUBSCRIPTION_SYNCED_KEY, this.sessionValue)
+      }
+    }
   }
 
   async #requestPermissionAndSubscribe(registration) {

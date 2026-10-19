@@ -80,10 +80,28 @@ class UserTest < ActiveSupport::TestCase
     end
   end
 
+  test "changing the password removes every push subscription of the user" do
+    assert users(:david).push_subscriptions.any?
+
+    users(:david).update!(password: "a new secret123456")
+
+    assert_empty users(:david).push_subscriptions.reload
+    assert users(:jason).push_subscriptions.any?
+  end
+
+  test "a password change that rolls back keeps push subscriptions" do
+    assert_no_changes -> { users(:david).push_subscriptions.count } do
+      User.transaction do
+        users(:david).update!(password: "a new secret123456")
+        raise ActiveRecord::Rollback
+      end
+    end
+  end
+
   test "changing other details keeps every session" do
     ActionCable.server.expects(:remote_connections).never
 
-    assert_no_changes -> { users(:david).sessions.count } do
+    assert_no_changes -> { [ users(:david).sessions.count, users(:david).push_subscriptions.count ] } do
       users(:david).update!(name: "Dave", email_address: "dave@37signals.com")
     end
   end

@@ -74,4 +74,52 @@ class Users::PushSubscriptionsControllerTest < ActionDispatch::IntegrationTest
       assert_redirected_to user_push_subscriptions_url
     end
   end
+
+  test "a signed-out session can't register a subscription" do
+    Session.delete_all
+
+    assert_no_difference -> { Push::Subscription.count } do
+      post user_push_subscriptions_url, params: { push_subscription: new_subscription_params }
+    end
+
+    assert_redirected_to new_session_url
+  end
+
+  test "a session signed out while its request is in flight doesn't register a subscription" do
+    Push::Subscription.any_instance.stubs(:valid?).with { Session.delete_all; true }.returns(true)
+
+    assert_no_difference -> { Push::Subscription.count } do
+      post user_push_subscriptions_url, params: { push_subscription: new_subscription_params }
+    end
+
+    assert_response :unauthorized
+  end
+
+  test "a session signed out while its request is in flight doesn't keep an existing subscription alive" do
+    subscription = push_subscriptions(:david_chrome)
+    Push::Subscription.any_instance.stubs(:valid?).with { Session.delete_all; true }.returns(true)
+
+    assert_no_changes -> { subscription.reload.updated_at } do
+      post user_push_subscriptions_url, params: { push_subscription: subscription.attributes.slice("endpoint", "p256dh_key", "auth_key") }
+    end
+
+    assert_response :unauthorized
+  end
+
+  test "a room names its session for the browser to post its subscription again in a new one" do
+    get room_url(rooms(:watercooler))
+    first_marker = css_select("[data-notifications-session-value]").first["data-notifications-session-value"]
+
+    assert_match(/\A\h{64}\z/, first_marker)
+    assert_not_includes response.body, users(:david).sessions.order(:id).last.token
+
+    sign_in :david
+    get room_url(rooms(:watercooler))
+    assert_not_equal first_marker, css_select("[data-notifications-session-value]").first["data-notifications-session-value"]
+  end
+
+  private
+    def new_subscription_params
+      { "endpoint" => "https://fcm.googleapis.com/fcm/send/abc123", "p256dh_key" => "123", "auth_key" => "456" }
+    end
 end
