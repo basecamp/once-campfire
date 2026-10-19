@@ -42,28 +42,20 @@ class UserTest < ActiveSupport::TestCase
     end
   end
 
-  test "changing the password outside a request signs out every session" do
-    users(:david).sessions.start!(user_agent: "Other device", ip_address: "127.0.0.1")
+  test "changing the password signs out every session, the current one included" do
+    Current.session = users(:david).sessions.start!(user_agent: "This device", ip_address: "127.0.0.1")
 
     assert_changes -> { users(:david).sessions.count }, to: 0 do
       users(:david).update!(password: "a new secret123456")
     end
   end
 
-  test "changing the password outside a request closes the account's live connections" do
+  test "changing the password closes the account's live connections" do
     remote_connections = mock
     remote_connections.expects(:disconnect).with(reconnect: true)
     ActionCable.server.stubs(:remote_connections).returns(mock.tap { |m| m.expects(:where).with(current_user: users(:david)).returns(remote_connections) })
 
     users(:david).update!(password: "a new secret123456")
-  end
-
-  test "changing the password keeps the session it was changed from" do
-    Current.session = users(:david).sessions.start!(user_agent: "This device", ip_address: "127.0.0.1")
-
-    users(:david).update!(password: "a new secret123456")
-
-    assert_equal [ Current.session ], users(:david).sessions.reload
   end
 
   test "changing other details keeps every session" do

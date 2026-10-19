@@ -27,7 +27,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "david@37signals.com", users(:david).email_address
   end
 
-  test "changing the password signs out the account's other sessions but not this one" do
+  test "changing the password signs out the account's other devices but not this browser" do
     other_device = open_session
     other_device.post session_url, params: { email_address: users(:david).email_address, password: "secret123456" }
     other_device.get user_profile_url
@@ -41,6 +41,18 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     get user_profile_url
     assert_response :success
     assert_equal 1, users(:david).sessions.count
+  end
+
+  test "changing the password gives this browser a new session, so a copy of its cookie stops working" do
+    copied_cookie = cookies[:session_token]
+
+    put user_profile_url, params: { user: { password: "a new secret123456" } }
+    assert_not_equal copied_cookie, cookies[:session_token]
+
+    copy = open_session
+    copy.cookies[:session_token] = copied_cookie
+    copy.get user_profile_url
+    copy.assert_redirected_to new_session_url
   end
 
   test "changing the password closes the account's live connections" do
