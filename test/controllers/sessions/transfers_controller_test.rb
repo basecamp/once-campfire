@@ -19,4 +19,15 @@ class Sessions::TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_url
     assert parsed_cookies.signed[:session_token]
   end
+
+  test "update rejects a link made before the password changed" do
+    user = users(:david)
+    transfer_id = user.transfer_id
+    user.update!(password: "a new secret123456")
+
+    put session_transfer_url(transfer_id)
+
+    assert_response :bad_request
+    assert_nil parsed_cookies.signed[:session_token]
+  end
 end
