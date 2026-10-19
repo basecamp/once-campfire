@@ -70,6 +70,16 @@
       </div>
 
       <div class="flex align-center gap">
+        <%= translation_button(:current_password) %>
+
+        <label class="flex align-center gap flex-item-grow input input--actor">
+          <%= form.password_field :password_challenge, class: "input txt-large", autocomplete: "current-password",
+                placeholder: "Current password", required: false, maxlength: 72 %>
+          <%= image_tag "password.svg", aria: { hidden: "true" }, size: 24, class: "colorize--black" %>
+        </label>
+      </div>
+
+      <div class="flex align-center gap">
         <%= translation_button(:update_password) %>
 
         <label class="flex align-center gap flex-item-grow input input--actor">

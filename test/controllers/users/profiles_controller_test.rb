@@ -33,7 +33,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     other_device.get user_profile_url
     other_device.assert_response :success
 
-    put user_profile_url, params: { user: { password: "a new secret123456" } }
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
     assert_redirected_to user_profile_url
 
     other_device.get user_profile_url
@@ -46,7 +46,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
   test "changing the password gives this browser a new session, so a copy of its cookie stops working" do
     copied_cookie = cookies[:session_token]
 
-    put user_profile_url, params: { user: { password: "a new secret123456" } }
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
     assert_not_equal copied_cookie, cookies[:session_token]
 
     copy = open_session
@@ -60,7 +60,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     remote_connections.expects(:disconnect).with(reconnect: true)
     ActionCable.server.stubs(:remote_connections).returns(mock.tap { |m| m.expects(:where).with(current_user: users(:david)).returns(remote_connections) })
 
-    put user_profile_url, params: { user: { password: "a new secret123456", avatar: fixture_file_upload("moon.jpg", "image/jpeg") } }
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456", avatar: fixture_file_upload("moon.jpg", "image/jpeg") } }
     assert_redirected_to user_profile_url
     assert users(:david).reload.avatar.attached?
 
@@ -73,7 +73,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     remote_connections.expects(:disconnect).with(reconnect: true)
     ActionCable.server.stubs(:remote_connections).returns(mock.tap { |m| m.expects(:where).with(current_user: users(:david)).returns(remote_connections) })
 
-    put user_profile_url, params: { user: { password: "a new secret123456" } }
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
 
     assert_redirected_to user_profile_url
   end
@@ -82,7 +82,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     other_session = users(:david).sessions.first
     ActionCable.server.stubs(:remote_connections).raises(RuntimeError.new("cable down"))
 
-    put user_profile_url, params: { user: { password: "a new secret123456" } }
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
 
     assert_redirected_to user_profile_url
     assert_not Session.exists?(other_session.id)
@@ -98,9 +98,65 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to user_profile_url
   end
 
+  test "changing the password with the current one" do
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
+
+    assert_redirected_to user_profile_url
+    assert_equal "✓", flash[:notice]
+    assert users(:david).reload.authenticate("a new secret123456")
+  end
+
+  test "changing the password without the current one changes nothing" do
+    assert_password_change_refused "Enter your current password to change it.",
+      user: { name: "Someone else", password: "a new secret123456" }
+  end
+
+  test "changing the password with a wrong current one changes nothing" do
+    assert_password_change_refused "That isn't your current password.",
+      user: { name: "Someone else", password: "a new secret123456", password_challenge: "not my password" }
+  end
+
+  test "editing the profile without changing the password doesn't need the current one" do
+    put user_profile_url, params: { user: { name: "Dave", bio: "Acrobat", password: "" } }
+
+    assert_redirected_to user_profile_url
+    assert_equal "Dave", users(:david).reload.name
+    assert users(:david).authenticate("secret123456")
+  end
+
+  test "attempts to change the password are rate limited like signing in" do
+    Users::ProfilesController.cache_store.stubs(:increment).returns(11)
+
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
+    assert_redirected_to user_profile_url
+    assert_equal "Too many attempts. Try again in a few minutes.", flash[:alert]
+    assert users(:david).reload.authenticate("secret123456")
+
+    put user_profile_url, params: { user: { name: "Dave" } }
+    assert_equal "Dave", users(:david).reload.name
+  end
+
   test "updates are limited to the current user" do
     put user_profile_url(users(:jason)), params: { user: { name: "John Doe" } }
 
     assert_equal "Jason", users(:jason).reload.name
   end
+
+  private
+    def assert_password_change_refused(alert, params)
+      other_device = open_session
+      other_device.post session_url, params: { email_address: users(:david).email_address, password: "secret123456" }
+      ActionCable.server.expects(:remote_connections).never
+
+      assert_no_difference -> { Session.count } do
+        put user_profile_url, params: params
+      end
+
+      assert_redirected_to user_profile_url
+      assert_equal alert, flash[:alert]
+      assert users(:david).reload.authenticate("secret123456")
+      assert_equal "David", users(:david).name
+      other_device.get user_profile_url
+      other_device.assert_response :success
+    end
 end

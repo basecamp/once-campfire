@@ -149,7 +149,7 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     Session.unstub(:find_by)
     ResponseCache.instance.unstub(:write)
 
-    put user_profile_url, params: { user: { password: "a new secret123456" } },
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } },
       headers: { "Sec-Fetch-Site" => "same-origin", "Origin" => "http://once.campfire.test" }
     assert_redirected_to user_profile_url
 
