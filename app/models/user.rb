@@ -21,7 +21,6 @@ class User < ApplicationRecord
 
   after_create_commit :grant_membership_to_open_rooms
   after_update :sign_out_all_sessions, if: :saved_change_to_password_digest?
-  after_update_commit :disconnect_signed_out_sessions, if: :saved_change_to_password_digest?
 
   scope :ordered, -> { order("LOWER(name)") }
   scope :filtered_by, ->(query) { where("name like ?", "%#{query}%") }
@@ -52,14 +51,15 @@ class User < ApplicationRecord
   end
 
   private
-    # A new password is how someone shuts out whoever else got into their account, so it ends every session opened
-    # with the old one, copies of the changing browser's cookie included. The profile page signs that browser back in.
+    # A new password is how someone shuts out whoever else got into their account, so it ends every session, copies
+    # of the changing browser's cookie included. Connections close once that commits, registered on the transaction
+    # because a later save in it would replace the saved change an after_commit condition reads.
     def sign_out_all_sessions
       sessions.delete_all
+      self.class.current_transaction.after_commit { disconnect_signed_out_sessions }
     end
 
-    # After commit, so a connection that drops can't come back on a session that's still there. The password is
-    # saved by then, so a realtime service that can't be reached mustn't fail the change.
+    # The password is saved by now, so a realtime service that can't be reached mustn't fail the change.
     def disconnect_signed_out_sessions
       reset_remote_connections
     rescue => error

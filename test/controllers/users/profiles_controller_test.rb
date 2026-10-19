@@ -55,6 +55,19 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     copy.assert_redirected_to new_session_url
   end
 
+  test "changing the password along with the avatar still signs this browser back in and closes live connections" do
+    remote_connections = mock
+    remote_connections.expects(:disconnect).with(reconnect: true)
+    ActionCable.server.stubs(:remote_connections).returns(mock.tap { |m| m.expects(:where).with(current_user: users(:david)).returns(remote_connections) })
+
+    put user_profile_url, params: { user: { password: "a new secret123456", avatar: fixture_file_upload("moon.jpg", "image/jpeg") } }
+    assert_redirected_to user_profile_url
+    assert users(:david).reload.avatar.attached?
+
+    get user_profile_url
+    assert_response :success
+  end
+
   test "changing the password closes the account's live connections" do
     remote_connections = mock
     remote_connections.expects(:disconnect).with(reconnect: true)
