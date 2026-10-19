@@ -21,11 +21,10 @@ class PushSubscriptionResyncTest < ApplicationSystemTestCase
     join_room rooms(:hq)
     assert_equal first_sync, subscription.reload.updated_at, "posted again in the same session"
 
+    first_id = subscription.id
     change_password
-    assert_nil Push::Subscription.find_by(endpoint: ENDPOINT)
-
-    join_room rooms(:hq)
     assert_subscription_registered
+    assert_not_equal first_id, subscription.id, "not removed and posted again by the profile page"
     assert_not page.evaluate_script("localStorage.getItem('unsubscribed-for-test')")
   end
 
@@ -65,7 +64,7 @@ class PushSubscriptionResyncTest < ApplicationSystemTestCase
     end
 
     def assert_subscription_registered
-      assert_selector "[data-controller~=notifications]", visible: :all
+      assert_selector "[data-controller~=push-subscription-sync]", visible: :all
       Timeout.timeout(5) { sleep 0.1 until Push::Subscription.exists?(endpoint: ENDPOINT, user: users(:david)) }
     end
 

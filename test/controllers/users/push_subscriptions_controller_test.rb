@@ -106,16 +106,32 @@ class Users::PushSubscriptionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
-  test "a room names its session for the browser to post its subscription again in a new one" do
+  test "pages name their session for the browser to post its subscription again in a new one" do
+    get user_profile_url
+    assert_equal user_push_subscriptions_path, css_select("[data-push-subscription-sync-url-value]").first["data-push-subscription-sync-url-value"]
+
     get room_url(rooms(:watercooler))
-    first_marker = css_select("[data-notifications-session-value]").first["data-notifications-session-value"]
+    first_marker = css_select("[data-push-subscription-sync-session-value]").first["data-push-subscription-sync-session-value"]
 
     assert_match(/\A\h{64}\z/, first_marker)
     assert_not_includes response.body, users(:david).sessions.order(:id).last.token
 
     sign_in :david
     get room_url(rooms(:watercooler))
-    assert_not_equal first_marker, css_select("[data-notifications-session-value]").first["data-notifications-session-value"]
+    assert_not_equal first_marker, css_select("[data-push-subscription-sync-session-value]").first["data-push-subscription-sync-session-value"]
+  end
+
+  test "two posts of the same new subscription at once register it once" do
+    Push::Subscription.any_instance.stubs(:valid?).with do
+      users(:david).push_subscriptions.build(new_subscription_params).save!(validate: false) unless Push::Subscription.exists?(endpoint: new_subscription_params["endpoint"])
+      true
+    end.returns(true)
+
+    assert_difference -> { Push::Subscription.where(endpoint: new_subscription_params["endpoint"]).count }, +1 do
+      post user_push_subscriptions_url, params: { push_subscription: new_subscription_params }
+    end
+
+    assert_response :ok
   end
 
   private
