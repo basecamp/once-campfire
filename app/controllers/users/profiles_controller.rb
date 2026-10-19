@@ -2,7 +2,7 @@ class Users::ProfilesController < ApplicationController
   before_action :set_user
 
   # Limited like signing in, so the current password can't be guessed here instead.
-  rate_limit to: 10, within: 3.minutes, only: :update, if: :changing_password?,
+  rate_limit to: 10, within: 3.minutes, only: :update, if: :answering_password_challenge?,
     with: -> { redirect_to user_profile_url, alert: "Too many attempts. Try again in a few minutes." }
 
   def show
@@ -25,19 +25,22 @@ class Users::ProfilesController < ApplicationController
       @user = Current.user
     end
 
+    # Always with the challenge, so the model checks it whenever the save would change the password, however the
+    # request spelled the new one.
     def user_params
-      permitted = params.require(:user).permit(:name, :avatar, :email_address, :password, :bio).compact
-
-      if changing_password?
-        permitted.merge(password_challenge: params[:user][:password_challenge].to_s)
-      else
-        permitted
-      end
+      params.require(:user).permit(:name, :avatar, :email_address, :password, :bio).compact
+        .merge(password_challenge: password_challenge)
     end
 
-    # As has_secure_password reads it: an empty password leaves the current one alone.
-    def changing_password?
-      !params.dig(:user, :password).to_s.empty?
+    # Only a string is a challenge, so the rate limit counts exactly what the model checks.
+    def password_challenge
+      challenge = params.dig(:user, :password_challenge)
+      challenge.is_a?(String) ? challenge : ""
+    end
+
+    # Guessing the current password means sending one, so this is what the rate limit counts.
+    def answering_password_challenge?
+      !password_challenge.empty?
     end
 
     def update_notice
@@ -47,7 +50,7 @@ class Users::ProfilesController < ApplicationController
     def update_alert
       if !@user.errors.include?(:password_challenge)
         @user.errors.full_messages.to_sentence
-      elsif params[:user][:password_challenge].blank?
+      elsif password_challenge.empty?
         "Enter your current password to change it."
       else
         "That isn't your current password."
