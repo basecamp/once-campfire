@@ -58,6 +58,28 @@ class UserTest < ActiveSupport::TestCase
     users(:david).update!(password: "a new secret123456")
   end
 
+  test "changing the password closes live connections even when the user is saved again before commit" do
+    remote_connections = mock
+    remote_connections.expects(:disconnect).with(reconnect: true)
+    ActionCable.server.stubs(:remote_connections).returns(mock.tap { |m| m.expects(:where).with(current_user: users(:david)).returns(remote_connections) })
+
+    User.transaction do
+      users(:david).update!(password: "a new secret123456")
+      users(:david).update!(name: "Dave")
+    end
+  end
+
+  test "a password change that rolls back keeps every session and connection" do
+    ActionCable.server.expects(:remote_connections).never
+
+    assert_no_changes -> { users(:david).sessions.count } do
+      User.transaction do
+        users(:david).update!(password: "a new secret123456")
+        raise ActiveRecord::Rollback
+      end
+    end
+  end
+
   test "changing other details keeps every session" do
     ActionCable.server.expects(:remote_connections).never
 
