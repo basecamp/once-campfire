@@ -18,6 +18,7 @@ class User < ApplicationRecord
   enum :status, %i[ active deactivated banned ], default: :active
 
   has_secure_password validations: false
+  validate :password_challenge_matches, unless: -> { password_challenge.nil? }
 
   after_create_commit :grant_membership_to_open_rooms
   after_update :sign_out_all_sessions, if: :saved_change_to_password_digest?
@@ -51,6 +52,13 @@ class User < ApplicationRecord
   end
 
   private
+    # The profile sets password_challenge whenever it changes the password; scripts that reset one don't.
+    def password_challenge_matches
+      unless password_digest_was.present? && BCrypt::Password.new(password_digest_was).is_password?(password_challenge)
+        errors.add :password_challenge, :invalid
+      end
+    end
+
     # A new password is how someone shuts out whoever else got into their account, so it ends every session, copies
     # of the changing browser's cookie included. Connections close once that commits, registered on the transaction
     # because a later save in it would replace the saved change an after_commit condition reads.
