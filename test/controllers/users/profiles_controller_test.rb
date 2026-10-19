@@ -136,6 +136,18 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Dave", users(:david).reload.name
   end
 
+  test "changing the password removes the other devices' push subscriptions, and this browser can register its own again" do
+    stub_web_push_dns_resolution
+    endpoint = push_subscriptions(:david_chrome).attributes.slice("endpoint", "p256dh_key", "auth_key")
+
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
+    assert_empty users(:david).push_subscriptions
+
+    post user_push_subscriptions_url, params: { push_subscription: endpoint }
+    assert_response :ok
+    assert_equal [ endpoint["endpoint"] ], users(:david).push_subscriptions.pluck(:endpoint)
+  end
+
   test "updates are limited to the current user" do
     put user_profile_url(users(:jason)), params: { user: { name: "John Doe" } }
 
@@ -148,7 +160,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
       other_device.post session_url, params: { email_address: users(:david).email_address, password: "secret123456" }
       ActionCable.server.expects(:remote_connections).never
 
-      assert_no_difference -> { Session.count } do
+      assert_no_changes -> { [ Session.count, Push::Subscription.count ] } do
         put user_profile_url, params: params
       end
 

@@ -60,10 +60,12 @@ class User < ApplicationRecord
     end
 
     # A new password is how someone shuts out whoever else got into their account, so it ends every session, copies
-    # of the changing browser's cookie included. Connections close once that commits, registered on the transaction
-    # because a later save in it would replace the saved change an after_commit condition reads.
+    # of the changing browser's cookie included, and every push subscription; browsers still signed in post theirs
+    # again. Connections close once that commits, registered on the transaction because a later save in it would
+    # replace the saved change an after_commit condition reads.
     def sign_out_all_sessions
       sessions.delete_all
+      push_subscriptions.delete_all
       self.class.current_transaction.after_commit { disconnect_signed_out_sessions }
     end
 
