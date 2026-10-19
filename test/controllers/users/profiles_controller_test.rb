@@ -27,6 +27,52 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "david@37signals.com", users(:david).email_address
   end
 
+  test "changing the password signs out the account's other sessions but not this one" do
+    other_device = open_session
+    other_device.post session_url, params: { email_address: users(:david).email_address, password: "secret123456" }
+    other_device.get user_profile_url
+    other_device.assert_response :success
+
+    put user_profile_url, params: { user: { password: "a new secret123456" } }
+    assert_redirected_to user_profile_url
+
+    other_device.get user_profile_url
+    other_device.assert_redirected_to new_session_url
+    get user_profile_url
+    assert_response :success
+    assert_equal 1, users(:david).sessions.count
+  end
+
+  test "changing the password closes the account's live connections" do
+    remote_connections = mock
+    remote_connections.expects(:disconnect).with(reconnect: true)
+    ActionCable.server.stubs(:remote_connections).returns(mock.tap { |m| m.expects(:where).with(current_user: users(:david)).returns(remote_connections) })
+
+    put user_profile_url, params: { user: { password: "a new secret123456" } }
+
+    assert_redirected_to user_profile_url
+  end
+
+  test "changing the password still signs out other sessions when the realtime service is unreachable" do
+    other_session = users(:david).sessions.first
+    ActionCable.server.stubs(:remote_connections).raises(RuntimeError.new("cable down"))
+
+    put user_profile_url, params: { user: { password: "a new secret123456" } }
+
+    assert_redirected_to user_profile_url
+    assert_not Session.exists?(other_session.id)
+  end
+
+  test "updating the profile without a new password leaves other sessions signed in" do
+    ActionCable.server.expects(:remote_connections).never
+
+    assert_no_difference -> { users(:david).sessions.count } do
+      put user_profile_url, params: { user: { name: "David", password: "" } }
+    end
+
+    assert_redirected_to user_profile_url
+  end
+
   test "updates are limited to the current user" do
     put user_profile_url(users(:jason)), params: { user: { name: "John Doe" } }
 
