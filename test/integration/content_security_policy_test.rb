@@ -103,6 +103,16 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
     assert_equal "www.example.com:8443/service-worker.js", policy[/worker-src ([^;]+)/, 1]
   end
 
+  test "each host's pages carry that host's sources, one after another" do
+    [ "www.example.com", "www.example.com:8443", "www.example.com" ].each do |host|
+      host! host
+      get PAGE_PATH
+      follow_redirect! while response.redirect?
+
+      assert_includes response.headers["Content-Security-Policy"][/script-src ([^;]+)/, 1].split, "#{host}/assets/"
+    end
+  end
+
   test "uploads can't load as scripts" do
     get PAGE_PATH
     follow_redirect! while response.redirect?

@@ -14,13 +14,32 @@ module InlineScriptHashes
     content_security_policy if: -> { request.content_security_policy } do |policy|
       if sources = policy.directives["script-src"]
         importmap = Rails.application.importmap.to_json(resolver: helpers)
-        policy.directives["script-src"] = (sources - [ "'self'" ]) | script_locations(importmap) | script_hashes(importmap, ENTRY_POINT_SCRIPT)
+        policy.directives["script-src"] = (sources - [ "'self'" ]) | script_sources(importmap)
         policy.worker_src "#{request.host_with_port}#{service_worker_path(format: :js)}"
       end
     end
   end
 
+  mattr_accessor :last_script_sources
+
   private
+    # Parsing the importmap and resolving each of its URLs costs about a
+    # millisecond a page, yet the answer changes only with the importmap and
+    # the host the page is served from. Keep the last one: a single entry, so
+    # a request with a made-up Host header can't grow it.
+    def script_sources(importmap)
+      key = [ importmap, request.base_url, request.host_with_port, config.relative_url_root ]
+      cached_key, sources = InlineScriptHashes.last_script_sources
+
+      if cached_key == key
+        sources
+      else
+        (script_locations(importmap) | script_hashes(importmap, ENTRY_POINT_SCRIPT)).freeze.tap do |sources|
+          InlineScriptHashes.last_script_sources = [ key, sources ].freeze
+        end
+      end
+    end
+
     # The importmap is resolved by Rails' asset helpers, so its URLs already
     # carry any relative root and asset host, however the host is written:
     # with or without a scheme, protocol-relative, a %d set, or a proc. Each
