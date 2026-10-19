@@ -9,6 +9,7 @@ class PushSubscriptionResyncTest < ApplicationSystemTestCase
   end
 
   teardown do
+    page.driver.browser.execute_cdp "Page.removeScriptToEvaluateOnNewDocument", identifier: @fake_subscription_script
     page.execute_script("localStorage.clear()") if page.current_url.start_with?("http")
   end
 
@@ -40,15 +41,18 @@ class PushSubscriptionResyncTest < ApplicationSystemTestCase
   end
 
   private
-    # Headless Chrome has no push service, so stand in for the subscription the service worker would hold.
+    # Headless Chrome has no push service, so stand in for the subscription the service worker would hold. The
+    # browser is shared with other system tests, so teardown removes this again.
     def fake_a_browser_push_subscription
-      page.driver.browser.execute_cdp "Page.addScriptToEvaluateOnNewDocument", source: <<~JS
-        Object.defineProperty(Notification, "permission", { get: () => "granted" })
-        const subscription = {
-          toJSON: () => ({ endpoint: "#{ENDPOINT}", keys: { p256dh: "p256dh-key", auth: "auth-key" } }),
-          unsubscribe: async () => { localStorage.setItem("unsubscribed-for-test", "true") }
-        }
-        navigator.serviceWorker.getRegistration = async () => ({ pushManager: { getSubscription: async () => subscription } })
+      @fake_subscription_script = page.driver.browser.execute_cdp("Page.addScriptToEvaluateOnNewDocument", source: <<~JS)["identifier"]
+        (() => {
+          Object.defineProperty(Notification, "permission", { get: () => "granted" })
+          const subscription = {
+            toJSON: () => ({ endpoint: "#{ENDPOINT}", keys: { p256dh: "p256dh-key", auth: "auth-key" } }),
+            unsubscribe: async () => { localStorage.setItem("unsubscribed-for-test", "true") }
+          }
+          navigator.serviceWorker.getRegistration = async () => ({ pushManager: { getSubscription: async () => subscription } })
+        })()
       JS
     end
 
