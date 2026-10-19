@@ -8,6 +8,8 @@ class Users::ProfilesController < ApplicationController
 
   def update
     @user.update user_params
+    start_new_session_for @user if @user.saved_change_to_password_digest?
+
     redirect_to user_profile_url, notice: update_notice
   end
 

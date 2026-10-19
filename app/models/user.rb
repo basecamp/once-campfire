@@ -20,7 +20,7 @@ class User < ApplicationRecord
   has_secure_password validations: false
 
   after_create_commit :grant_membership_to_open_rooms
-  after_update :sign_out_other_sessions, if: :saved_change_to_password_digest?
+  after_update :sign_out_all_sessions, if: :saved_change_to_password_digest?
   after_update_commit :disconnect_signed_out_sessions, if: :saved_change_to_password_digest?
 
   scope :ordered, -> { order("LOWER(name)") }
@@ -52,10 +52,10 @@ class User < ApplicationRecord
   end
 
   private
-    # A new password is how someone shuts out whoever else got into their account, so it ends the sessions opened
-    # with the old one. The session it was changed from, if any, stays.
-    def sign_out_other_sessions
-      sessions.excluding(Current.session).delete_all
+    # A new password is how someone shuts out whoever else got into their account, so it ends every session opened
+    # with the old one, copies of the changing browser's cookie included. The profile page signs that browser back in.
+    def sign_out_all_sessions
+      sessions.delete_all
     end
 
     # After commit, so a connection that drops can't come back on a session that's still there. The password is
