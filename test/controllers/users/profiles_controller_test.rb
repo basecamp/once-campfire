@@ -116,6 +116,18 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
       user: { name: "Someone else", password: "a new secret123456", password_challenge: "not my password" }
   end
 
+  test "a new password needs the current one however the form spells it" do
+    assert_password_change_refused "Enter your current password to change it.",
+      user: { name: "Someone else", "password(1)" => "a new secret123456" }
+  end
+
+  test "editing the profile with an empty current password doesn't need it" do
+    put user_profile_url, params: { user: { name: "Dave", password: "", password_challenge: "" } }
+
+    assert_redirected_to user_profile_url
+    assert_equal "Dave", users(:david).reload.name
+  end
+
   test "editing the profile without changing the password doesn't need the current one" do
     put user_profile_url, params: { user: { name: "Dave", bio: "Acrobat", password: "" } }
 
@@ -132,8 +144,28 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Too many attempts. Try again in a few minutes.", flash[:alert]
     assert users(:david).reload.authenticate("secret123456")
 
+    put user_profile_url, params: { user: { password: "a new secret123456" } }
+    assert_equal "Enter your current password to change it.", flash[:alert]
+
     put user_profile_url, params: { user: { name: "Dave" } }
     assert_equal "Dave", users(:david).reload.name
+  end
+
+  test "any current password sent counts toward the rate limit, however blank it looks" do
+    Users::ProfilesController.cache_store.stubs(:increment).returns(11)
+
+    put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: " " } }
+    assert_equal "Too many attempts. Try again in a few minutes.", flash[:alert]
+  end
+
+  test "a current password that isn't text is no current password" do
+    [ false, [], {}, 0 ].each do |challenge|
+      put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: challenge } }, as: :json
+
+      assert_redirected_to user_profile_url
+      assert_equal "Enter your current password to change it.", flash[:alert]
+      assert users(:david).reload.authenticate("secret123456")
+    end
   end
 
   test "changing the password removes the other devices' push subscriptions, and this browser can register its own again" do

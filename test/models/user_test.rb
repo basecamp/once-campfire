@@ -6,6 +6,14 @@ class UserTest < ActiveSupport::TestCase
     assert users(:david).valid?
   end
 
+  test "a password challenge is checked whenever the password would change" do
+    assert_not User.find(users(:david).id).update(password: "a new secret123456", password_challenge: "")
+    assert_not User.find(users(:david).id).update(password: "a new secret123456", password_challenge: "not my password")
+    assert User.find(users(:david).id).update(name: "Dave", password_challenge: "")
+    assert User.find(users(:david).id).update(password: "a new secret123456", password_challenge: "secret123456")
+    assert User.find(users(:david).id).update(password: "another secret123456")
+  end
+
   test "creating users grants membership to the open rooms" do
     assert_difference -> { Membership.count }, +Rooms::Open.count do
       create_new_user
