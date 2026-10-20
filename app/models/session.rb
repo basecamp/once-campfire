@@ -18,10 +18,10 @@ class Session < ApplicationRecord
   private
     # A password change ends every session, so one can't start on a password checked before the change. Validated in
     # the save's transaction, which holds the database's write lock from the start, so a change commits either before
-    # this check, and fails it, or after the insert, and ends this session with the others. Compared here rather than in
-    # the query, which logs its values.
+    # this check, and fails it, or after the insert, and ends this session with the others. Read past the query cache,
+    # and compared here rather than in the query, which logs its values.
     def user_password_unchanged
-      unless User.where(id: user_id).pick(:password_digest) == user.password_digest
+      unless User.uncached { User.where(id: user_id).pick(:password_digest) } == user.password_digest
         errors.add :user, :invalid
       end
     end
