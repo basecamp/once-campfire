@@ -30,4 +30,19 @@ class Sessions::TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
     assert_nil parsed_cookies.signed[:session_token]
   end
+
+  test "update is refused when the password changes after the link was checked" do
+    user = users(:david)
+    transfer_id = user.transfer_id
+    stale = User.find(user.id)
+    User.find(user.id).update!(password: "a new secret123456")
+    User.stubs(:find_by_transfer_id).with(transfer_id).returns(stale)
+
+    assert_no_difference -> { Session.count } do
+      put session_transfer_url(transfer_id)
+    end
+
+    assert_response :bad_request
+    assert_nil parsed_cookies.signed[:session_token]
+  end
 end
