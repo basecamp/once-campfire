@@ -18,6 +18,9 @@ class Users::ProfilesController < ApplicationController
     else
       redirect_to user_profile_url, alert: update_alert
     end
+  rescue ActiveRecord::RecordInvalid
+    # The password changed again before this browser's new session could start, and that change signed it out.
+    redirect_to new_session_url
   end
 
   private
