@@ -24,28 +24,36 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
     connect
     sessions(:david_safari).destroy
 
-    testserver.advance_time 1.minute
+    travel 2.minutes
+    connection.beat
 
     assert socket.closed
     assert_equal "disconnect", socket.transmissions.last[:type]
     assert socket.transmissions.last[:reconnect]
   end
 
-  test "stays open while its session remains" do
+  test "keeps checking its session while open" do
     cookies.signed[:session_token] = sessions(:david_safari).token
     connect
 
-    testserver.advance_time 5.minutes
-
+    travel 2.minutes
+    connection.beat
     assert_not socket.closed
+
+    sessions(:david_safari).destroy
+    travel 2.minutes
+    connection.beat
+    assert socket.closed
   end
 
-  test "stops checking its session once disconnected" do
+  test "checks its session at most once a minute" do
     cookies.signed[:session_token] = sessions(:david_safari).token
     connect
-    disconnect
+    sessions(:david_safari).destroy
 
-    Session.expects(:exists?).never
-    testserver.advance_time 5.minutes
+    travel 30.seconds
+    connection.beat
+
+    assert_not socket.closed
   end
 end

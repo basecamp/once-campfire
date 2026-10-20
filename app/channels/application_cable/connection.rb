@@ -8,11 +8,15 @@ module ApplicationCable
 
     def connect
       self.current_user = find_verified_user
-      check_session_periodically
+      @session_checked_at = Time.now
     end
 
-    def disconnect
-      @session_check&.shutdown
+    # Signing out or changing the password ends sessions and then disconnects their connections, but a connection can
+    # miss that: one that found its session just before isn't listening yet. So on the server's heartbeat, which
+    # reaches every open connection, each one looks its session up again now and then, and closes once it's gone.
+    def beat
+      super
+      check_session if @session_checked_at.before?(SESSION_CHECK_INTERVAL.ago)
     end
 
     private
@@ -24,13 +28,9 @@ module ApplicationCable
         end
       end
 
-      # Signing out or changing the password ends sessions and then disconnects their connections, but a connection
-      # can miss that: one that found its session just before isn't listening yet. So each one looks its session up
-      # again now and then, and closes once it's gone.
-      def check_session_periodically
-        @session_check = executor.timer(SESSION_CHECK_INTERVAL) do
-          perform_work -> { close_unless_session_remains }, :call
-        end
+      def check_session
+        @session_checked_at = Time.now
+        perform_work -> { close_unless_session_remains }, :call
       end
 
       def close_unless_session_remains
