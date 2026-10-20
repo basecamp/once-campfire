@@ -56,4 +56,15 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
 
     assert_not socket.closed
   end
+
+  test "a rejected connection's heartbeat doesn't fail" do
+    request = ActionCable::Connection::TestSocket.build_request(ActionCable.server.config.mount_path || "/cable", cookies: cookies)
+    rejected = ApplicationCable::Connection.new \
+      ActionCable::Connection::TestServer.new(ActionCable.server), ActionCable::Connection::TestSocket.new(request)
+    rejected.handle_open
+
+    travel 2.minutes
+
+    assert_nothing_raised { rejected.beat }
+  end
 end

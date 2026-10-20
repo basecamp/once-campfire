@@ -13,10 +13,11 @@ module ApplicationCable
 
     # Signing out or changing the password ends sessions and then disconnects their connections, but a connection can
     # miss that: one that found its session just before isn't listening yet. So on the server's heartbeat, which
-    # reaches every open connection, each one looks its session up again now and then, and closes once it's gone.
+    # reaches every open connection, each one looks its session up again now and then, and closes once it's gone. A
+    # rejected connection has no session, and stays registered until its socket closes.
     def beat
       super
-      check_session if @session_checked_at.before?(SESSION_CHECK_INTERVAL.ago)
+      check_session if @session_checked_at&.before?(SESSION_CHECK_INTERVAL.ago)
     end
 
     private
