@@ -57,7 +57,7 @@ module Authentication
     end
 
     def start_new_session_for(user)
-      user.sessions.start!(user_agent: request.user_agent, ip_address: request.remote_ip).tap do |session|
+      user.sessions.create!(user_agent: request.user_agent, ip_address: request.remote_ip).tap do |session|
         authenticated_as session
       end
     end

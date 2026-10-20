@@ -14,6 +14,8 @@ class SessionsController < ApplicationController
     else
       render_rejection :unauthorized
     end
+  rescue ActiveRecord::RecordInvalid
+    render_rejection :unauthorized
   end
 
   def destroy

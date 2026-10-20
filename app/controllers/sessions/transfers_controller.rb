@@ -11,5 +11,7 @@ class Sessions::TransfersController < ApplicationController
     else
       head :bad_request
     end
+  rescue ActiveRecord::RecordInvalid
+    head :bad_request
   end
 end
