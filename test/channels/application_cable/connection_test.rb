@@ -18,4 +18,34 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
 
     assert_reject_connection { connect }
   end
+
+  test "closes once its session has ended without it hearing" do
+    cookies.signed[:session_token] = sessions(:david_safari).token
+    connect
+    sessions(:david_safari).destroy
+
+    testserver.advance_time 1.minute
+
+    assert socket.closed
+    assert_equal "disconnect", socket.transmissions.last[:type]
+    assert socket.transmissions.last[:reconnect]
+  end
+
+  test "stays open while its session remains" do
+    cookies.signed[:session_token] = sessions(:david_safari).token
+    connect
+
+    testserver.advance_time 5.minutes
+
+    assert_not socket.closed
+  end
+
+  test "stops checking its session once disconnected" do
+    cookies.signed[:session_token] = sessions(:david_safari).token
+    connect
+    disconnect
+
+    Session.expects(:exists?).never
+    testserver.advance_time 5.minutes
+  end
 end
