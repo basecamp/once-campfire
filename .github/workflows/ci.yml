@@ -94,12 +94,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    services:
-      redis:
-        image: redis # zizmor: ignore[unpinned-images] -- version tag is fine for service containers
-        ports:
-          - 6379:6379
-        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Install packages
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 sqlite3 libvips curl ffmpeg
@@ -111,8 +105,6 @@ jobs:
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
-        env:
-          REDIS_URL: redis://localhost:6379/0
         with:
           ruby-version: .ruby-version
           bundler-cache: true
@@ -127,12 +119,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    services:
-      redis:
-        image: redis # zizmor: ignore[unpinned-images] -- version tag is fine for service containers
-        ports:
-          - 6379:6379
-        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Install packages
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libsqlite3-0 sqlite3 libvips curl ffmpeg
@@ -144,8 +130,6 @@ jobs:
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
-        env:
-          REDIS_URL: redis://localhost:6379/0
         with:
           ruby-version: .ruby-version
           bundler-cache: true

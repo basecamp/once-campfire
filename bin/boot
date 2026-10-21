@@ -51,4 +51,8 @@ class MonitoredProcess
   end
 end
 
+unless system("./bin/rails", "db:prepare")
+  abort "Database preparation failed; not starting services."
+end
+
 ProcessMonitor.new("Procfile")
