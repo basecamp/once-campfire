@@ -9,9 +9,22 @@ WORKDIR /rails
 
 # Install base packages
 RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y curl libsqlite3-0 libvips libjemalloc2 ffmpeg redis && \
+    apt-get install --no-install-recommends -y ca-certificates curl libsqlite3-0 libvips libjemalloc2 ffmpeg redis && \
     ln -s /usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archive
+
+# Naming ca-certificates above takes the distribution's current trusted roots rather than the
+# ones frozen into the base image. Fail the build if either of these withdrawn roots is still
+# where Ruby's OpenSSL looks for trusted certificates.
+RUN ruby -ropenssl -e ' \
+    file = ENV[OpenSSL::X509::DEFAULT_CERT_FILE_ENV] || OpenSSL::X509::DEFAULT_CERT_FILE; \
+    dir = ENV[OpenSSL::X509::DEFAULT_CERT_DIR_ENV] || OpenSSL::X509::DEFAULT_CERT_DIR; \
+    pems = [file, *Dir.glob(File.join(dir, "*"))].select { |path| File.file?(path) } \
+      .flat_map { |path| File.read(path).scan(/-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----/m) }; \
+    subjects = pems.map { |pem| OpenSSL::X509::Certificate.new(pem).subject.to_s }.uniq; \
+    abort "Only #{subjects.size} roots in #{file} and #{dir}" if subjects.size < 100; \
+    withdrawn = subjects.grep(%r{/CN=(emSign ECC Root CA - G3|AAA Certificate Services)\z}); \
+    abort "Withdrawn roots still trusted: #{withdrawn}" if withdrawn.any?'
 
 # Set production environment
 ENV RAILS_ENV="production" \
