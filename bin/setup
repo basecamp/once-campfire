@@ -58,14 +58,14 @@ echo
 
 # Install dependencies
 if command -v brew &>/dev/null; then
-  step "Installing packages" brew install sqlite ffmpeg mise
+  step "Installing packages" brew install sqlite ffmpeg mise vips
 elif command -v pacman &>/dev/null; then
-  packages=(sqlite ffmpeg mise)
+  packages=(sqlite ffmpeg mise libvips)
   if ! pacman -Q "${packages[@]}" >/dev/null 2>&1; then
     step "Installing packages" sudo pacman -S --noconfirm --needed "${packages[@]}"
   fi
 elif command -v apt &>/dev/null; then
-  step "Installing packages" sudo apt-get install --no-install-recommends -y libsqlite3-0 ffmpeg
+  step "Installing packages" sudo apt-get install --no-install-recommends -y libsqlite3-0 ffmpeg libvips
 fi
 
 if ! command -v mise &>/dev/null; then
