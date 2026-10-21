@@ -36,6 +36,19 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert parsed_cookies.signed[:session_token]
   end
 
+  test "create is refused when the password changes after it was checked" do
+    user = User.find(users(:david).id)
+    User.find(user.id).update!(password: "a new secret123456")
+    User.stubs(:authenticate_by).returns(user)
+
+    assert_no_difference -> { Session.count } do
+      post session_url, params: { email_address: "david@37signals.com", password: "secret123456" }
+    end
+
+    assert_response :unauthorized
+    assert_nil parsed_cookies.signed[:session_token]
+  end
+
   test "create with invalid credentials" do
     post session_url, params: { email_address: "david@37signals.com", password: "wrong" }
 

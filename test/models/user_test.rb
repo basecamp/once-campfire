@@ -51,7 +51,7 @@ class UserTest < ActiveSupport::TestCase
   end
 
   test "changing the password signs out every session, the current one included" do
-    Current.session = users(:david).sessions.start!(user_agent: "This device", ip_address: "127.0.0.1")
+    Current.session = users(:david).sessions.create!(user_agent: "This device", ip_address: "127.0.0.1")
 
     assert_changes -> { users(:david).sessions.count }, to: 0 do
       users(:david).update!(password: "a new secret123456")

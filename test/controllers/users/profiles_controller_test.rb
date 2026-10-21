@@ -43,6 +43,16 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, users(:david).sessions.count
   end
 
+  test "changing the password signs this browser out when it changes again before its new session starts" do
+    User.stubs(:uncached).returns(BCrypt::Password.create("someone else's secret", cost: BCrypt::Engine::MIN_COST))
+
+    assert_changes -> { users(:david).sessions.count }, to: 0 do
+      put user_profile_url, params: { user: { password: "a new secret123456", password_challenge: "secret123456" } }
+    end
+
+    assert_redirected_to new_session_url
+  end
+
   test "changing the password gives this browser a new session, so a copy of its cookie stops working" do
     copied_cookie = cookies[:session_token]
 
