@@ -84,10 +84,12 @@ module CachedResponses
 
     def cache_completed_response(key, original_session, encoding)
       if response.status == 200 && response.media_type == "text/html" && session.to_hash == original_session && !response.headers["Content-Encoding"]
-        body = encoding == "gzip" ? Zlib.gzip(response.body) : response.body
-        unless body.empty? || response.headers["ETag"] || response.headers["Last-Modified"]
-          # Match Rack::ETag once, rather than hashing the same bytes on each hit.
-          response.headers["ETag"] = %(W/"#{Digest::SHA256.hexdigest(body).byteslice(0, 32)}")
+        html = response.body
+        body = encoding == "gzip" ? Zlib.gzip(html) : html
+        unless html.empty? || response.headers["ETag"] || response.headers["Last-Modified"]
+          # Match Rack::ETag once, rather than hashing the same bytes on each hit. Hash the HTML, as it
+          # does: gzip bytes carry the time they were compressed, so no render would ever match them.
+          response.headers["ETag"] = %(W/"#{Digest::SHA256.hexdigest(html).byteslice(0, 32)}")
         end
         response.headers["Content-Encoding"] = "gzip" if encoding == "gzip"
         response.headers["Vary"] = (response.headers["Vary"].to_s.split(/,\s*/) | [ "Accept-Encoding" ]).join(", ")

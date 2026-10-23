@@ -178,6 +178,15 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     assert_not_equal etag, response.headers["ETag"]
   end
 
+  test "a compressed page answers a browser's revalidation" do
+    get room_url(@room), headers: { "Accept-Encoding" => "gzip" }
+    assert_equal "gzip", response.headers["Content-Encoding"]
+    etag = response.headers["ETag"]
+    assert etag.present?
+    get room_url(@room), headers: { "Accept-Encoding" => "gzip", "If-None-Match" => etag }
+    assert_response :not_modified
+  end
+
   test "origins and frame variants have separate entries" do
     get room_url(@room)
     ResponseCache.instance.expects(:write).twice
