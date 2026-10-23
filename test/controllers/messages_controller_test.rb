@@ -57,11 +57,30 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
 
     assert_rendered_turbo_stream_broadcast @room, :messages, action: "append", target: [ @room, :messages ] do
       assert_select ".message__body", text: /New one/
-      assert_copy_link_button room_at_message_url(@room, Message.last, host: "once.campfire.test")
+      assert_select ".message__options-btn", count: 1
+      assert_select ".message__actions-menu", count: 0
     end
   end
 
-  test "message copy links preserve the request origin in broadcasts and regular reads" do
+  test "creating a message with a file broadcasts it with its own menu" do
+    post room_messages_url(@room, format: :turbo_stream), params: { message: {
+      attachment: fixture_file_upload("moon.jpg", "image/jpeg"), client_message_id: 999 } }
+
+    assert_response :success
+    message = Message.last
+    assert_rendered_turbo_stream_broadcast @room, :messages, action: "append", target: [ @room, :messages ] do
+      assert_select ".message__actions-menu[data-popup-target='menu']", count: 1
+      assert_select ".quick-boosts form[action='#{message_boosts_path(message)}'][data-turbo-frame='#{dom_id(message, :boosting)}']", count: EmojiHelper::REACTIONS.size
+      assert_select "a.message__boost-btn[href='#{new_message_boost_path(message)}'][data-turbo-frame='#{dom_id(message, :new_boost)}']"
+      assert_select "a[title='Download'][href='#{rails_blob_path(message.attachment, disposition: "attachment", only_path: true)}']"
+      assert_select "button[title='Share'][data-web-share-files-value='#{rails_blob_path(message.attachment, only_path: true)}'][data-web-share-title-value='moon.jpg']"
+      assert_select "[title='Reply']", count: 0
+      assert_copy_link_button room_at_message_url(@room, message, host: "once.campfire.test")
+      assert_select "a.message__edit-btn[href='#{edit_room_message_path(@room, message)}'][data-turbo-frame='#{dom_id(message, :edit)}']"
+    end
+  end
+
+  test "message copy links preserve the request origin in the room's menu, broadcasts and regular reads" do
     [
       [ "once.campfire.test:38683", false, "http://once.campfire.test:38683" ],
       [ "once.campfire.test:8443", true, "https://once.campfire.test:8443" ],
@@ -71,8 +90,15 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
       host! host
       https! secure
 
+      get room_path(@room)
+      assert_response :success
+      text_message = @messages.last
+      copy_link = message_menu_for(text_message).at_css(".btn[title='Copy link']")
+      assert_equal "#{origin}/rooms/#{@room.id}/@#{text_message.id}", copy_link["data-copy-to-clipboard-content-value"]
+
+      # A message with a file is the one that still carries its menu
       post room_messages_path(@room, format: :turbo_stream), params: { message: {
-        body: "Request origin #{index}", client_message_id: "request-origin-#{index}" } }
+        attachment: fixture_file_upload("moon.jpg", "image/jpeg"), client_message_id: "request-origin-#{index}" } }
       assert_response :success
       message = Message.last
       expected_url = "#{origin}/rooms/#{@room.id}/@#{message.id}"
