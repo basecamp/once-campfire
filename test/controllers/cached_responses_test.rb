@@ -187,6 +187,14 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     assert_response :not_modified
   end
 
+  test "a frame answers a browser's revalidation" do
+    get user_sidebar_url(:me), headers: { "Turbo-Frame" => "user_sidebar" }
+    etag = response.headers["ETag"]
+    assert etag.present?
+    get user_sidebar_url(:me), headers: { "Turbo-Frame" => "user_sidebar", "If-None-Match" => etag }
+    assert_response :not_modified
+  end
+
   test "origins and frame variants have separate entries" do
     get room_url(@room)
     ResponseCache.instance.expects(:write).twice
