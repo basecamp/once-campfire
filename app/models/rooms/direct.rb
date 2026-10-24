@@ -2,8 +2,11 @@
 # always refer to the same direct room.
 class Rooms::Direct < Room
   class << self
+    # Two people opening their room with each other at once, or one of them from two tabs, would each find nothing
+    # and each create a room. Rails begins SQLite transactions immediate, holding the write lock from the start, so
+    # the second one waits for the first to create the room and then finds it.
     def find_or_create_for(users)
-      find_for(users) || create_for({}, users: users)
+      transaction { find_for(users) || create_for({}, users: users) }
     end
 
     private
