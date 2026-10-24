@@ -39,6 +39,27 @@ class WebhookTest < ActiveSupport::TestCase
     assert reply_message.attachment.present?
   end
 
+  test "delivery with an empty text reply posts nothing" do
+    assert_no_difference -> { Message.count } do
+      WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 200, body: "", headers: { "Content-Type" => "text/html; charset=utf-8" })
+      webhooks(:bender).deliver(messages(:first))
+    end
+  end
+
+  test "delivery with a blank text reply posts nothing" do
+    assert_no_difference -> { Message.count } do
+      WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 200, body: " \r\n", headers: { "Content-Type" => "text/plain" })
+      webhooks(:bender).deliver(messages(:first))
+    end
+  end
+
+  test "delivery with an empty attachment reply posts nothing" do
+    assert_no_difference %w[ Message.count ActiveStorage::Blob.count ] do
+      WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 200, body: "", headers: { "Content-Type" => "image/jpeg" })
+      webhooks(:bender).deliver(messages(:first))
+    end
+  end
+
   test "delivery with error reply" do
     assert_no_difference -> { Message.count } do
       WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 500, body: "<h1>Internal Error!</h1>", headers: { "Content-Type" => "text/html" })
