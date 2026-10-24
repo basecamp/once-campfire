@@ -219,6 +219,7 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
       true
     end
     get user_sidebar_url(:me)
+    assert_match 'page;desc="miss"', response.headers["Server-Timing"]
     Users::SidebarsController.any_instance.unstub(:set_version_headers)
     ResponseCache.instance.expects(:write).once
     get user_sidebar_url(:me)
