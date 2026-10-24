@@ -6,7 +6,7 @@ class Messages::ByBotsController < MessagesController
   before_action :set_room
   before_action :set_message, only: %i[ update destroy ]
   before_action :ensure_can_administer, only: %i[ update destroy ]
-  before_action :ensure_body_or_attachment_present, only: :create
+  before_action :ensure_body_or_attachment_present, only: %i[ create update ]
 
   def index
     @messages = find_paged_messages
