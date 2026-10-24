@@ -33,7 +33,8 @@ class SendingMessagesTest < ApplicationSystemTestCase
 
   test "a message on its way shows the text as it was typed" do
     text = %(sed 's/a/$&/' and echo $'b' and $$ and $` and $messageTimestamp$ end)
-    users(:jz).update!(name: "J$Z$") # The template carries the author's name, which can look like a placeholder too.
+    # The template carries the author's name, which can look like a placeholder too, or like an object's own method.
+    users(:jz).update!(name: "J$Z$ $constructor$")
     join_room rooms(:designers)
     messages_before = all(".message", visible: :all).size
 
@@ -43,7 +44,7 @@ class SendingMessagesTest < ApplicationSystemTestCase
     click_on "send"
 
     assert_selector "[data-pending-message] .lexxy-content", exact_text: text
-    assert_selector "[data-pending-message] .message__author", exact_text: "J$Z$"
+    assert_selector "[data-pending-message] .message__author", exact_text: "J$Z$ $constructor$"
     assert_equal messages_before + 1, all(".message", visible: :all).size
 
     assert_selector ".message[data-message-id]:not([data-pending-message]) .lexxy-content", exact_text: text, wait: 10

@@ -89,7 +89,7 @@ export default class ClientMessage {
   // One pass, with a function: what was typed goes in as it is, never read as a replacement pattern ($&, $') or as
   // another placeholder.
   #createFromTemplate(data) {
-    return this.#template.innerHTML.replace(/\$(\w+)\$/g, (placeholder, key) => key in data ? data[key] : placeholder)
+    return this.#template.innerHTML.replace(/\$(\w+)\$/g, (placeholder, key) => Object.hasOwn(data, key) ? data[key] : placeholder)
   }
 
   #containsOnlyEmoji(text) {
