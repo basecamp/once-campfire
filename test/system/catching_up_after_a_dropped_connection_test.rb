@@ -23,8 +23,9 @@ class CatchingUpAfterADroppedConnectionTest < ApplicationSystemTestCase
     assert_equal [ "Missed while away", "Sent while away" ], texts_from_while_away
   end
 
-  test "messages sent while the connection is down stay before one that arrives live as it comes back" do
+  test "messages missed or sent while the connection is down stay before one that arrives live as it comes back" do
     drop_connection
+    using_session("Kevin") { send_message "Missed while away" }
     send_message "Sent while away"
     send_message "Sent again while away"
     mark_message "Sent again while away"
@@ -38,7 +39,7 @@ class CatchingUpAfterADroppedConnectionTest < ApplicationSystemTestCase
 
     # The refresh brings the newest one again whatever happens, so its mark goes once the refresh is in.
     assert_no_selector ".message[data-marked]", wait: 10
-    assert_equal [ "Sent while away", "Sent again while away", "Live while away" ], texts_from_while_away
+    assert_equal [ "Missed while away", "Sent while away", "Sent again while away", "Live while away" ], texts_from_while_away
   end
 
   test "messages missed while the connection is down show once it's back, and the ones shown before stay as they are" do
