@@ -114,6 +114,57 @@ class SendingMessagesTest < ApplicationSystemTestCase
     end
   end
 
+  test "messages that take a while each are still posted in order" do
+    # The first is answered after four seconds and the second after eight more: the third has waited for longer than ten
+    # seconds while the second is still on its way, but not for it.
+    holding_back_posts_of "First one", seconds: 4 do
+      holding_back_posts_of "Second one", seconds: 8 do
+        join_room rooms(:designers)
+
+        send_message_without_waiting "First one"
+        send_message_without_waiting "Second one"
+        send_message_without_waiting "Third one"
+
+        assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Second one", wait: 20
+        assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Third one", wait: 5
+      end
+    end
+
+    assert_equal [ "First one", "Second one", "Third one" ], rooms(:designers).messages.ordered.last(3).map { it.plain_text_body.strip }
+  end
+
+  test "messages sent to a room deleted meanwhile are all marked failed" do
+    posting_to_a_room_thats_gone do
+      holding_back_posts_of "First one" do
+        join_room rooms(:designers)
+
+        send_message_without_waiting "First one"
+        send_message_without_waiting "Second one"
+
+        assert_selector ".message--failed .message__body", text: "First one", wait: 5
+        assert_selector ".message--failed .message__body", text: "Second one"
+      end
+    end
+  end
+
+  test "the answer to a message doesn't change the room's page that was opened meanwhile" do
+    posting_to_a_room_thats_gone do
+      holding_back_posts_of "Anyone here?", seconds: 2 do
+        join_room rooms(:designers)
+
+        send_message_without_waiting "Anyone here?"
+        find("##{dom_id(rooms(:hq), :list)}").click
+        assert_selector "form#composer[action='#{room_messages_path(rooms(:hq))}']"
+
+        # Longer than the post is held back, so its answer has come in meanwhile.
+        assert_not page.has_text?("This room was deleted.", wait: 4)
+      end
+    end
+
+    send_message "Still here"
+    assert_equal "Still here", rooms(:hq).messages.ordered.last.plain_text_body.strip
+  end
+
   test "sending to a room deleted meanwhile says so, and marks the message failed" do
     posting_to_a_room_thats_gone do
       send_message_without_waiting "Anyone here?"
@@ -231,17 +282,19 @@ class SendingMessagesTest < ApplicationSystemTestCase
     # cancelled meanwhile never reaches the server.
     def holding_back_posts_of(text, seconds: 1.5)
       script = page.driver.browser.execute_cdp "Page.addScriptToEvaluateOnNewDocument", source: <<~JS
-        const fetch = window.fetch
-        window.fetch = (resource, options = {}) => {
-          if (!String(options.body?.get?.("message[body]")).includes(#{text.to_json})) return fetch(resource, options)
+        {
+          const fetch = window.fetch
+          window.fetch = (resource, options = {}) => {
+            if (!String(options.body?.get?.("message[body]")).includes(#{text.to_json})) return fetch(resource, options)
 
-          return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => fetch(resource, options).then(resolve, reject), #{(seconds * 1000).round})
-            options.signal?.addEventListener("abort", () => {
-              clearTimeout(timer)
-              reject(new DOMException("The request was cancelled.", "AbortError"))
+            return new Promise((resolve, reject) => {
+              const timer = setTimeout(() => fetch(resource, options).then(resolve, reject), #{(seconds * 1000).round})
+              options.signal?.addEventListener("abort", () => {
+                clearTimeout(timer)
+                reject(new DOMException("The request was cancelled.", "AbortError"))
+              })
             })
-          })
+          }
         }
       JS
 
