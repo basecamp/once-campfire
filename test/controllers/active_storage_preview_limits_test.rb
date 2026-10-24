@@ -40,6 +40,26 @@ class ActiveStoragePreviewLimitsTest < ActionDispatch::IntegrationTest
     assert_not variant.processed?
   end
 
+  test "a direct upload can't claim to be analyzed to get a representation past the pixel limit" do
+    sign_in :david
+    bytes = file_fixture("moon.jpg").binread
+    post rails_direct_uploads_path, as: :json, params: { blob: {
+      filename: "moon.jpg", byte_size: bytes.bytesize, checksum: OpenSSL::Digest::MD5.base64digest(bytes),
+      content_type: "image/jpeg", metadata: { analyzed: true, width: 1, height: 1 } } }
+    upload = response.parsed_body
+    put upload["direct_upload"]["url"], params: bytes, headers: upload["direct_upload"]["headers"]
+    blob = ActiveStorage::Blob.find_signed!(upload["signed_id"])
+    variant = blob.variant(resize_to_limit: [ 100, 100 ])
+
+    stub_const(Message::Attachment, :THUMBNAIL_MAX_PIXELS, @pixels - 1) do
+      get rails_representation_path(variant)
+    end
+
+    assert_not blob.reload.analyzed?
+    assert_response :not_found
+    assert_not variant.processed?
+  end
+
   test "a representation made before is still served past the pixel limit" do
     @variant.processed
 
