@@ -58,4 +58,36 @@ class PresenceChannelTest < ActionCable::Channel::TestCase
       unsubscribe
     end
   end
+
+  test "refreshing keeps the membership connected" do
+    membership = users(:david).memberships.first
+    subscribe room_id: membership.room_id
+
+    travel 50.seconds
+    perform :refresh
+    travel 50.seconds
+
+    assert membership.reload.connected?
+  end
+
+  test "unsubscribing once the membership is gone still stops the streams" do
+    membership = users(:david).memberships.first
+    subscribe room_id: membership.room_id
+    membership.destroy
+
+    unsubscribe
+
+    assert_no_streams
+  end
+
+  test "being present or refreshing once the membership is gone does nothing" do
+    membership = users(:david).memberships.first
+    subscribe room_id: membership.room_id
+    membership.destroy
+
+    assert_no_difference -> { Membership.count } do
+      perform :present
+      perform :refresh
+    end
+  end
 end
