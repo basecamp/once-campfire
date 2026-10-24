@@ -109,6 +109,22 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_not_includes jason.response.body, %(<meta name="current-user-id" content="#{users(:david).id}")
   end
 
+  test "a page whose message fragments are all cached loads none of their associations" do
+    ResponseCache.instance.stubs(:budget).returns(0)
+    get room_url(@room)
+    assert_response :success
+
+    queries = []
+    ActiveSupport::Notifications.subscribed(->(event) { queries << event.payload[:sql] }, "sql.active_record") do
+      get room_url(@room)
+    end
+    assert_response :success
+    # Preloading a page's messages reads these tables for many records at once;
+    # the layout's own single lookups (the account logo) are not message associations.
+    preloads = queries.grep(/FROM "(action_text_rich_texts|boosts|users|active_storage_attachments|active_storage_blobs)".* IN \(/)
+    assert_empty preloads
+  end
+
   test "a foreign commit after capture bypasses old native fragment lookups" do
     ResponseCache.instance.stubs(:budget).returns(0)
     get room_messages_url(@room)

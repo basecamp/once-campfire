@@ -22,6 +22,20 @@ class Message < ApplicationRecord
   scope :with_boosts, -> { includes(boosts: { booster: :avatar_attachment }) }
   scope :with_presentation, -> { with_creator.with_attachment_details.with_boosts.preload(:room) }
 
+  # Fragments of messages whose presentation version the database maintains
+  # (Message::PresentationVersion) are keyed by it, so a lookup needs only this row.
+  # Bump PRESENTATION when the message presentation filters change what they emit:
+  # helper changes alone do not change the template digest.
+  PRESENTATION = "v9"
+
+  def cache_version
+    presentation_versioned? ? "#{PRESENTATION}.#{presentation_version}" : super
+  end
+
+  def presentation_versioned?
+    !presentation_version.nil?
+  end
+
   def plain_text_body
     content = body.body
     text = if content && content.fragment.find_all(ActionText::Attachment.tag_name).empty?

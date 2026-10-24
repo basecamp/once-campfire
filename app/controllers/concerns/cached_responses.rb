@@ -26,9 +26,10 @@ module CachedResponses
   end
 
   def combined_fragment_cache_key(key)
-    if Array(key).flatten.any? { |part| part.is_a?(FragmentCache::ContentKey) }
-      # A content key fingerprints everything its fragment renders, and none of it
-      # is the viewer's, so every viewer shares one copy across database commits.
+    if Array(key).flatten.any? { |part| part.is_a?(Message) && part.presentation_versioned? }
+      # The database moves a message's presentation version whenever anything its
+      # fragment renders changes, and none of that is the viewer's, so every viewer
+      # shares one copy across database commits.
       super([ request.base_url, request.script_name, request.format.to_s, I18n.locale, key ])
     else
       @fragment_cache_context ||= [
