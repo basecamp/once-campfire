@@ -68,6 +68,7 @@ module CachedResponses
           end
         end
 
+        @response_cache_result = rendered ? "miss" : "hit"
         if entry
           response.headers.merge!(entry[:headers])
           response.headers.delete("Content-Length")
