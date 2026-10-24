@@ -18,8 +18,9 @@ export default class FileUploader {
     const result = new Promise((resolve, reject) => {
       req.addEventListener("readystatechange", () => {
         if (req.readyState === XMLHttpRequest.DONE) {
-          // Status 0: no answer at all, as when the network is down.
-          if (req.status > 0 && req.status < 400) {
+          // Only a stream answer is the posted message. No answer at all (status 0, as when the network is down), an
+          // error, or a page (the sign-in after the session ended, the notice of a room that's gone) means it wasn't.
+          if (this.#answeredWithStream(req)) {
             resolve(req.response)
           } else {
             reject()
@@ -37,5 +38,9 @@ export default class FileUploader {
       const percent = Math.round((event.loaded / event.total) * 100)
       this.progressCallback(percent, this.clientMessageId, this.file)
     }
+  }
+
+  #answeredWithStream(req) {
+    return req.getResponseHeader("Content-Type")?.startsWith("text/vnd.turbo-stream.html") ?? false
   }
 }

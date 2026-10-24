@@ -32,6 +32,24 @@ class UploadingFilesTest < ApplicationSystemTestCase
     assert_posted "moon.jpg"
   end
 
+  test "a file sent after the session ended, as on signing out in another tab, is shown as failed" do
+    attach_files "moon.jpg"
+    users(:jz).sessions.destroy_all
+
+    click_on "send"
+
+    assert_selector ".message--failed .message__pending-upload", text: "moon.jpg"
+  end
+
+  test "a file sent to a room the sender can no longer reach is shown as failed" do
+    attach_files "moon.jpg"
+    memberships(:jz_designers).destroy
+
+    click_on "send"
+
+    assert_selector ".message--failed .message__pending-upload", text: "moon.jpg"
+  end
+
   private
     def attach_files(*names)
       find("input[type=file][data-action~='composer#filePicked']", visible: :all).set(names.map { file_fixture(_1).to_s })
