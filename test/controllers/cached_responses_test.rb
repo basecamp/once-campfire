@@ -27,6 +27,10 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
   end
 
   test "Server-Timing reports page reuse and fragment reads" do
+    # Other tests pin MessagesController's own setting when they restore it.
+    previous_message_caching = MessagesController.perform_caching
+    MessagesController.perform_caching = true
+
     get room_messages_url(@room)
     assert_response :success
     assert_match 'page;desc="miss"', response.headers["Server-Timing"]
@@ -43,6 +47,8 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_match 'page;desc="miss"', response.headers["Server-Timing"]
     assert_match(/fragments;desc="hits=[1-9]\d* misses=0"/, response.headers["Server-Timing"])
+  ensure
+    MessagesController.perform_caching = previous_message_caching
   end
 
   test "a reused page carries the same enforcing policy, with no nonce" do
