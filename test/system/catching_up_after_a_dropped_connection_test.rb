@@ -23,6 +23,24 @@ class CatchingUpAfterADroppedConnectionTest < ApplicationSystemTestCase
     assert_equal [ "Missed while away", "Sent while away" ], texts_from_while_away
   end
 
+  test "messages sent while the connection is down stay before one that arrives live as it comes back" do
+    drop_connection
+    send_message "Sent while away"
+    send_message "Sent again while away"
+    mark_message "Sent again while away"
+
+    # As if it arrived live once the connection was back, between the refresh's query and its answer.
+    execute_script <<~JS, dom_id(rooms(:designers), :messages), 1.minute.from_now.to_fs(:epoch)
+      document.getElementById(arguments[0]).insertAdjacentHTML("beforeend",
+        `<div class="message message--formatted" id="message_999999" data-message-id="999999" data-sort-value="${arguments[1]}"><div class="lexxy-content">Live while away</div></div>`)
+    JS
+    restore_connection
+
+    # The refresh brings the newest one again whatever happens, so its mark goes once the refresh is in.
+    assert_no_selector ".message[data-marked]", wait: 10
+    assert_equal [ "Sent while away", "Sent again while away", "Live while away" ], texts_from_while_away
+  end
+
   test "messages missed while the connection is down show once it's back, and the ones shown before stay as they are" do
     using_session("Kevin") do
       send_message "Seen live"
@@ -64,6 +82,7 @@ class CatchingUpAfterADroppedConnectionTest < ApplicationSystemTestCase
       execute_script <<~JS, text
         Array.from(document.querySelectorAll(".message")).find((message) => message.textContent.includes(arguments[0])).dataset.marked = "true"
       JS
+      assert_selector ".message[data-marked]", text: text
     end
 
     def texts_from_while_away
