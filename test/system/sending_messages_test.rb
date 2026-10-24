@@ -31,6 +31,39 @@ class SendingMessagesTest < ApplicationSystemTestCase
     assert_message_text "👍👍"
   end
 
+  test "a message on its way shows the text as it was typed" do
+    text = %(sed 's/a/$&/' and echo $'b' and $$ and $` and $messageTimestamp$ end)
+    users(:jz).update!(name: "J$Z$") # The template carries the author's name, which can look like a placeholder too.
+    join_room rooms(:designers)
+    messages_before = all(".message", visible: :all).size
+
+    # The server holds the message longer than the wait below, so the page shows it pending meanwhile.
+    Message.define_singleton_method(:create_with_attachment!) { |attributes| sleep 3; super(attributes) }
+    type_in_composer text
+    click_on "send"
+
+    assert_selector "[data-pending-message] .lexxy-content", exact_text: text
+    assert_selector "[data-pending-message] .message__author", exact_text: "J$Z$"
+    assert_equal messages_before + 1, all(".message", visible: :all).size
+
+    assert_selector ".message[data-message-id]:not([data-pending-message]) .lexxy-content", exact_text: text, wait: 10
+    assert_no_selector "[data-pending-message]", visible: :all
+  ensure
+    Message.singleton_class.remove_method(:create_with_attachment!)
+  end
+
+  test "a message that can't be sent keeps the text as it was typed" do
+    text = %(sed 's/a/$&/' and echo $'b' and $$ and $` and $messageTimestamp$ end)
+
+    page.driver.browser.network_conditions = { offline: true, latency: 0, throughput: 0 }
+    type_in_composer text
+    click_on "send"
+
+    assert_selector ".message--failed .lexxy-content", exact_text: text
+  ensure
+    page.driver.browser.delete_network_conditions
+  end
+
   test "editing messages" do
     using_session("Kevin") do
       sign_in "kevin@37signals.com"
