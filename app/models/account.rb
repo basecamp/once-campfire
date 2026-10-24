@@ -9,6 +9,16 @@ class Account < ApplicationRecord
   has_json :settings, restrict_room_creation_to_administrators: false
 
   def logo_variant(size)
-    logo.variant(size).processed if logo.variable?
+    if logo.variable?
+      variant = logo.variant(size)
+      variant.processed if variant.processed? || logo_previewable?
+    end
   end
+
+  private
+    # The variant is made in the request that first shows the logo, so it gets the limit a message's preview has.
+    def logo_previewable?
+      logo.analyze unless logo.analyzed?
+      !Message::Attachment.too_many_pixels_to_preview?(logo.blob)
+    end
 end
