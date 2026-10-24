@@ -89,6 +89,20 @@ class Room::PushTest < ActiveSupport::TestCase
     assert_includes pushed_users { post_to_designers_mentioning_kevin }, users(:kevin)
   end
 
+  test "a long message's notification still goes out, with the start of the message" do
+    text = "All work and no play makes Jack a dull boy. " * 100
+
+    { rooms(:designers) => "David: ", rooms(:david_and_kevin) => "" }.each do |room, prefix|
+      notifications = sent_notifications { room.messages.create! body: text, client_message_id: "jack", creator: users(:david) }
+
+      assert_not_empty notifications
+      notifications.each do |notification|
+        assert_nothing_raised { encrypt_for_a_browser(notification) }
+        assert_equal "#{prefix}#{text.strip.truncate(200, omission: "…")}", JSON.parse(notification).dig("options", "body")
+      end
+    end
+  end
+
   test "does not build notification payloads without recipients" do
     Push::Subscription.delete_all
     message = messages(:first)
@@ -109,6 +123,23 @@ class Room::PushTest < ActiveSupport::TestCase
       Rails.configuration.x.web_push_pool.stubs(:queue).with { |_payload, subscriptions| queued.concat subscriptions.to_a }
       perform_enqueued_jobs(only: Room::PushMessageJob, &block)
       queued.map(&:user).uniq
+    end
+
+    def sent_notifications(&block)
+      notifications = Concurrent::Array.new
+      WebPush.stubs(:payload_send).with { |message:, **| notifications << message }
+      perform_enqueued_jobs(only: Room::PushMessageJob, &block)
+
+      deliveries = Rails.configuration.x.web_push_pool.delivery_pool
+      Timeout.timeout(2) { sleep 0.01 until deliveries.completed_task_count == deliveries.scheduled_task_count }
+      notifications.to_a
+    end
+
+    # The same encryption a delivery goes through, for a subscription a browser made.
+    def encrypt_for_a_browser(notification)
+      browser_key = OpenSSL::PKey::EC.generate("prime256v1")
+      WebPush::Encryption.encrypt notification,
+        Base64.urlsafe_encode64(browser_key.public_key.to_bn.to_s(2)), Base64.urlsafe_encode64(Random.bytes(16))
     end
 
     def wait_for_web_push_delivery_pool_tasks(count)
