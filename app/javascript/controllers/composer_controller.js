@@ -164,9 +164,10 @@ export default class extends Controller {
       const body = this.#pendingUploadProgress(file.name)
       await this.messagesOutlet.insertPendingMessage(clientMessageId, body)
 
-      const resp = await uploader.upload()
-
-      Turbo.renderStreamMessage(resp)
+      await uploader.upload().then(
+        response => Turbo.renderStreamMessage(response),
+        () => this.messagesOutlet.failPendingMessage(clientMessageId)
+      )
     }
   }
 

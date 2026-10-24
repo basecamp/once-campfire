@@ -18,7 +18,8 @@ export default class FileUploader {
     const result = new Promise((resolve, reject) => {
       req.addEventListener("readystatechange", () => {
         if (req.readyState === XMLHttpRequest.DONE) {
-          if (req.status < 400) {
+          // Status 0: no answer at all, as when the network is down.
+          if (req.status > 0 && req.status < 400) {
             resolve(req.response)
           } else {
             reject()
