@@ -77,7 +77,7 @@ module RoomsHelper
         "lexxy:file-accept->composer#preventAttachment refresh-room:online@window->composer#online"
 
       remaining_actions =
-        "typing-notifications#stop paste->composer#pasteFiles turbo:submit-end->composer#submitEnd refresh-room:offline@window->composer#offline"
+        "composer:submit->typing-notifications#stop paste->composer#pasteFiles refresh-room:offline@window->composer#offline"
 
       [ drop_target_actions, drag_and_drop_actions, attachment_actions, remaining_actions ].join(" ")
     end
