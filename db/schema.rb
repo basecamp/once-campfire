@@ -94,6 +94,10 @@ ActiveRecord::Schema[8.2].define(version: 2026_10_24_210000) do
     t.index ["user_id"], name: "index_memberships_on_user_id"
   end
 
+  create_table "message_presentation_sequences", force: :cascade do |t|
+    t.integer "value", default: 0, null: false
+  end
+
   create_table "messages", force: :cascade do |t|
     t.string "client_message_id", null: false
     t.datetime "created_at", null: false

@@ -5,6 +5,11 @@
 # fragment keyed by it (Message#cache_version) can be looked up from the message
 # row alone, without loading and fingerprinting the rest first.
 #
+# Versions come from one counter that only increases, so a message never sees
+# the same version twice: not after a REPLACE recreates its row, nor after a
+# repair, either of which would otherwise let a fragment cached under an old
+# version be served for new content.
+#
 # NULL means the fragment is not cached by version: messages with an attachment
 # or embedded attachments (their presentation also depends on Active Storage
 # processing state) and messages in direct rooms (whose name is the members').
@@ -13,96 +18,127 @@
 # schema.rb does not dump SQLite triggers; like Room::MessagesCount, ensure!
 # reinstalls them after schema loads, migrations and at boot.
 class Message::PresentationVersion
+  # Advances the counter; NEXT_VERSION then reads it. No ON CONFLICT clause: a
+  # REPLACE that fires these triggers would impose its own policy on them.
+  ADVANCE = [
+    "INSERT INTO message_presentation_sequences (id, value) SELECT 1, 0 WHERE NOT EXISTS (SELECT 1 FROM message_presentation_sequences)",
+    "UPDATE message_presentation_sequences SET value = value + 1 WHERE id = 1"
+  ].freeze
+  NEXT_VERSION = "(SELECT value FROM message_presentation_sequences WHERE id = 1)"
+
+  # Evaluated against the current state of the message row being updated.
+  UNVERSIONED = <<~SQL.squish
+    room_id IN (SELECT id FROM rooms WHERE type = 'Rooms::Direct')
+    OR EXISTS (SELECT 1 FROM active_storage_attachments
+               WHERE record_type = 'Message' AND record_id = messages.id)
+    OR EXISTS (SELECT 1 FROM action_text_rich_texts
+               WHERE record_type = 'Message' AND name = 'body' AND record_id = messages.id
+                 AND instr(body, '<action-text-attachment') > 0)
+  SQL
+
+  # Gives the matching messages a new version, or NULL if they can no longer be
+  # versioned. NULL versions stay NULL.
+  def self.bump_statements(condition)
+    ADVANCE + [ <<~SQL.squish ]
+      UPDATE messages SET presentation_version = CASE WHEN #{UNVERSIONED} THEN NULL ELSE #{NEXT_VERSION} END
+        WHERE presentation_version IS NOT NULL AND (#{condition})
+    SQL
+  end
+
+  def self.bump(condition)
+    bump_statements(condition).map { |statement| "#{statement};" }.join("\n")
+  end
+
+  MESSAGE_BODY = ->(row) { "#{row}.record_type = 'Message' AND #{row}.name = 'body'" }
+  USER_MESSAGES = ->(user_id) { "creator_id = #{user_id} OR id IN (SELECT message_id FROM boosts WHERE booster_id = #{user_id})" }
+
   TRIGGERS = {
     "messages_ai_presentation_version" => <<~SQL,
       AFTER INSERT ON messages
-      WHEN (SELECT type FROM rooms WHERE id = NEW.room_id) = 'Rooms::Direct'
       BEGIN
-        UPDATE messages SET presentation_version = NULL WHERE id = NEW.id;
+        #{bump "id = NEW.id"}
       END
     SQL
     "messages_au_presentation_version" => <<~SQL,
       AFTER UPDATE ON messages
-      WHEN NEW.presentation_version IS OLD.presentation_version
+      WHEN NEW.presentation_version IS OLD.presentation_version AND NEW.presentation_version IS NOT NULL
       BEGIN
-        UPDATE messages SET presentation_version = presentation_version + 1 WHERE id = NEW.id;
+        #{bump "id = NEW.id"}
       END
     SQL
     "rich_texts_ai_presentation_version" => <<~SQL,
       AFTER INSERT ON action_text_rich_texts
-      WHEN NEW.record_type = 'Message' AND NEW.name = 'body'
+      WHEN #{MESSAGE_BODY["NEW"]}
       BEGIN
-        UPDATE messages SET presentation_version =
-          CASE WHEN instr(NEW.body, '<action-text-attachment') > 0 THEN NULL ELSE presentation_version + 1 END
-          WHERE id = NEW.record_id;
+        #{bump "id = NEW.record_id"}
       END
     SQL
     "rich_texts_au_presentation_version" => <<~SQL,
       AFTER UPDATE ON action_text_rich_texts
-      WHEN NEW.record_type = 'Message' AND NEW.name = 'body'
+      WHEN (#{MESSAGE_BODY["OLD"]}) OR (#{MESSAGE_BODY["NEW"]})
       BEGIN
-        UPDATE messages SET presentation_version =
-          CASE WHEN instr(NEW.body, '<action-text-attachment') > 0 THEN NULL ELSE presentation_version + 1 END
-          WHERE id = NEW.record_id;
+        #{bump "(#{MESSAGE_BODY["OLD"]} AND id = OLD.record_id) OR (#{MESSAGE_BODY["NEW"]} AND id = NEW.record_id)"}
       END
     SQL
     "rich_texts_ad_presentation_version" => <<~SQL,
       AFTER DELETE ON action_text_rich_texts
-      WHEN OLD.record_type = 'Message' AND OLD.name = 'body'
+      WHEN #{MESSAGE_BODY["OLD"]}
       BEGIN
-        UPDATE messages SET presentation_version = presentation_version + 1 WHERE id = OLD.record_id;
+        #{bump "id = OLD.record_id"}
       END
     SQL
     "boosts_ai_presentation_version" => <<~SQL,
       AFTER INSERT ON boosts
       BEGIN
-        UPDATE messages SET presentation_version = presentation_version + 1 WHERE id = NEW.message_id;
+        #{bump "id = NEW.message_id"}
       END
     SQL
     "boosts_au_presentation_version" => <<~SQL,
       AFTER UPDATE ON boosts
       BEGIN
-        UPDATE messages SET presentation_version = presentation_version + 1 WHERE id IN (OLD.message_id, NEW.message_id);
+        #{bump "id IN (OLD.message_id, NEW.message_id)"}
       END
     SQL
     "boosts_ad_presentation_version" => <<~SQL,
       AFTER DELETE ON boosts
       BEGIN
-        UPDATE messages SET presentation_version = presentation_version + 1 WHERE id = OLD.message_id;
+        #{bump "id = OLD.message_id"}
       END
     SQL
     "users_au_presentation_version" => <<~SQL,
       AFTER UPDATE ON users
       BEGIN
-        UPDATE messages SET presentation_version = presentation_version + 1
-          WHERE creator_id = NEW.id OR id IN (SELECT message_id FROM boosts WHERE booster_id = NEW.id);
+        #{bump USER_MESSAGES["NEW.id"]}
       END
     SQL
     "rooms_au_presentation_version" => <<~SQL,
       AFTER UPDATE OF name, type ON rooms
       WHEN NEW.name IS NOT OLD.name OR NEW.type IS NOT OLD.type
       BEGIN
-        UPDATE messages SET presentation_version =
-          CASE WHEN NEW.type = 'Rooms::Direct' THEN NULL ELSE presentation_version + 1 END
-          WHERE room_id = NEW.id;
+        #{bump "room_id = NEW.id"}
       END
     SQL
     "attachments_ai_presentation_version" => <<~SQL,
       AFTER INSERT ON active_storage_attachments
       WHEN NEW.record_type IN ('Message', 'User')
       BEGIN
-        UPDATE messages SET presentation_version = NULL
-          WHERE NEW.record_type = 'Message' AND id = NEW.record_id;
-        UPDATE messages SET presentation_version = presentation_version + 1
-          WHERE NEW.record_type = 'User' AND (creator_id = NEW.record_id OR id IN (SELECT message_id FROM boosts WHERE booster_id = NEW.record_id));
+        #{bump "(NEW.record_type = 'Message' AND id = NEW.record_id) OR (NEW.record_type = 'User' AND (#{USER_MESSAGES["NEW.record_id"]}))"}
+      END
+    SQL
+    "attachments_au_presentation_version" => <<~SQL,
+      AFTER UPDATE ON active_storage_attachments
+      WHEN OLD.record_type IN ('Message', 'User') OR NEW.record_type IN ('Message', 'User')
+      BEGIN
+        #{bump "(NEW.record_type = 'Message' AND id = NEW.record_id)
+          OR (OLD.record_type = 'User' AND (#{USER_MESSAGES["OLD.record_id"]}))
+          OR (NEW.record_type = 'User' AND (#{USER_MESSAGES["NEW.record_id"]}))"}
       END
     SQL
     "attachments_ad_presentation_version" => <<~SQL
       AFTER DELETE ON active_storage_attachments
       WHEN OLD.record_type = 'User'
       BEGIN
-        UPDATE messages SET presentation_version = presentation_version + 1
-          WHERE creator_id = OLD.record_id OR id IN (SELECT message_id FROM boosts WHERE booster_id = OLD.record_id);
+        #{bump USER_MESSAGES["OLD.record_id"]}
       END
     SQL
   }.freeze
@@ -119,22 +155,17 @@ class Message::PresentationVersion
       TRIGGERS.each_key { |name| connection.execute("DROP TRIGGER IF EXISTS #{name}") }
     end
 
-    # Versions start from zero; messages that cannot be cached by version start NULL.
+    # Every versioned message gets a new version, or NULL if it cannot be versioned;
+    # NULL versions stay NULL. A repair runs it too, so versions only move forward.
     def backfill!(connection = ActiveRecord::Base.connection)
-      connection.execute <<~SQL
-        UPDATE messages SET presentation_version = CASE
-          WHEN room_id IN (SELECT id FROM rooms WHERE type = 'Rooms::Direct')
-            OR id IN (SELECT record_id FROM active_storage_attachments WHERE record_type = 'Message')
-            OR id IN (SELECT record_id FROM action_text_rich_texts
-                      WHERE record_type = 'Message' AND name = 'body' AND instr(body, '<action-text-attachment') > 0)
-          THEN NULL ELSE 0 END
-      SQL
+      bump_statements("1").each { |statement| connection.execute(statement) }
     end
 
     def ensure!(connection = ActiveRecord::Base.connection)
       return unless connection.adapter_name.match?(/sqlite/i)
       return unless connection.data_source_exists?(:messages)
       return unless connection.column_exists?(:messages, :presentation_version)
+      return unless connection.data_source_exists?(:message_presentation_sequences)
       return if triggers_installed?(connection)
 
       with_immediate_write(connection) do

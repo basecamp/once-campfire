@@ -60,7 +60,66 @@ class Message::PresentationVersionTest < ActiveSupport::TestCase
     assert_not @message.cache_version.to_s.start_with?("#{Message::PRESENTATION}.")
   end
 
+  test "updating an unversioned message with recursive triggers on stays unversioned" do
+    sql "UPDATE messages SET presentation_version = NULL WHERE id = ?", @message.id
+    with_recursive_triggers do
+      sql "UPDATE messages SET updated_at = ? WHERE id = ?", "2099-01-01 00:00:00", @message.id
+    end
+    assert_nil @message.reload.presentation_version
+  end
+
+  test "replacing a message row never reuses one of its versions" do
+    assert_moves(@message) { sql "UPDATE messages SET updated_at = ? WHERE id = ?", "2099-01-01 00:00:00", @message.id }
+    used = @message.reload.presentation_version
+    with_recursive_triggers do
+      sql "INSERT OR REPLACE INTO messages (id, room_id, creator_id, client_message_id, created_at, updated_at) VALUES (?, ?, ?, 'replaced', ?, ?)",
+        @message.id, @message.room_id, @message.creator_id, now, now
+    end
+    assert @message.reload.presentation_version > used, "the replaced row restarted at #{@message.presentation_version}"
+  end
+
+  test "repairing the triggers advances versions and keeps opt-outs" do
+    unversioned = messages(:second)
+    sql "UPDATE messages SET presentation_version = NULL WHERE id = ?", unversioned.id
+    sql "DROP TRIGGER messages_au_presentation_version"
+    assert_moves(@message) { Message::PresentationVersion.ensure! }
+    assert_nil unversioned.reload.presentation_version
+  end
+
+  test "moving a message into a direct room stops versioning it" do
+    sql "UPDATE messages SET room_id = ? WHERE id = ?", rooms(:david_and_jason).id, @message.id
+    assert_nil @message.reload.presentation_version
+  end
+
+  test "moving a body to another message moves the version of both" do
+    other = messages(:third)
+    sql "DELETE FROM action_text_rich_texts WHERE record_type = 'Message' AND record_id = ?", other.id
+    assert_moves(@message, other) { sql "UPDATE action_text_rich_texts SET record_id = ? WHERE record_type = 'Message' AND record_id = ?", other.id, @message.id }
+    assert_moves(other) { sql "UPDATE action_text_rich_texts SET name = 'draft' WHERE record_type = 'Message' AND record_id = ?", other.id }
+  end
+
+  test "moving an attachment stops versioning its new message and moves avatars' messages" do
+    blob_id = insert_blob("moved")
+    sql "INSERT INTO active_storage_attachments (name, record_type, record_id, blob_id, created_at) VALUES ('avatar', 'User', ?, ?, ?)", users(:kevin).id, blob_id, now
+    assert_moves(@message) { sql "UPDATE active_storage_attachments SET record_id = ? WHERE blob_id = ?", @message.creator_id, blob_id }
+
+    sql "UPDATE active_storage_attachments SET name = 'attachment', record_type = 'Message', record_id = ? WHERE blob_id = ?", @message.id, blob_id
+    assert_nil @message.reload.presentation_version
+  end
+
   private
+    def insert_blob(key)
+      sql "INSERT INTO active_storage_blobs (key, filename, content_type, byte_size, checksum, service_name, created_at) VALUES (?, 'moon.jpg', 'image/jpeg', 1, 'x', 'test', ?)", key, now
+      Message.connection.select_value("SELECT id FROM active_storage_blobs WHERE key = #{Message.connection.quote(key)}")
+    end
+
+    def with_recursive_triggers
+      sql "PRAGMA recursive_triggers = ON"
+      yield
+    ensure
+      sql "PRAGMA recursive_triggers = OFF"
+    end
+
     def sql(statement, *binds)
       connection = Message.connection
       connection.execute(statement.gsub("?") { connection.quote(binds.shift) })
@@ -70,11 +129,13 @@ class Message::PresentationVersionTest < ActiveSupport::TestCase
       Time.current.utc.strftime("%Y-%m-%d %H:%M:%S.%6N")
     end
 
-    def assert_moves(message)
-      before = message.reload.presentation_version
+    def assert_moves(*messages)
+      before = messages.map { |message| message.reload.presentation_version }
       yield
-      after = message.reload.presentation_version
-      assert after > before, "presentation_version stayed at #{before}"
-      assert_equal "#{Message::PRESENTATION}.#{after}", message.cache_version
+      messages.zip(before).each do |message, version|
+        after = message.reload.presentation_version
+        assert after > version, "message #{message.id}'s presentation_version stayed at #{version}"
+        assert_equal "#{Message::PRESENTATION}.#{after}", message.cache_version
+      end
     end
 end
