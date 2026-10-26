@@ -34,6 +34,9 @@ Rails.application.configure do
   # Disable request forgery protection in test environment.
   config.action_controller.allow_forgery_protection = false
 
+  # Jobs run on the test adapter; the queue database is there for tests of Solid Queue's own records.
+  config.solid_queue.connects_to = { database: { writing: :queue } }
+
   # Store uploaded files on the local file system in a temporary directory.
   config.active_storage.service = :test
 
