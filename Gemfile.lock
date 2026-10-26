@@ -169,7 +169,7 @@ GEM
       rexml
     crass (1.0.8)
     date (3.5.1)
-    debug (1.11.0)
+    debug (1.11.1)
       irb (~> 1.10)
       reline (>= 0.3.8)
     drb (2.2.3)
@@ -270,7 +270,7 @@ GEM
       useragent (~> 0.16.3)
     pp (0.6.4)
       prettyprint
-    prettyprint (0.2.0)
+    prettyprint (0.2.1)
     prism (1.9.0)
     psych (5.5.0)
       date
