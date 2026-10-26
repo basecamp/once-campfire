@@ -1,6 +1,6 @@
 GIT
   remote: https://github.com/basecamp/surfguard.git
-  revision: 59e278c01a537755f22791429051891949231ead
+  revision: 71cac69a592d9ef63ce27600eb26bdf94803a3eb
   specs:
     surfguard (0.2.0)
 
