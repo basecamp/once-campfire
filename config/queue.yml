@@ -14,5 +14,8 @@ development:
 test:
   <<: *default
 
+performance:
+  <<: *default
+
 production:
   <<: *default

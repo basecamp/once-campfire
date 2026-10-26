@@ -1,5 +1,9 @@
 require "solid_queue"
 
+# Docker stops a container 10 seconds after SIGTERM. Give a running job 8 of
+# them to finish before the supervisor fails it and exits.
+SolidQueue.shutdown_timeout = 8.seconds
+
 # The WAL checkpoint contender owns a flock descriptor. Solid Queue forks its
 # workers, dispatchers, and scheduler from the supervisor, so stop it in the
 # supervisor and create a fresh contender in each child process.
