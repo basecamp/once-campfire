@@ -48,6 +48,27 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "creating a message in a room that's gone says so in the composer, as not found" do
+    @room.destroy!
+
+    assert_no_difference -> { Message.count } do
+      post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "Anyone?", client_message_id: 998 } }
+    end
+
+    assert_response :not_found
+    assert_select "turbo-stream[action=replace][target=composer-frame] turbo-frame#composer-frame", text: /This room was deleted/
+  end
+
+  test "creating a message in a room that's gone answers a page to a request that doesn't ask for a stream" do
+    @room.destroy!
+
+    post room_messages_url(@room), params: { message: { body: "Anyone?", client_message_id: 997 } }, headers: { "Accept" => "*/*" }
+
+    assert_response :not_found
+    assert_equal "text/html", response.media_type
+    assert_select "turbo-frame#composer-frame", text: /This room was deleted/
+  end
+
   test "creating a message broadcasts the message to the room" do
     ContentFilters::TextMessagePresentationFilters.expects(:apply).once.with { |body| body.to_plain_text == "New one" }.returns(ActionText::Content.new("New one"))
     post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
