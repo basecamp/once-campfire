@@ -1,0 +1,50 @@
+<%# The menu behind a message's options button. Rendered for a message with a file, and once per room in messages/_actions_menu_template.html.erb for all the others, where $messageId$ stands in for message_id. %>
+
+<div class="message__actions-menu border shadow" data-popup-target="menu">
+  <div class="quick-boosts">
+    <% boost_path = message_boosts_path(message_id) %>
+    <% boost_frame = "boosting_message_#{message_id}" %>
+    <% EmojiHelper::REACTIONS.each do |character, title| %>
+      <form data-turbo-frame="<%= boost_frame %>" data-action="popup#close" action="<%= boost_path %>" accept-charset="UTF-8" method="post">
+        <%= hidden_field_tag "boost[content]", character %>
+        <button name="button" type="submit" title="<%= title %>" class="btn message__action-btn" data-emoji="<%= character %>">
+          <figure class="margin-none boost-character"><%= character %></figure>
+          <span class="for-screen-reader"><%= title %></span>
+        </button>
+      </form>
+    <% end %>
+
+    <%= link_to new_message_boost_path(message_id),
+          class: "btn message__action-btn message__boost-btn",
+          data: { turbo_frame: "new_boost_message_#{message_id}", action: "soft-keyboard#open popup#close" } do %>
+      <%= image_tag "boost.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+      <span class="for-screen-reader">New boost</span>
+    <% end %>
+  </div>
+
+  <div class="flex flex-wrap border-top margin-block-start-half pad-block-start-half message__actions-grid">
+    <% if attachment %>
+      <%= link_to rails_blob_path(attachment, disposition: "attachment", only_path: true), class: "btn message__action-btn center full-width hide-in-ios-pwa", title: "Download", aria: { label: "Download" } do %>
+        <%= image_tag "download.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+      <% end %>
+
+      <%= tag.button class: "btn message__action-btn center full-width",
+          data: { controller: "web-share", action: "web-share#share", web_share_files_value: rails_blob_path(attachment, only_path: true), web_share_title_value: attachment.filename.to_s }, title: "Share", aria: { label: "Share" } do %>
+        <%= image_tag "share.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+      <% end %>
+    <% else %>
+      <%= tag.button class: "btn message__action-btn center full-width", data: { action: "reply#reply" }, title: "Reply", aria: { label: "Reply" } do %>
+        <%= image_tag "reply.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+      <% end %>
+    <% end %>
+
+    <%= tag.button class: "btn message__action-btn center full-width", title: "Copy link", aria: { label: "Copy link" }, data: { controller: "copy-to-clipboard", action: "copy-to-clipboard#copy", copy_to_clipboard_success_class: "btn--success", copy_to_clipboard_content_value: room_at_message_url(room, message_id) } do %>
+      <%= image_tag "link.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+    <% end %>
+
+    <%= link_to edit_room_message_path(room, message_id), class: "btn message__action-btn center full-width message__edit-btn",
+          data: { turbo_frame: "edit_message_#{message_id}" }, title: "Edit", aria: { label: "Edit"} do %>
+      <%= image_tag "pencil.svg", class: "colorize--black", size: 20, aria: { hidden: "true" } %>
+    <% end %>
+  </div>
+</div>

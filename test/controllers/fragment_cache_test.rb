@@ -63,15 +63,13 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "foreign conditional body"
   end
 
-  test "message controls survive creator edits while the author is rendered fresh" do
+  test "the author is rendered fresh after a creator edit" do
     get room_messages_url(@room)
     assert_response :success
-    foreign_write("UPDATE users SET name = ? WHERE id = ?", "Fresh creator with cached controls", @message.creator_id)
-    ActionView::Base.any_instance.expects(:form_with).never
+    foreign_write("UPDATE users SET name = ? WHERE id = ?", "Fresh creator", @message.creator_id)
     get room_messages_url(@room)
     assert_response :success
-    assert_includes response.body, "Fresh creator with cached controls"
-    assert_select "form[action=?]", message_boosts_path(@message)
+    assert_includes response.body, "Fresh creator"
   end
 
   test "a commit in another room retains content-validated message collection hits" do
