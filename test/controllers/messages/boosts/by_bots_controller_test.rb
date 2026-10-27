@@ -50,6 +50,14 @@ class Messages::Boosts::ByBotsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "create with a plain text body that isn't UTF-8 is a bad request" do
+    assert_no_difference -> { Boost.count } do
+      assert_raises ActionController::BadRequest do
+        post room_bot_message_boosts_url(@room, @bot.bot_key, @message), params: "café".encode("ISO-8859-1"), headers: { "Content-Type" => "text/plain" }
+      end
+    end
+  end
+
   test "create requires a valid bot key" do
     assert_no_difference -> { Boost.count } do
       post room_bot_message_boosts_url(@room, "invalid-bot-key", @message), params: +"👀"
