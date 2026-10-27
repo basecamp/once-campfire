@@ -16,7 +16,6 @@ module SystemTestHelper
   def join_room(room)
     visit room_url(room)
     wait_for_cable_connection
-    dismiss_pwa_install_prompt
   end
 
   def send_message(message)
@@ -48,11 +47,5 @@ module SystemTestHelper
       find(".message__options-btn", visible: false).hover.click
     ensure
       assert_selector ".message__boost-btn", visible: true
-  end
-
-  def dismiss_pwa_install_prompt
-    if page.has_css?("[data-pwa-install-target~='dialog']", visible: :visible, wait: 5)
-      click_on("Close")
-    end
   end
 end
