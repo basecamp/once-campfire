@@ -1,6 +1,9 @@
 class Messages::ByBotsController < MessagesController
   include RawRequestBody
 
+  skip_before_action :require_authentication
+  prepend_before_action :require_bot_authentication
+
   allow_bot_access only: %i[ index create update destroy ]
 
   before_action :set_room
@@ -40,7 +43,16 @@ class Messages::ByBotsController < MessagesController
       headers["X-Total-Count"] = @room.messages_count.to_s
 
       if next_page = next_page_params
-        headers["Link"] = %(<#{room_bot_messages_url(@room, params[:bot_key], **next_page)}>; rel="next")
+        headers["Link"] = %(<#{next_page_url(next_page)}>; rel="next")
+      end
+    end
+
+    # Keep the key out of the link when it arrived in a header.
+    def next_page_url(page)
+      if bot_key = request.path_parameters[:bot_key]
+        room_bot_messages_url(@room, bot_key, **page)
+      else
+        room_bot_api_messages_url(@room, **page)
       end
     end
 

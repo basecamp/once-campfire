@@ -1,6 +1,9 @@
 class Messages::Boosts::ByBotsController < Messages::BoostsController
   include RawRequestBody
 
+  skip_before_action :require_authentication
+  prepend_before_action :require_bot_authentication
+
   allow_bot_access only: %i[ create destroy ]
 
   before_action :ensure_content_present, only: :create
