@@ -14,7 +14,10 @@
 
   <%= messages_tag(@room) do %>
     <%= render "rooms/show/invitation", room: @room %>
-    <%= render partial: "messages/message", collection: @messages, cached: ->(message) { message_fragment_cache_key(message) } %>
+    <% message_runs(@messages).each do |run| %>
+      <% fragment_cached = message_run_fragment_cached?(run) %>
+      <%= render partial: "messages/message", collection: run, cached: (->(message) { message_fragment_cache_key(message) } if fragment_cached), locals: { fragment_cached: fragment_cached } %>
+    <% end %>
   <% end %>
 
   <%= turbo_stream_from @room, :messages, channel: "RoomMessagesChannel" %>

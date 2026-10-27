@@ -1,6 +1,6 @@
 <%# Be sure to check/update messages/_template.html.erb when changing this file %>
 
-<%= cache_message_actions(message) do %>
+<%= cache_message_actions(message, url, fragment_cached: local_assigns[:fragment_cached]) do %>
 <div class="message__actions" data-controller="soft-keyboard">
   <%= tag.details class: "position-relative",
       data: { controller: "popup", action: "keydown.esc->popup#close toggle->popup#toggle click@document->popup#closeOnClickOutside", popup_orientation_top_class: "popup-orientation-top" } do %>
