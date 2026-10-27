@@ -1,9 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-db_name="${RAILS_ENV:-production}.sqlite3"
-snapshot="/rails/storage/backups/$db_name"
-db="/rails/storage/db/$db_name"
+env="${RAILS_ENV:-production}"
+app_root="${APP_ROOT:-/rails}"
+db_name="$env.sqlite3"
+snapshot="$app_root/storage/backups/$db_name"
+db="$app_root/storage/db/$db_name"
+queue_db="$app_root/storage/db/${env}_queue.sqlite3"
+
+# Queued jobs are not backed up: any left in the volume belong to a different
+# point in time than the restored app DB. db:prepare recreates an empty queue.
+rm -f "$queue_db" "$queue_db-wal" "$queue_db-shm" "$queue_db-journal"
 
 if [ -f "$snapshot" ]; then
   mkdir -p "$(dirname "$db")"
