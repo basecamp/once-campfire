@@ -5,6 +5,7 @@ class MessagesController < ApplicationController
   before_action :set_message, only: %i[ show edit update destroy ]
   before_action :ensure_can_administer, only: %i[ edit update destroy ]
   around_action :cache_read_response, only: :index
+  around_action :enqueue_jobs_together, only: :create
 
   layout false, only: :index
 
@@ -59,6 +60,11 @@ class MessagesController < ApplicationController
   end
 
   private
+    # Posting enqueues a push and an unread fanout, plus bot webhooks: write them in one go.
+    def enqueue_jobs_together(&)
+      ApplicationJob.enqueue_together(&)
+    end
+
     def set_message
       @message = @room.messages.find(params[:id])
     end
