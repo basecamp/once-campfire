@@ -11,6 +11,9 @@ gem "benchmark"
 gem "sqlite3"
 gem "redis", "~> 5.4"
 
+# Caching
+gem "solid_cache", "~> 1.0.10"
+
 # Deployment
 gem "puma", "~> 8.0"
 
