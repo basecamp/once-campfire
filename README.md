@@ -75,6 +75,9 @@ KLOC counts backend code plus executable code in templates; excludes plain HTML,
 Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395 with 32 GB RAM,
 with four hardware cores allocated to each app.
 
+To run the Rails HTTP workloads locally, see the [benchmark harness and usage instructions](https://github.com/basecamp/once-campfire-rust/blob/main/bench/run)
+in the Rust repository.
+
 ## Development
 
 You are welcome - and encouraged - to modify Campfire to your liking.
