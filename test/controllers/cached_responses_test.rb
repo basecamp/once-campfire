@@ -26,6 +26,31 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
     ActionController::Base.perform_caching = @previous_caching
   end
 
+  test "Server-Timing reports page reuse and fragment reads" do
+    # Other tests pin MessagesController's own setting when they restore it.
+    previous_message_caching = MessagesController.perform_caching
+    MessagesController.perform_caching = true
+
+    get room_messages_url(@room)
+    assert_response :success
+    assert_match 'page;desc="miss"', response.headers["Server-Timing"]
+    assert_match(/fragments;desc="hits=\d+ misses=\d+"/, response.headers["Server-Timing"])
+
+    get room_messages_url(@room)
+    assert_response :success
+    assert_match 'page;desc="hit"', response.headers["Server-Timing"]
+    assert_no_match "fragments", response.headers["Server-Timing"]
+
+    # A new page render finds every message fragment the first one stored.
+    ResponseCache.instance.clear
+    get room_messages_url(@room)
+    assert_response :success
+    assert_match 'page;desc="miss"', response.headers["Server-Timing"]
+    assert_match(/fragments;desc="hits=[1-9]\d* misses=0"/, response.headers["Server-Timing"])
+  ensure
+    MessagesController.perform_caching = previous_message_caching
+  end
+
   test "a reused page carries the same enforcing policy, with no nonce" do
     get room_messages_url(@room)
     first = response.headers["Content-Security-Policy"]
@@ -200,6 +225,7 @@ class CachedResponsesTest < ActionDispatch::IntegrationTest
       true
     end
     get user_sidebar_url(:me)
+    assert_match 'page;desc="miss"', response.headers["Server-Timing"]
     Users::SidebarsController.any_instance.unstub(:set_version_headers)
     ResponseCache.instance.expects(:write).once
     get user_sidebar_url(:me)

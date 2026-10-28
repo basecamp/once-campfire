@@ -68,6 +68,8 @@ module CachedResponses
           end
         end
 
+        # A hit only when a stored entry is served; an expired snapshot renders below.
+        @response_cache_result = entry && !rendered ? "hit" : "miss"
         if entry
           response.headers.merge!(entry[:headers])
           response.headers.delete("Content-Length")
