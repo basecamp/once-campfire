@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.2].define(version: 2026_10_07_190000) do
+ActiveRecord::Schema[8.2].define(version: 2026_10_24_210000) do
   create_table "accounts", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "custom_styles"
@@ -94,10 +94,15 @@ ActiveRecord::Schema[8.2].define(version: 2026_10_07_190000) do
     t.index ["user_id"], name: "index_memberships_on_user_id"
   end
 
+  create_table "message_presentation_sequences", force: :cascade do |t|
+    t.integer "value", default: 0, null: false
+  end
+
   create_table "messages", force: :cascade do |t|
     t.string "client_message_id", null: false
     t.datetime "created_at", null: false
     t.integer "creator_id", null: false
+    t.integer "presentation_version", default: 0
     t.integer "room_id", null: false
     t.datetime "updated_at", null: false
     t.index ["creator_id"], name: "index_messages_on_creator_id"
@@ -184,4 +189,3 @@ ActiveRecord::Schema[8.2].define(version: 2026_10_07_190000) do
   # Note that virtual tables may not work with other database engines. Be careful if changing database.
   create_virtual_table "message_search_index", "fts5", ["body", "tokenize=porter"]
 end
-
