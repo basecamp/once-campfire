@@ -35,6 +35,7 @@ env:
     RAILS_ENV: production
     RAILS_LOG_LEVEL: info
     DISABLE_SSL: "true" # Local network deployment
+    WEB_CONCURRENCY: "1"
 
 # Docker registry
 registry:
