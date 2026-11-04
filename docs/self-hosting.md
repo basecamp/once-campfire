@@ -104,11 +104,6 @@ If you are terminating SSL in some other proxy in front of Campfire, or aren't u
 docker run --publish 80:80 --env DISABLE_SSL=true ...
 ```
 
-> [!IMPORTANT]
-> Campfire refuses a request when its `Forwarded` header names a different client than its `X-Forwarded-For` header, so that no one can fake their IP address.
-> If your proxy adds a `Forwarded` header and connects to Campfire from a public IP address, every signed-in page and every form submission fails with a 500 error.
-> To avoid this, connect the proxy to Campfire over a private network (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, or localhost), or configure the proxy not to send `Forwarded`.
-
 #### Error reporting (optional)
 
 To enable error reporting to Sentry in production, supply your DSN in the `SENTRY_DSN` environment variable.
