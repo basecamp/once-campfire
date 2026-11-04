@@ -3,3 +3,8 @@
 
 ignore:
   - CVE-THAT-DOES-NOT-APPLY
+  # resque-web advisories. Campfire doesn't mount resque-web. Remove when we move to resque 3.
+  - GHSA-5r7x-x5pm-94xj
+  - GHSA-m39q-9jm7-xp4q
+  - GHSA-r23w-h6cg-h95q
+  - GHSA-r5h4-xh93-f339

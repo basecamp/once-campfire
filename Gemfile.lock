@@ -32,7 +32,7 @@ GIT
 
 GIT
   remote: https://github.com/rails/rails.git
-  revision: e3d5c569d217c56c022b04acb127a8c24dbe9685
+  revision: 8b06b0eb98315cbbd6d7f526112cd8d909ff787c
   branch: main
   specs:
     actioncable (8.2.0.alpha)
@@ -79,7 +79,7 @@ GIT
       erubi (~> 1.11)
       herb (>= 0.10)
       rails-dom-testing (~> 2.2)
-      rails-html-sanitizer (~> 1.7)
+      rails-html-sanitizer (~> 1.7, >= 1.7.2)
     activejob (8.2.0.alpha)
       activesupport (= 8.2.0.alpha)
       globalid (>= 1.4.0)
@@ -139,7 +139,7 @@ GEM
   specs:
     action_text-trix (2.1.19)
       railties
-    addressable (2.9.0)
+    addressable (2.9.2)
       public_suffix (>= 2.0.2, < 8.0)
     ast (2.4.3)
     base64 (0.3.0)
@@ -279,7 +279,7 @@ GEM
     puma (8.0.2)
       nio4r (~> 2.0)
     racc (1.8.1)
-    rack (3.2.7)
+    rack (3.2.8)
     rack-protection (4.2.1)
       base64 (>= 0.1.0)
       logger (>= 1.6.0)
