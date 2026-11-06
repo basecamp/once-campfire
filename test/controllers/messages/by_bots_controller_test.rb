@@ -53,6 +53,23 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "create with a plain text body that isn't UTF-8 is a bad request" do
+    assert_no_difference -> { Message.count } do
+      assert_raises ActionController::BadRequest do
+        post room_bot_messages_url(@room, users(:bender).bot_key), params: "café".encode("ISO-8859-1"), headers: { "Content-Type" => "text/plain" }
+      end
+    end
+  end
+
+  test "update with a plain text body that isn't UTF-8 is a bad request" do
+    message = post_bot_message "Deploying..."
+
+    assert_raises ActionController::BadRequest do
+      patch room_bot_message_url(@room, users(:bender).bot_key, message), params: "café".encode("ISO-8859-1"), headers: { "Content-Type" => "text/plain" }
+    end
+    assert_equal "Deploying...", message.reload.plain_text_body
+  end
+
   test "create can't be abused to post messages as any user" do
     user = users(:kevin)
     bot_key = "#{user.id}-"
