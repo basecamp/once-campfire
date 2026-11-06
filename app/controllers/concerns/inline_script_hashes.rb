@@ -54,10 +54,13 @@ module InlineScriptHashes
     # after a redirect. Nothing under the asset directory redirects.
     def script_locations(importmap)
       assets = File.join(config.relative_url_root.to_s, Rails.application.config.assets.prefix, "")
+      base_url, host_with_port = request.base_url, request.host_with_port
+      # Use URI.join's parser once for the common base, rather than once per import.
+      base_uri = URI.join(base_url)
 
       JSON.parse(importmap)["imports"].values.map do |url|
-        url = URI.join(request.base_url, url)
-        origin = url.origin == request.base_url ? request.host_with_port : url.origin
+        url = URI.join(base_uri, url)
+        origin = url.origin == base_url ? host_with_port : url.origin
         directory = url.path[0, url.path.rindex(assets) + assets.length] if url.path.include?(assets)
         "#{origin}#{directory || url.path}"
       end.uniq
