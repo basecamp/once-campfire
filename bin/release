@@ -43,6 +43,14 @@ unless `git status --porcelain`.strip.empty?
   abort "Release aborted." unless $stdin.gets.strip.downcase.chars.first == "y"
 end
 
+TAG = "v#{VERSION}"
+
+remote_tag_refs = `git ls-remote --tags origin refs/tags/#{TAG} 'refs/tags/#{TAG}^{}'`.lines.to_h { |line| line.split.reverse }
+remote_tag_commit = remote_tag_refs["refs/tags/#{TAG}^{}"] || remote_tag_refs["refs/tags/#{TAG}"]
+if remote_tag_commit && remote_tag_commit != GIT_SHA
+  abort "Tag #{TAG} already exists on origin at #{remote_tag_commit}, but HEAD is #{GIT_SHA}."
+end
+
 def announcing(message)
   puts "\n\e[1;36m#{message}\e[0m"
   yield
@@ -70,7 +78,7 @@ on(:local) do
   end
 end
 
-announcing "Creating GitHub release v#{VERSION}..." do
+announcing "Creating GitHub release #{TAG}..." do
   on(:local) do
     if MANUAL_NOTES
       notes_file = "tmp/release_notes.md"
@@ -80,13 +88,13 @@ announcing "Creating GitHub release v#{VERSION}..." do
       File.write(notes_file, "# What's Changed\n\n- \n")
       system ENV["EDITOR"] || "vim", notes_file
 
-      unless system "gh", "release", "create", "v#{VERSION}", "--title", "v#{VERSION}", "--notes-file", notes_file
+      unless system "gh", "release", "create", TAG, "--target", GIT_SHA, "--title", TAG, "--notes-file", notes_file
         abort "Failed to create release; check that the version doesn't already exist"
       end
 
       execute :rm, notes_file
     else
-      unless system "gh", "release", "create", "v#{VERSION}", "--title", "v#{VERSION}", "--generate-notes"
+      unless system "gh", "release", "create", TAG, "--target", GIT_SHA, "--title", TAG, "--generate-notes"
         abort "Failed to create release; check that the version doesn't already exist"
       end
     end
