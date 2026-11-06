@@ -9,39 +9,13 @@ module CachedResponses
     prepend_before_action :capture_response_cache_version
   end
 
-  def perform_caching
-    return false unless super && @response_cache_version.present? && !FragmentCache.transaction_open?
-
-    # Check again after authentication, before the first native fragment lookup.
-    # Later renders retain this immutable namespace and cannot poison a new epoch.
-    unless defined?(@fragment_cache_snapshot_valid)
-      @fragment_cache_snapshot_valid = @response_cache_version == ResponseCache.instance.version
-    end
-    @fragment_cache_snapshot_valid
-  end
-
-  # Keep the class store (including shared rate limits) and Rails.cache unchanged.
-  def cache_store
-    FragmentCache.store
-  end
-
-  def combined_fragment_cache_key(key)
-    @fragment_cache_context ||= [
-      request.base_url, request.script_name, request.format.to_s, I18n.locale,
-      Current.user&.id, (Digest::SHA256.hexdigest(Current.session.token) if Current.session)
-    ].freeze
-    version = @response_cache_version unless Array(key).flatten.any? { |part| part.is_a?(FragmentCache::ContentKey) }
-    super([ version, @fragment_cache_context, key ])
-  end
-
   private
     def read_record_cache_version
       @response_cache_version if request.get? || request.head?
     end
 
     def capture_response_cache_version
-      # Capture for native HTML/JSON/stream renders too, even with page reuse off.
-      # Detached renderers do not run callbacks and therefore render uncached.
+      # One immutable snapshot for authorization records and completed responses.
       @response_cache_version = ResponseCache.instance.version
     end
 
@@ -91,7 +65,7 @@ module CachedResponses
         end
         response.headers["Content-Encoding"] = "gzip" if encoding == "gzip"
         response.headers["Vary"] = (response.headers["Vary"].to_s.split(/,\s*/) | [ "Accept-Encoding" ]).join(", ")
-        headers = response.headers.slice(*CACHE_HEADERS).to_h.freeze
+        headers = response.headers.slice(*CACHE_HEADERS).to_h.transform_values { |value| value.dup.freeze }.freeze
         entry = { body: body.freeze, headers: headers }.freeze
         ResponseCache.instance.write(key, @response_cache_version, entry)
         entry
@@ -103,7 +77,7 @@ module CachedResponses
         !authenticated_by.bot_key? && flash.empty? &&
         !request.headers["If-None-Match"] && !request.headers["If-Modified-Since"] &&
         !Rails.application.config.content_security_policy_nonce_generator &&
-        !FragmentCache.transaction_open?
+        !ActiveRecord::Base.connection_pool.with_connection(&:transaction_open?)
     end
 
     def response_cache_key(encoding)

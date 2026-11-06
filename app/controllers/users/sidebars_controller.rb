@@ -4,7 +4,7 @@ class Users::SidebarsController < ApplicationController
 
   def show
     visible_memberships = Current.user.memberships.visible
-    @direct_memberships = visible_memberships.with_direct_rooms
+    @direct_memberships = visible_memberships.with_direct_rooms.preload(room: :users)
     @other_memberships  = visible_memberships.with_ordered_room.without_direct_rooms
 
     @direct_placeholder_users = find_direct_placeholder_users
