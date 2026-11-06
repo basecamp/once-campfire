@@ -53,4 +53,22 @@ class WebhookTest < ActiveSupport::TestCase
     reply_message = Message.last
     assert_equal "Failed to respond within 7 seconds", reply_message.body.to_plain_text
   end
+
+  test "delivery to a bot that can't be reached" do
+    [ Errno::ECONNREFUSED, SocketError, EOFError, OpenSSL::SSL::SSLError ].each do |error|
+      Webhook.any_instance.stubs(:post).raises(error)
+
+      assert_difference -> { Message.count }, +1, "#{error} must be answered" do
+        webhooks(:bender).deliver(messages(:first))
+      end
+      assert_equal "Failed to respond", Message.last.body.to_plain_text
+    end
+  end
+
+  test "delivery to a bot that can't be reached logs why" do
+    Webhook.any_instance.stubs(:post).raises(Errno::ECONNREFUSED)
+    Rails.logger.expects(:warn).with(regexp_matches(/Errno::ECONNREFUSED/))
+
+    webhooks(:bender).deliver(messages(:first))
+  end
 end
