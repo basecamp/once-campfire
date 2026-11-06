@@ -4,6 +4,8 @@ import { cable } from "@hotwired/turbo-rails"
 import { pageIsTurboPreview } from "helpers/turbo_helpers"
 
 const OFFLINE_AFTER_DISCONNECTED_TIMEOUT = 5_000
+const RECONNECT_AFTER_DISCONNECTED_TIMEOUT = 1_000
+const RECONNECT_AFTER_DISCONNECTED_JITTER = 1_000
 const REFRESH_AFTER_HIDDEN_TIMEOUT = 60_000
 
 export default class extends Controller {
@@ -12,6 +14,7 @@ export default class extends Controller {
 
   #lastLoadedAt
   #offlineTimer = null
+  #reconnectTimer = null
   #hiddenAt = null
 
   async connect() {
@@ -21,12 +24,13 @@ export default class extends Controller {
 
       this.channel = await cable.subscribeTo({ channel: "HeartbeatChannel" }, {
         connected: this.#channelConnected.bind(this),
-        disconnected: this.#channelDisconnected.bind(this)
+        disconnected: this.#channelDropped.bind(this)
       })
     }
   }
 
   disconnect() {
+    clearTimeout(this.#reconnectTimer)
     this.channel?.unsubscribe()
   }
 
@@ -56,13 +60,32 @@ export default class extends Controller {
     this.#refresh("connection")
 
     clearTimeout(this.#offlineTimer)
+    clearTimeout(this.#reconnectTimer)
     this.dispatch("online", { target: window })
   }
 
   #channelDisconnected() {
+    clearTimeout(this.#offlineTimer)
     this.#offlineTimer = setTimeout(() => {
       this.dispatch("offline", { target: window })
     }, OFFLINE_AFTER_DISCONNECTED_TIMEOUT)
+  }
+
+  #channelDropped({ willAttemptReconnect } = {}) {
+    this.#channelDisconnected()
+    if (willAttemptReconnect) this.#reconnectSoon()
+  }
+
+  // Action Cable leaves a dropped connection alone for at least six seconds, so that the clients
+  // of a server that went away don't all come back at once. But the server is often still there:
+  // it was replaced behind a proxy, or it closed the connection itself, as it does to the members
+  // of a room that's deleted. So try once, sooner, each client at a moment of its own. If that
+  // fails, Action Cable carries on as it always has.
+  #reconnectSoon() {
+    clearTimeout(this.#reconnectTimer)
+    this.#reconnectTimer = setTimeout(() => {
+      this.channel.consumer.connect()
+    }, RECONNECT_AFTER_DISCONNECTED_TIMEOUT + Math.random() * RECONNECT_AFTER_DISCONNECTED_JITTER)
   }
 
   #refresh(reason) {
