@@ -39,7 +39,7 @@ export default class extends Controller {
   }
 
   #selectMatches(value) {
-    this.listTarget.querySelectorAll(`[data-value*=${value.toLowerCase()}]`).forEach((element) => {
+    this.listTarget.querySelectorAll(`[data-value*="${CSS.escape(value.toLowerCase())}"]`).forEach((element) => {
       element.classList.add(this.selectedClass)
     })
   }
