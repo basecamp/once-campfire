@@ -66,7 +66,13 @@ export default class extends Controller {
   }
 
   #refresh(reason) {
-    get(this.urlValue, { query: { since: this.#lastLoadedAt, reason: reason }, responseKind: "turbo-stream" })
+    get(this.urlValue, { query: { since: this.#lastLoadedAt, shown: this.#shownMessageIds, reason: reason }, responseKind: "turbo-stream" })
+  }
+
+  // Messages deleted meanwhile are gone from the room, so the refresh can't send them: it's told which ones the page
+  // shows, and removes those that are gone.
+  get #shownMessageIds() {
+    return this.messageTargets.map((message) => message.dataset.messageId).join(",")
   }
 
   #hiddenForTooLong() {
