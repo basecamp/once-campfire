@@ -89,6 +89,21 @@ class ContentFiltersTest < ActionView::TestCase
     assert_equal "Hello World", filtered.to_html
   end
 
+  test "message contains forbidden tags nested in allowed ones or holding allowed ones" do
+    body = %(<p>keep</p><svg><a href="https://example.com/">gone</a></svg><iframe src="https://example.com/"></iframe><div><script>alert(1)</script>ok</div>)
+    message = Message.create! room: rooms(:pets), body: body, client_message_id: "0015", creator: users(:jason)
+
+    filtered = ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
+    assert_equal "<p>keep</p><div>ok</div>", filtered.to_html
+  end
+
+  test "message without an unfurled link is not converted to plain text" do
+    message = Message.create! room: rooms(:pets), body: "<div>Hey #{mention_attachment_for(:david)} https://basecamp.com/</div>", client_message_id: "0015", creator: users(:jason)
+
+    ActionText::Content.any_instance.expects(:to_plain_text).never
+    ContentFilters::TextMessagePresentationFilters.apply(message.body.body)
+  end
+
   test "message with a link using an unsafe URI scheme" do
     message = Message.create! room: rooms(:pets), body: '<div><a href="javascript:alert(1)">x</a></div>', client_message_id: "0015", creator: users(:jason)
 
