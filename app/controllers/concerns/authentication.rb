@@ -34,6 +34,11 @@ module Authentication
       restore_authentication || bot_authentication || request_authentication
     end
 
+    def require_bot_authentication
+      bot_key = request.authorization.nil? ? request.path_parameters[:bot_key] : bearer_bot_key
+      authenticate_bot_key(bot_key) || head(:unauthorized)
+    end
+
     def restore_authentication
       if session = find_session_by_cookie
         resume_session session
@@ -41,7 +46,11 @@ module Authentication
     end
 
     def bot_authentication
-      if params[:bot_key].present? && bot = User.authenticate_bot(params[:bot_key].strip)
+      authenticate_bot_key(request.path_parameters[:bot_key])
+    end
+
+    def authenticate_bot_key(bot_key)
+      if bot_key.present? && bot = User.authenticate_bot(bot_key.strip)
         Current.user = bot
         set_authenticated_by(:bot_key)
       end
@@ -96,6 +105,10 @@ module Authentication
 
     def remove_authentication_cookie
       cookies.delete(:session_token)
+    end
+
+    def bearer_bot_key
+      authenticate_with_http_token(scheme: :bearer) { |token, _options| token }
     end
 
     def deny_bots
