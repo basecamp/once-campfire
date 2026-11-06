@@ -25,6 +25,7 @@ DOCKER_TAGGED_IMAGE_NAME = [ DOCKER_IMAGE_NAME, GIT_SHA ].join(":")
 
 EXPORT_IMAGE_NAME = "campfire-export"
 EXPORT_DOCKERFILE = "Dockerfile-export"
+EXPORT_SOURCE_DIR = "tmp/export"
 EXPORT_TARGET_NAME = "campfire.zip"
 EXPORT_REMOTE_USER = "app"
 EXPORT_DEPLOY_HOSTS = %w[ once-store-app-101 once-store-app-102 ]
@@ -116,7 +117,11 @@ end
 
 announcing "Building source code ZIP image..." do
   on(:local) do
-    execute :docker, :build, "-t", EXPORT_IMAGE_NAME, "-f", EXPORT_DOCKERFILE, "."
+    execute :rm, "-rf", EXPORT_SOURCE_DIR
+    execute :mkdir, "-p", EXPORT_SOURCE_DIR
+    execute "git archive #{GIT_SHA} | tar -x -C #{EXPORT_SOURCE_DIR}"
+    execute :docker, :build, "-t", EXPORT_IMAGE_NAME, "-f", "#{EXPORT_SOURCE_DIR}/#{EXPORT_DOCKERFILE}", EXPORT_SOURCE_DIR
+    execute :rm, "-rf", EXPORT_SOURCE_DIR
   end
 end
 
