@@ -40,6 +40,8 @@ class ActiveSupport::TestCase
     fixtures = super
     Room::MessagesCount.ensure!
     Room::MessagesCount.backfill!
+    Message::PresentationVersion.ensure!
+    Message::PresentationVersion.backfill!
     fixtures
   end
 end
