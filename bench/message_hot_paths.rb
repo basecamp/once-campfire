@@ -6,7 +6,7 @@ require "active_support/testing/time_helpers"
 include ActiveSupport::Testing::TimeHelpers
 travel_to Time.utc(2026, 10, 4, 12)
 
-# Keep framework/rendering measurements independent of Redis/network variance.
+# Keep framework/rendering measurements independent of adapter and network variance.
 Rails.cache = ActiveSupport::Cache::MemoryStore.new
 ActionView::PartialRenderer.collection_cache = Rails.cache
 ApplicationController.cache_store = Rails.cache

@@ -1,9 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-db_name="${RAILS_ENV:-production}.sqlite3"
-snapshot="/rails/storage/backups/$db_name"
-db="/rails/storage/db/$db_name"
+env="${RAILS_ENV:-production}"
+app_root="${APP_ROOT:-/rails}"
+db_name="$env.sqlite3"
+snapshot="$app_root/storage/backups/$db_name"
+db="$app_root/storage/db/$db_name"
+
+# Queued jobs, cache entries and Action Cable broadcasts are not backed up: any
+# left in the volume belong to a different point in time than the restored app
+# DB. db:prepare recreates them empty.
+for disposable in queue cache cable; do
+  disposable_db="$app_root/storage/db/${env}_${disposable}.sqlite3"
+  rm -f "$disposable_db" "$disposable_db-wal" "$disposable_db-shm" "$disposable_db-journal"
+done
 
 if [ -f "$snapshot" ]; then
   mkdir -p "$(dirname "$db")"
