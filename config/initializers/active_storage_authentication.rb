@@ -6,11 +6,19 @@
 # use direct uploads at all, leaving these endpoints reachable by anyone who
 # can read the public login page. Require a valid Campfire session before an
 # anonymous caller can allocate a Blob or persist bytes to disk.
-Rails.application.config.to_prepare do
-  ActiveStorage::BaseController.forgery_protection_verification_strategy = :header_only
-  ActiveStorage::DirectUploadsController.include ActiveStorageAuthentication
-  ActiveStorage::DirectUploadsController.before_action :require_active_storage_authentication
+#
+# Each controller is extended as it loads, and again whenever it reloads,
+# rather than loaded at boot to be extended.
+Rails.autoloaders.main.on_load("ActiveStorage::BaseController") do |controller|
+  controller.forgery_protection_verification_strategy = :header_only
+end
 
-  ActiveStorage::DiskController.include ActiveStorageAuthentication
-  ActiveStorage::DiskController.before_action :require_active_storage_authentication, only: :update
+Rails.autoloaders.main.on_load("ActiveStorage::DirectUploadsController") do |controller|
+  controller.include ActiveStorageAuthentication
+  controller.before_action :require_active_storage_authentication
+end
+
+Rails.autoloaders.main.on_load("ActiveStorage::DiskController") do |controller|
+  controller.include ActiveStorageAuthentication
+  controller.before_action :require_active_storage_authentication, only: :update
 end
