@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 require "bundler/inline"
+require "json"
+require "open3"
 require "yaml"
 
 gemfile do
@@ -33,6 +35,7 @@ EXPORT_DEPLOY_HOSTS = %w[ once-store-app-101 once-store-app-102 ]
 EXPORT_DEPLOY_LOCATION = "/local/app/product_releases/"
 
 abort "You must specify a version, e.g. `bin/release 1.0.0` (pass --notes to write release notes manually)" unless VERSION
+abort "Version must be dot-separated numbers, e.g. 1.0.0" unless VERSION.match?(/\A\d+(\.\d+)+\z/)
 
 current_branch = `git rev-parse --abbrev-ref HEAD`.strip
 if current_branch != "main"
@@ -45,12 +48,17 @@ unless `git status --porcelain`.strip.empty?
   abort "Release aborted." unless $stdin.gets.strip.downcase.chars.first == "y"
 end
 
+def github_api(path)
+  output, error, status = Open3.capture3("gh", "api", path)
+  abort "Failed to read #{path} from GitHub: #{error}" unless status.success?
+  JSON.parse(output)
+end
+
 TAG = "v#{VERSION}"
 
-remote_tag_refs = `git ls-remote --tags origin refs/tags/#{TAG} 'refs/tags/#{TAG}^{}'`.lines.to_h { |line| line.split.reverse }
-remote_tag_commit = remote_tag_refs["refs/tags/#{TAG}^{}"] || remote_tag_refs["refs/tags/#{TAG}"]
-if remote_tag_commit && remote_tag_commit != GIT_SHA
-  abort "Tag #{TAG} already exists on origin at #{remote_tag_commit}, but HEAD is #{GIT_SHA}."
+if github_api("repos/{owner}/{repo}/git/matching-refs/tags/#{TAG}").any? { |ref| ref["ref"] == "refs/tags/#{TAG}" }
+  tag_commit = github_api("repos/{owner}/{repo}/commits/refs/tags/#{TAG}")["sha"]
+  abort "Tag #{TAG} already exists on GitHub at #{tag_commit}, but HEAD is #{GIT_SHA}." unless tag_commit == GIT_SHA
 end
 
 def announcing(message)
