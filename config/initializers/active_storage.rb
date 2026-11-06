@@ -4,6 +4,13 @@ ActiveSupport.on_load(:active_storage_blob) do
   ActiveStorage::DiskController.after_action only: :show do
     response.set_header("Cache-Control", "max-age=3600, public")
   end
+
+  # With X-Sendfile on, Thruster sends a whole file itself, but a part of one is still written by Puma. A video is
+  # asked for in parts and read at the pace it plays, so it keeps a thread until its last byte has gone. Thruster
+  # holds the browser's request, Range included, so the app answers with the whole file and Thruster sends the part.
+  ActiveStorage::DiskController.before_action only: :show do
+    request.delete_header("HTTP_RANGE") if request.get? && Rails.application.config.action_dispatch.x_sendfile_header
+  end
 end
 
 Rails.application.configure do
