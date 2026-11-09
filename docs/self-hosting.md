@@ -148,6 +148,17 @@ volumes:
   campfire:
 ```
 
+## Easypanel
+
+[Easypanel](https://easypanel.io) is a self-hosted Docker deployment platform, and Campfire has a one-click deployment template there.
+
+[![Deploy on Easypanel][easypanel-btn]][easypanel-deploy]
+
+[easypanel-btn]: https://easypanel.io/img/deploy-on-easypanel-40.svg
+[easypanel-deploy]: https://easypanel.io/templates/once-campfire
+
+The template deploys the official image with a persistent volume for `/rails/storage` already wired up.
+
 ### First run
 
 When you start Campfire for the first time, you'll be guided through creating an admin account.
