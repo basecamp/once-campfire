@@ -62,24 +62,10 @@ class SsoSessionsControllerTest < ActionDispatch::IntegrationTest
     assert cookies[:session_token].present?
   end
 
-  test "first SSO login from a room invite grants membership to that room" do
+  test "first SSO login does not grant room membership from invite params" do
+    # Backlit owns project-room membership. Campfire invite tokens are not a second access path.
     room = rooms(:watercooler)
-    invite_url = room_url(room, invite: room.sso_invite_token)
-
-    get invite_url
-    assert_redirected_to new_session_url
-
-    assert_difference -> { room.memberships.count }, +1 do
-      get sso_callback_url(provider: OIDC_PROVIDER)
-    end
-
-    assert_redirected_to invite_url
-    assert room.users.exists?(email_address: "newuser@example.com")
-  end
-
-  test "first SSO login ignores invalid room invite token" do
-    room = rooms(:watercooler)
-    invite_url = room_url(room, invite: "invalid-token")
+    invite_url = room_url(room, invite: "unused-invite-token")
 
     get invite_url
     assert_redirected_to new_session_url
