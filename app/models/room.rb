@@ -28,8 +28,14 @@ class Room < ApplicationRecord
   scope :closeds,         -> { where(type: "Rooms::Closed") }
   scope :directs,         -> { where(type: "Rooms::Direct") }
   scope :without_directs, -> { where.not(type: "Rooms::Direct") }
+  scope :active,          -> { where(archived_at: nil) }
+  scope :archived,        -> { where.not(archived_at: nil) }
 
   scope :ordered, -> { order("LOWER(name)") }
+
+  def archived?
+    archived_at.present?
+  end
 
   class << self
     def create_for(attributes, users:)

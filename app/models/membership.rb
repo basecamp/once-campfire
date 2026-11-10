@@ -12,7 +12,9 @@ class Membership < ApplicationRecord
   scope :with_direct_rooms, -> { includes(:room).joins(:room).merge(Room.directs).order(rooms: { updated_at: :desc }) }
   scope :without_direct_rooms, -> { joins(:room).merge(Room.without_directs) }
 
-  scope :visible, -> { where.not(involvement: :invisible) }
+  scope :visible, -> {
+    where.not(involvement: :invisible).joins(:room).where(rooms: { archived_at: nil })
+  }
   scope :unread,  -> { where.not(unread_at: nil) }
 
   def read

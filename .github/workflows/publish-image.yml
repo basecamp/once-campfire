@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - backlit/integration
     tags:
       - 'v*'
   pull_request:

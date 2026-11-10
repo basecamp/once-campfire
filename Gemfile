@@ -36,6 +36,11 @@ gem "image_processing", ">= 1.2"
 gem "sentry-ruby"
 gem "sentry-rails"
 
+# SSO / Sign in with Backlit
+gem "omniauth", "~> 2.1"
+gem "omniauth-rails_csrf_protection", "~> 1.0"
+gem "omniauth_openid_connect", "~> 0.8"
+
 # Other
 gem "bcrypt"
 gem "web-push"

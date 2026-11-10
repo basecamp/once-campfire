@@ -2,6 +2,7 @@ class Session < ApplicationRecord
   ACTIVITY_REFRESH_RATE = 1.hour
 
   has_secure_token
+  encrypts :oidc_id_token
 
   belongs_to :user
 
