@@ -21,10 +21,17 @@ module Internal
         render json: room_payload(room.reload)
       end
 
+      def list_memberships
+        room = find_room!
+        subs = room.users.where.not(sso_uid: nil).where.not(role: :bot).pluck(:sso_uid)
+        render json: { room_id: room.id, subs: subs }
+      end
+
       def memberships
         room = find_room!
         users = Array(params[:subs]).map { |sub| find_user_by_sub!(sub) }
-        room.memberships.grant_to(users)
+        existing_ids = room.memberships.where(user_id: users.map(&:id)).pluck(:user_id)
+        room.memberships.grant_to(users.reject { |user| existing_ids.include?(user.id) })
         render json: { room_id: room.id, granted: users.map(&:sso_uid) }
       end
 

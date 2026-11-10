@@ -19,6 +19,7 @@ Rails.application.routes.draw do
       resources :rooms, only: %i[ create update ] do
         member do
           post :archive
+          get :memberships, action: :list_memberships
           post :memberships
           delete :memberships, action: :revoke_memberships
         end

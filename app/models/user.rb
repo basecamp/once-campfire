@@ -18,6 +18,7 @@ class User < ApplicationRecord
   enum :status, %i[ active deactivated banned ], default: :active
 
   has_secure_password validations: false
+  validate :sso_users_cannot_change_password, if: :will_save_change_to_password_digest?
   validate :password_challenge_matches, if: :will_save_change_to_password_digest?, unless: -> { password_challenge.nil? }
 
   after_create_commit :grant_membership_to_open_rooms
@@ -56,6 +57,13 @@ class User < ApplicationRecord
   end
 
   private
+    # Backlit owns identity for SSO accounts. Password changes belong there, not here.
+    def sso_users_cannot_change_password
+      return unless sso?
+
+      errors.add :password, "is managed in Backlit"
+    end
+
     # The profile always sets password_challenge, and it's checked whenever the save would change the password; scripts
     # that reset one don't set it.
     def password_challenge_matches

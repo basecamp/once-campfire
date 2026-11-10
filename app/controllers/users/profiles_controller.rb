@@ -29,10 +29,14 @@ class Users::ProfilesController < ApplicationController
     end
 
     # Always with the challenge, so the model checks it whenever the save would change the password, however the
-    # request spelled the new one.
+    # request spelled the new one. SSO users never get password params through; Backlit owns that.
     def user_params
-      params.require(:user).permit(:name, :avatar, :email_address, :password, :bio).compact
-        .merge(password_challenge: password_challenge)
+      permitted = [ :name, :avatar, :email_address, :bio ]
+      permitted << :password unless @user.sso?
+
+      params.require(:user).permit(*permitted).compact.tap do |attrs|
+        attrs.merge!(password_challenge: password_challenge) unless @user.sso?
+      end
     end
 
     # Only a string is a challenge, so the rate limit counts exactly what the model checks.
@@ -51,7 +55,9 @@ class Users::ProfilesController < ApplicationController
     end
 
     def update_alert
-      if !@user.errors.include?(:password_challenge)
+      if @user.errors.include?(:password)
+        "Your password is managed in Backlit. Change it there."
+      elsif !@user.errors.include?(:password_challenge)
         @user.errors.full_messages.to_sentence
       elsif password_challenge.empty?
         "Enter your current password to change it."
