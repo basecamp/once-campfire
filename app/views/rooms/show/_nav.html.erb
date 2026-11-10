@@ -11,10 +11,16 @@
     </h1>
   <% end %>
 
-  <%= link_to_edit_room(room) do %>
-    <%= image_tag "menu-dots-horizontal.svg", size: 20, aria: { hidden: "true" } %>
-    <span class="for-screen-reader">Settings for this <%= room.direct? ? "Ping" : "room" %></span>
-  <% end %>
+  <% unless room.archived? %>
+    <%= link_to_edit_room(room) do %>
+      <%= image_tag "menu-dots-horizontal.svg", size: 20, aria: { hidden: "true" } %>
+      <span class="for-screen-reader">Settings for this <%= room.direct? ? "Ping" : "room" %></span>
+    <% end %>
 
-  <%= render "rooms/involvements/bell", room: room %>
+    <%= render "rooms/involvements/bell", room: room %>
+  <% else %>
+    <%= link_to rooms_archived_index_path, class: "btn" do %>
+      <span class="txt-small">Archived rooms</span>
+    <% end %>
+  <% end %>
 <% end %>

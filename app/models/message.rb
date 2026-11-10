@@ -8,6 +8,8 @@ class Message < ApplicationRecord
 
   has_rich_text :body
 
+  validate :room_must_be_active, on: :create
+
   before_create -> { self.client_message_id ||= Random.uuid } # Bots don't care
   # Run after Action Text and Active Storage autosave, while creation is still atomic.
   after_save :record_creation, if: :previously_new_record?
@@ -49,6 +51,10 @@ class Message < ApplicationRecord
   end
 
   private
+    def room_must_be_active
+      errors.add(:room, "is archived") if room&.archived?
+    end
+
     def record_creation
       create_in_index
       room.unread_memberships(self)

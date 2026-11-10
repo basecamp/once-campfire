@@ -1,0 +1,29 @@
+<% @page_title = "Archived rooms" %>
+
+<% content_for :nav do %>
+  <div class="flex-item-justify-start">
+    <%= link_back_to_last_room_visited %>
+  </div>
+<% end %>
+
+<section class="panel flex flex-column gap">
+  <h1 class="txt-large margin-none">Archived rooms</h1>
+  <p class="txt-medium margin-none">
+    Finished project rooms and pre-cutover history. Read-only. Memberships stay revoked.
+  </p>
+
+  <% if @rooms.any? %>
+    <menu class="flex flex-column gap margin-none pad-none">
+      <% @rooms.each do |room| %>
+        <li class="flex align-center gap justify-space-between">
+          <%= link_to room.name, rooms_archived_path(room), class: "btn btn--borderless txt-medium overflow-ellipsis" %>
+          <span class="txt-small">
+            Archived <%= room.archived_at.to_formatted_s(:long) %>
+          </span>
+        </li>
+      <% end %>
+    </menu>
+  <% else %>
+    <p class="txt-medium margin-none">No archived rooms yet.</p>
+  <% end %>
+</section>
