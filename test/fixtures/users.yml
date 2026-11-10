@@ -28,3 +28,10 @@ bender:
   name: Bender Bot
   bot_token: <%= User.generate_bot_token %>
   role: bot
+
+sso_user:
+  name: SSO User
+  email_address: sso@example.com
+  password_digest: <%= password_digest %>
+  sso_provider: oidc_test
+  sso_uid: existing-sso-uid

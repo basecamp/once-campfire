@@ -12,7 +12,10 @@ class Membership < ApplicationRecord
   scope :with_direct_rooms, -> { includes(:room).joins(:room).merge(Room.directs).order(rooms: { updated_at: :desc }) }
   scope :without_direct_rooms, -> { joins(:room).merge(Room.without_directs) }
 
-  scope :visible, -> { where.not(involvement: :invisible) }
+  scope :visible, -> {
+    # Avoid joins here so callers can still use Relation#or (joins break structural compatibility).
+    where.not(involvement: :invisible).where(room_id: Room.active.select(:id))
+  }
   scope :unread,  -> { where.not(unread_at: nil) }
 
   def read
