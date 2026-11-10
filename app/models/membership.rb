@@ -13,7 +13,8 @@ class Membership < ApplicationRecord
   scope :without_direct_rooms, -> { joins(:room).merge(Room.without_directs) }
 
   scope :visible, -> {
-    where.not(involvement: :invisible).joins(:room).where(rooms: { archived_at: nil })
+    # Avoid joins here so callers can still use Relation#or (joins break structural compatibility).
+    where.not(involvement: :invisible).where(room_id: Room.active.select(:id))
   }
   scope :unread,  -> { where.not(unread_at: nil) }
 
