@@ -196,7 +196,50 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Jason", users(:jason).reload.name
   end
 
+  test "SSO profile hides password fields" do
+    sign_in_sso_user
+
+    get user_profile_url
+
+    assert_response :success
+    assert_select "input[name='user[password]']", count: 0
+    assert_select "input[name='user[password_challenge]']", count: 0
+    assert_match "Your password is managed in Backlit", response.body
+  end
+
+  test "SSO users cannot change password through the profile" do
+    user = users(:sso_user)
+    original_digest = user.password_digest
+    sign_in_sso_user
+
+    put user_profile_url, params: {
+      user: {
+        name: "SSO Renamed",
+        password: "a new secret123456",
+        password_challenge: "secret123456"
+      }
+    }
+
+    assert_redirected_to user_profile_url
+    user.reload
+    assert_equal "SSO Renamed", user.name
+    assert_equal original_digest, user.password_digest
+  end
+
   private
+    def sign_in_sso_user
+      user = users(:sso_user)
+      set_omniauth_auth(
+        provider: user.sso_provider,
+        uid: user.sso_uid,
+        email: user.email_address,
+        name: user.name
+      )
+      get sso_callback_url(provider: user.sso_provider)
+      clear_omniauth_auth
+      assert cookies[:session_token].present?
+    end
+
     def assert_password_change_refused(alert, params)
       other_device = open_session
       other_device.post session_url, params: { email_address: users(:david).email_address, password: "secret123456" }
