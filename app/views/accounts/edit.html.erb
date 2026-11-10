@@ -7,6 +7,11 @@
 
   <% if Current.user.administrator? %>
     <div class="flex align-center gap flex-item-justify-end">
+      <%= link_to rooms_archived_index_path, class: "btn", style: "view-transition-name: archived-rooms" do %>
+        <%= image_tag "search.svg", aria: { hidden: "true" }, size: 20 %>
+        <span class="for-screen-reader">Archived rooms</span>
+      <% end %>
+
       <%= link_to account_bots_path, class: "btn", style: "view-transition-name: chat-bots" do %>
         <%= image_tag "bot.svg", aria: { hidden: "true" }, size: 20 %>
         <span class="for-screen-reader">Set up chat bots</span>

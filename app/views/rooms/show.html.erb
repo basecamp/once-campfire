@@ -21,4 +21,10 @@
   <%= button_to_jump_to_newest_message %>
 <% end %>
 
-<%= render "rooms/show/composer", room: @room %>
+<% if @room.archived? %>
+  <div class="pad-block pad-inline txt-medium">
+    This room is archived. History is read-only.
+  </div>
+<% else %>
+  <%= render "rooms/show/composer", room: @room %>
+<% end %>
