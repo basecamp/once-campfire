@@ -8,12 +8,15 @@ class SessionsController < ApplicationController
   end
 
   def create
+    if helpers.sso_enabled?
+      flash.now[:alert] = "Use Sign in with Backlit."
+      render :new, status: :unauthorized
+      return
+    end
+
     if user = User.active.authenticate_by(email_address: params[:email_address], password: params[:password])
       start_new_session_for user
       redirect_to post_authenticating_url
-    elsif helpers.sso_enabled? && User.active.find_by(email_address: params[:email_address])&.sso?
-      flash.now[:alert] = "This account uses Sign in with Backlit."
-      render :new, status: :unauthorized
     else
       render_rejection :unauthorized
     end
