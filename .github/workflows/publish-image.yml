@@ -233,6 +233,28 @@ jobs:
     env:
       IMAGE: ghcr.io/getbacklit/campfire:main
     steps:
+      - name: Check deploy secrets
+        env:
+          HOST: ${{ secrets.CAMPFIRE_DEPLOY_HOST }}
+          USER: ${{ secrets.CAMPFIRE_DEPLOY_USER }}
+          KEY: ${{ secrets.CAMPFIRE_DEPLOY_SSH_KEY }}
+          GHCR_USER: ${{ secrets.CAMPFIRE_GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.CAMPFIRE_GHCR_READ_TOKEN }}
+        run: |
+          set -eu
+          missing=0
+          for var in HOST USER KEY GHCR_USER GHCR_TOKEN; do
+            if [ -z "${!var}" ]; then
+              echo "$var secret is missing or empty"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Add the Campfire deploy secrets documented in script/deploy-to-droplet.md"
+            exit 1
+          fi
+          echo "Deploy secrets are present"
+
       - name: Pull image and restart container on droplet
         uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f # v1.2.2
         env:
@@ -243,7 +265,6 @@ jobs:
           host: ${{ secrets.CAMPFIRE_DEPLOY_HOST }}
           username: ${{ secrets.CAMPFIRE_DEPLOY_USER }}
           key: ${{ secrets.CAMPFIRE_DEPLOY_SSH_KEY }}
-          script_stop: true
           envs: IMAGE,GHCR_USER,GHCR_TOKEN
           script: |
             set -eu
