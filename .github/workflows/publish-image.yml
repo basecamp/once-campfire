@@ -265,6 +265,7 @@ jobs:
           host: ${{ secrets.CAMPFIRE_DEPLOY_HOST }}
           username: ${{ secrets.CAMPFIRE_DEPLOY_USER }}
           key: ${{ secrets.CAMPFIRE_DEPLOY_SSH_KEY }}
+          passphrase: ${{ secrets.CAMPFIRE_DEPLOY_SSH_KEY_PASSPHRASE }}
           envs: IMAGE,GHCR_USER,GHCR_TOKEN
           script: |
             set -eu
