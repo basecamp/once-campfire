@@ -20,12 +20,11 @@ class SsoAuthentication
 
     info = auth.info || OmniAuth::AuthHash::InfoHash.new
 
-    # Find by SSO identity (returning user)
+    # Find by SSO identity (returning user).
+    # Do not rewrite name/email here. Backlit owns profile fields and pushes
+    # them through the provisioning API when membership syncs.
     user = User.find_by(sso_provider: provider, sso_uid: uid)
-    if user
-      sync_name_from_idp!(user, info)
-      return user
-    end
+    return user if user
 
     email = extract_email(auth:, info:, uid:)
 
@@ -38,11 +37,11 @@ class SsoAuthentication
       raise Error, "Email is already linked to another SSO account" if user.sso?
 
       user.update!(sso_provider: provider, sso_uid: uid)
-      sync_name_from_idp!(user, info)
       return user
     end
 
-    # Auto-create new user (SSO users bypass join code)
+    # Auto-create new user (SSO users bypass join code). Seed name once from
+    # the IdP; later edits stay on Backlit and sync in via provisioning.
     User.create!(
       name: info[:name].presence || email.split("@").first,
       email_address: email,
@@ -54,14 +53,6 @@ class SsoAuthentication
 
   class << self
     private
-      def sync_name_from_idp!(user, info)
-        name = info[:name].presence
-        return if name.blank?
-        return if user.name == name
-
-        user.update!(name: name)
-      end
-
       def extract_email(auth:, info:, uid:)
         candidate = normalize_email(info.email || info[:email] || info[:mail] || info[:email_address])
         return candidate if candidate.present?

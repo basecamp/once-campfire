@@ -24,16 +24,16 @@ class SsoAuthenticationTest < ActiveSupport::TestCase
     assert_equal user, result
   end
 
-  test "updates name from IdP for returning SSO users when present" do
+  test "does not overwrite name for returning SSO users" do
     user = users(:jz)
-    user.update!(sso_provider: "oidc", sso_uid: "unique-idp-id-123", name: "Old Name")
+    user.update!(sso_provider: "oidc", sso_uid: "unique-idp-id-123", name: "Campfire Name")
     @auth.info.email = user.email_address
-    @auth.info.name = "Backlit Name"
+    @auth.info.name = "Backlit Claim Name"
 
     result = SsoAuthentication.find_or_create_user_from(@auth)
 
     assert_equal user, result
-    assert_equal "Backlit Name", result.reload.name
+    assert_equal "Campfire Name", result.reload.name
   end
 
   test "links existing user by email on first SSO login" do
@@ -49,7 +49,7 @@ class SsoAuthenticationTest < ActiveSupport::TestCase
     assert_equal "unique-idp-id-123", result.sso_uid
   end
 
-  test "updates name from IdP when linking an existing user by email" do
+  test "does not overwrite name when linking an existing user by email" do
     user = users(:jz)
     user.update!(name: "Local Only")
     @auth.info.email = user.email_address
@@ -57,7 +57,7 @@ class SsoAuthenticationTest < ActiveSupport::TestCase
 
     result = SsoAuthentication.find_or_create_user_from(@auth)
 
-    assert_equal "From Backlit", result.reload.name
+    assert_equal "Local Only", result.reload.name
   end
 
   test "auto-creates new user when no match found" do

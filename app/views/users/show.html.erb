@@ -36,7 +36,6 @@
           <% if Current.user.can_administer? %>
             <div><%= mail_to @user.email_address %></div>
           <% end %>
-          <div><%= @user.bio %></div>
         </div>
 
         <% if @user.active? %>

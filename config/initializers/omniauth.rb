@@ -7,6 +7,8 @@ Rails.application.config.middleware.use OmniAuth::Builder do
       response_type: :code,
       issuer: provider_config.fetch(:issuer),
       discovery: true,
+      # Backlit Doorkeeper is configured with force_pkce; Campfire must send PKCE.
+      pkce: true,
       client_auth_method: provider_config.fetch(:client_auth_method),
       client_options: {
         identifier: provider_config.fetch(:client_id),
