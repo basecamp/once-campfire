@@ -24,6 +24,18 @@ class SsoAuthenticationTest < ActiveSupport::TestCase
     assert_equal user, result
   end
 
+  test "updates name from IdP for returning SSO users when present" do
+    user = users(:jz)
+    user.update!(sso_provider: "oidc", sso_uid: "unique-idp-id-123", name: "Old Name")
+    @auth.info.email = user.email_address
+    @auth.info.name = "Backlit Name"
+
+    result = SsoAuthentication.find_or_create_user_from(@auth)
+
+    assert_equal user, result
+    assert_equal "Backlit Name", result.reload.name
+  end
+
   test "links existing user by email on first SSO login" do
     user = users(:jz)
     @auth.info.email = user.email_address
@@ -35,6 +47,17 @@ class SsoAuthenticationTest < ActiveSupport::TestCase
     assert_equal user, result
     assert_equal "oidc", result.reload.sso_provider
     assert_equal "unique-idp-id-123", result.sso_uid
+  end
+
+  test "updates name from IdP when linking an existing user by email" do
+    user = users(:jz)
+    user.update!(name: "Local Only")
+    @auth.info.email = user.email_address
+    @auth.info.name = "From Backlit"
+
+    result = SsoAuthentication.find_or_create_user_from(@auth)
+
+    assert_equal "From Backlit", result.reload.name
   end
 
   test "auto-creates new user when no match found" do
