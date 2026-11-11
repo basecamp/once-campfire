@@ -42,8 +42,7 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
       post internal_backlit_users_url, params: {
         sub: "9188",
         email: "legacy@example.com",
-        name: "Megan",
-        admin: true
+        name: "Megan"
       }.to_json, headers: @headers
     end
 
@@ -52,7 +51,7 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "backlit", existing.sso_provider
     assert_equal "9188", existing.sso_uid
     assert_equal "Megan", existing.name
-    assert existing.administrator?
+    assert existing.member?
   end
 
   test "updates an existing backlit SSO user by sub" do
@@ -67,8 +66,7 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
       post internal_backlit_users_url, params: {
         sub: "55",
         email: "new-email@example.com",
-        name: "New Name",
-        admin: false
+        name: "New Name"
       }.to_json, headers: @headers
     end
 
@@ -76,5 +74,43 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
     user.reload
     assert_equal "new-email@example.com", user.email_address
     assert_equal "New Name", user.name
+  end
+
+  test "ignores admin from Backlit and never changes Campfire administrator" do
+    existing = User.create!(
+      name: "Operator",
+      email_address: "operator@example.com",
+      sso_provider: "backlit",
+      sso_uid: "1",
+      role: :administrator
+    )
+
+    post internal_backlit_users_url, params: {
+      sub: "1",
+      email: "operator@example.com",
+      name: "Operator",
+      admin: false
+    }.to_json, headers: @headers
+
+    assert_response :created
+    assert existing.reload.administrator?
+
+    member = User.create!(
+      name: "Crew",
+      email_address: "crew@example.com",
+      sso_provider: "backlit",
+      sso_uid: "2",
+      role: :member
+    )
+
+    post internal_backlit_users_url, params: {
+      sub: "2",
+      email: "crew@example.com",
+      name: "Crew",
+      admin: true
+    }.to_json, headers: @headers
+
+    assert_response :created
+    assert member.reload.member?
   end
 end

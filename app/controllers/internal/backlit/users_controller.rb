@@ -16,14 +16,15 @@ module Internal
           sub = params.require(:sub).to_s
           email = params.require(:email).to_s.downcase.strip
           name = params[:name].presence || email.split("@").first
-          admin = ActiveModel::Type::Boolean.new.cast(params[:admin])
 
           user = find_or_claim_user!(sub:, email:)
           user.email_address = email
           user.name = name
           user.sso_provider = "backlit"
           user.sso_uid = sub
-          user.role = admin ? :administrator : :member
+          # Backlit never manages Campfire administrator. New users are members;
+          # roles granted in Campfire stay untouched.
+          user.role = :member if user.new_record?
           user.status = :active if user.new_record? || user.deactivated?
           user.save!
           user
