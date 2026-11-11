@@ -18,12 +18,16 @@ class SsoAuthentication
 
     raise Error, "No UID provided by identity provider" if uid.blank?
 
+    info = auth.info || OmniAuth::AuthHash::InfoHash.new
+
     # Find by SSO identity (returning user)
     user = User.find_by(sso_provider: provider, sso_uid: uid)
-    return user if user
+    if user
+      sync_name_from_idp!(user, info)
+      return user
+    end
 
-    info     = auth.info || OmniAuth::AuthHash::InfoHash.new
-    email    = extract_email(auth:, info:, uid:)
+    email = extract_email(auth:, info:, uid:)
 
     raise Error, "No email provided by identity provider" if email.blank?
     raise Error, "Identity provider did not verify the email address" unless email_verified?(auth:, info:)
@@ -34,6 +38,7 @@ class SsoAuthentication
       raise Error, "Email is already linked to another SSO account" if user.sso?
 
       user.update!(sso_provider: provider, sso_uid: uid)
+      sync_name_from_idp!(user, info)
       return user
     end
 
@@ -49,6 +54,14 @@ class SsoAuthentication
 
   class << self
     private
+      def sync_name_from_idp!(user, info)
+        name = info[:name].presence
+        return if name.blank?
+        return if user.name == name
+
+        user.update!(name: name)
+      end
+
       def extract_email(auth:, info:, uid:)
         candidate = normalize_email(info.email || info[:email] || info[:mail] || info[:email_address])
         return candidate if candidate.present?
