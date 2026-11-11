@@ -66,6 +66,21 @@ class Users::SidebarsControllerTest < ActionDispatch::IntegrationTest
     assert_equal positions.sort, positions
   end
 
+  test "shared rooms from the same Backlit project share a background color" do
+    announcements = rooms(:watercooler)
+    chat = rooms(:designers)
+    announcements.update!(backlit_project_id: "42", backlit_kind: "announcements", name: "HB-Announcements")
+    chat.update!(backlit_project_id: "42", backlit_kind: "chat", name: "HB-Chat")
+
+    other = rooms(:hq)
+    other.update!(backlit_project_id: "99", backlit_kind: "chat", name: "OSC-Chat") if other.present?
+
+    get user_sidebar_url
+
+    assert_match(/--room-project-bg: #{SidebarProjectColors::PALETTE.first}/, @response.body)
+    assert_select ".room--project", minimum: 2
+  end
+
   private
     def with_memory_cache
       old_cache = Rails.cache
