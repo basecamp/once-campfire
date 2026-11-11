@@ -10,9 +10,12 @@ One-time GitHub Actions secrets on `getbacklit/campfire`:
 | --- | --- |
 | `CAMPFIRE_DEPLOY_HOST` | Droplet IP or hostname (`164.92.95.83`) |
 | `CAMPFIRE_DEPLOY_USER` | SSH user (`root`) |
-| `CAMPFIRE_DEPLOY_SSH_KEY` | Private key with access to that host |
+| `CAMPFIRE_DEPLOY_SSH_KEY` | Full private key PEM with access to that host |
+| `CAMPFIRE_DEPLOY_SSH_KEY_PASSPHRASE` | Passphrase for that private key, if it has one |
 | `CAMPFIRE_GHCR_USERNAME` | GitHub user or org that can read the package |
 | `CAMPFIRE_GHCR_READ_TOKEN` | PAT / fine-grained token with `read:packages` |
+
+Prefer a dedicated Actions deploy key with no passphrase when you can. If you reuse a personal key that is passphrase-protected, set `CAMPFIRE_DEPLOY_SSH_KEY_PASSPHRASE`.
 
 The deploy reuses `/root/campfire.env` and the `campfire-data` volume. Do not put app secrets in GitHub Actions; leave them on the droplet.
 
