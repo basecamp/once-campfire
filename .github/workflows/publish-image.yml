@@ -224,4 +224,39 @@ jobs:
             cosign sign --yes "$tag"
           done <<< "$tags"
 
+  deploy:
+    name: Deploy to campfire-1
+    needs: manifest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      IMAGE: ghcr.io/getbacklit/campfire:main
+    steps:
+      - name: Pull image and restart container on droplet
+        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f # v1.2.2
+        env:
+          IMAGE: ghcr.io/getbacklit/campfire:main
+          GHCR_USER: ${{ secrets.CAMPFIRE_GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.CAMPFIRE_GHCR_READ_TOKEN }}
+        with:
+          host: ${{ secrets.CAMPFIRE_DEPLOY_HOST }}
+          username: ${{ secrets.CAMPFIRE_DEPLOY_USER }}
+          key: ${{ secrets.CAMPFIRE_DEPLOY_SSH_KEY }}
+          script_stop: true
+          envs: IMAGE,GHCR_USER,GHCR_TOKEN
+          script: |
+            set -eu
+            test -f /root/campfire.env
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            docker pull "$IMAGE"
+            docker stop campfire
+            docker rm campfire
+            docker run -d --name campfire --restart unless-stopped \
+              --publish 80:80 --publish 443:443 \
+              --volume campfire-data:/rails/storage \
+              --env-file /root/campfire.env \
+              "$IMAGE"
+            docker image prune -f
+            docker ps --filter name=campfire --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 
