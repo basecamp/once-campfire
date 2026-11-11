@@ -31,8 +31,12 @@
 
     <div class="rooms position-relative flex flex-column gap">
       <div id="shared_rooms" contents data-controller="sorted-list">
+        <% project_colors = sidebar_project_color_map(@other_memberships) %>
         <% @other_memberships.each do |membership| %>
-          <%= render "users/sidebars/rooms/shared", room: membership.room, unread: membership.unread? %>
+          <%= render "users/sidebars/rooms/shared",
+                room: membership.room,
+                unread: membership.unread?,
+                project_background: project_colors[membership.room.backlit_project_id] %>
         <% end %>
       </div>
 

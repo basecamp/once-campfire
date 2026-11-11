@@ -218,6 +218,10 @@
     border-radius: 0.5em;
   }
 
+  &.room--project {
+    background-color: var(--room-project-bg);
+  }
+
   &.unread {
     --btn-border-color: var(--color-text);
     --hover-color: var(--color-text);
@@ -227,6 +231,13 @@
     &:not(:hover) {
       box-shadow: 0 0 0 1px var(--color-text);
     }
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .room.room--project {
+    /* Keep the project tint, but mute it on dark surfaces. */
+    background-color: color-mix(in srgb, var(--room-project-bg) 35%, var(--color-text-reversed));
   }
 }
 
