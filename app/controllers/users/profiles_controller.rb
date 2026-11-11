@@ -29,10 +29,13 @@ class Users::ProfilesController < ApplicationController
     end
 
     # Always with the challenge, so the model checks it whenever the save would change the password, however the
-    # request spelled the new one. SSO users never get password params through; Backlit owns that.
+    # request spelled the new one. SSO users never get password/name/email through; Backlit owns those.
+    # Bio is unused while Backlit owns profile content.
     def user_params
-      permitted = [ :name, :avatar, :email_address, :bio ]
-      permitted << :password unless @user.sso?
+      permitted = [ :avatar ]
+      unless @user.sso?
+        permitted.concat([ :name, :email_address, :password ])
+      end
 
       params.require(:user).permit(*permitted).compact.tap do |attrs|
         attrs.merge!(password_challenge: password_challenge) unless @user.sso?

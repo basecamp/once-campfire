@@ -23,7 +23,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to user_profile_url
     assert_equal "John Doe", users(:david).reload.name
-    assert_equal "Acrobat", users(:david).bio
+    assert_nil users(:david).bio.presence
     assert_equal "david@37signals.com", users(:david).email_address
   end
 
@@ -142,7 +142,9 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     put user_profile_url, params: { user: { name: "Dave", bio: "Acrobat", password: "" } }
 
     assert_redirected_to user_profile_url
-    assert_equal "Dave", users(:david).reload.name
+    users(:david).reload
+    assert_equal "Dave", users(:david).name
+    assert_nil users(:david).bio.presence
     assert users(:david).authenticate("secret123456")
   end
 
@@ -196,7 +198,7 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Jason", users(:jason).reload.name
   end
 
-  test "SSO profile hides password fields" do
+  test "SSO profile hides editable identity fields and bio" do
     sign_in_sso_user
 
     get user_profile_url
@@ -204,17 +206,24 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "input[name='user[password]']", count: 0
     assert_select "input[name='user[password_challenge]']", count: 0
-    assert_match "Your password is managed in Backlit", response.body
+    assert_select "input[name='user[name]']", count: 0
+    assert_select "input[name='user[email_address]']", count: 0
+    assert_select "textarea[name='user[bio]']", count: 0
+    assert_match "Name, email, and password are managed in Backlit", response.body
   end
 
-  test "SSO users cannot change password through the profile" do
+  test "SSO users cannot change name, email, or password through the profile" do
     user = users(:sso_user)
+    original_name = user.name
+    original_email = user.email_address
     original_digest = user.password_digest
     sign_in_sso_user
 
     put user_profile_url, params: {
       user: {
         name: "SSO Renamed",
+        email_address: "renamed@example.com",
+        bio: "Should not save",
         password: "a new secret123456",
         password_challenge: "secret123456"
       }
@@ -222,8 +231,17 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to user_profile_url
     user.reload
-    assert_equal "SSO Renamed", user.name
+    assert_equal original_name, user.name
+    assert_equal original_email, user.email_address
+    assert_nil user.bio.presence
     assert_equal original_digest, user.password_digest
+  end
+
+  test "profile form does not show bio" do
+    get user_profile_url
+
+    assert_response :success
+    assert_select "textarea[name='user[bio]']", count: 0
   end
 
   private

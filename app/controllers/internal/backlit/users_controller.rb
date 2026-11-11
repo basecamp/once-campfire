@@ -15,7 +15,7 @@ module Internal
         def upsert_user!
           sub = params.require(:sub).to_s
           email = params.require(:email).to_s.downcase.strip
-          name = params[:name].presence || email.split("@").first
+          name = campfire_name_from(params[:name], email)
 
           user = find_or_claim_user!(sub:, email:)
           user.email_address = email
@@ -28,6 +28,15 @@ module Internal
           user.status = :active if user.new_record? || user.deactivated?
           user.save!
           user
+        end
+
+        # Prefer Backlit login Name. Never store a full email in Campfire's name.
+        def campfire_name_from(raw_name, email)
+          name = raw_name.to_s.strip.presence
+          return email.split("@").first if name.blank?
+          return email.split("@").first if name.include?("@")
+
+          name
         end
 
         # Prefer the Backlit sub. If that is new but the email already exists (pre-cutover

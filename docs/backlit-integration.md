@@ -19,6 +19,8 @@ BACKLIT_PROVISIONING_TOKEN=...
 
 Backlit stores the matching OAuth client secret and provisioning token in Rails credentials.
 
+Campfire OmniAuth is configured with PKCE because Backlit Doorkeeper uses `force_pkce`. Name and email for SSO users come from Backlit provisioning, not from the Campfire profile form or from rewriting claims on every login.
+
 ## Provisioning API
 
 All routes require `Authorization: Bearer $BACKLIT_PROVISIONING_TOKEN`.
