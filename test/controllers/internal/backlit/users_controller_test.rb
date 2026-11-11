@@ -58,6 +58,7 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
       email_address: "legacy@example.com",
       password: "secret123456"
     )
+    existing.sessions.create!(user_agent: "Test", ip_address: "127.0.0.1")
 
     assert_no_difference -> { User.count } do
       post internal_backlit_users_url, params: {
@@ -73,6 +74,8 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "9188", existing.sso_uid
     assert_equal "Megan", existing.name
     assert existing.member?
+    assert_nil existing.password_digest
+    assert_equal 0, existing.sessions.count
   end
 
   test "updates an existing backlit SSO user by sub" do

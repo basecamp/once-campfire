@@ -36,14 +36,15 @@ class SsoAuthentication
     if user
       raise Error, "Email is already linked to another SSO account" if user.sso?
 
-      user.update!(sso_provider: provider, sso_uid: uid)
+      # Drop any local password so the claimed account cannot stay password-loginable.
+      user.update!(sso_provider: provider, sso_uid: uid, password_digest: nil)
       return user
     end
 
     # Auto-create new user (SSO users bypass join code). Seed name once from
     # the IdP; later edits stay on Backlit and sync in via provisioning.
     User.create!(
-      name: info[:name].presence || email.split("@").first,
+      name: campfire_name_from(info[:name], email),
       email_address: email,
       sso_provider: provider,
       sso_uid: uid,
@@ -53,6 +54,14 @@ class SsoAuthentication
 
   class << self
     private
+      def campfire_name_from(raw_name, email)
+        name = raw_name.to_s.strip.presence
+        return email.split("@").first if name.blank?
+        return email.split("@").first if name.include?("@")
+
+        name
+      end
+
       def extract_email(auth:, info:, uid:)
         candidate = normalize_email(info.email || info[:email] || info[:mail] || info[:email_address])
         return candidate if candidate.present?

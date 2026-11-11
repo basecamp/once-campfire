@@ -58,8 +58,11 @@ class User < ApplicationRecord
 
   private
     # Backlit owns identity for SSO accounts. Password changes belong there, not here.
+    # Clearing password_digest (nil) is allowed so claiming a local account for SSO
+    # can remove the old password.
     def sso_users_cannot_change_password
       return unless sso?
+      return if password_digest.blank?
 
       errors.add :password, "is managed in Backlit"
     end

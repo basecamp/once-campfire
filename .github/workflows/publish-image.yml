@@ -73,8 +73,11 @@ jobs:
         shell: bash
         run: |
           set -eu
+          # Prefer an explicit Backlit release tag, then the forked semver in VERSION.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          elif [[ -f VERSION ]]; then
+            echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
           else
             echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
