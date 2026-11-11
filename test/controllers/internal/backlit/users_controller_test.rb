@@ -28,7 +28,28 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_response :created
     user = User.find_by!(sso_provider: "backlit", sso_uid: "1001")
     assert_equal "new@example.com", user.email_address
+    assert_equal "New Person", user.name
     assert user.member?
+  end
+
+  test "uses the email local-part when name is blank or looks like an email" do
+    post internal_backlit_users_url, params: {
+      sub: "1002",
+      email: "alex@example.com",
+      name: ""
+    }.to_json, headers: @headers
+
+    assert_response :created
+    assert_equal "alex", User.find_by!(sso_uid: "1002").name
+
+    post internal_backlit_users_url, params: {
+      sub: "1003",
+      email: "sam@example.com",
+      name: "sam@example.com"
+    }.to_json, headers: @headers
+
+    assert_response :created
+    assert_equal "sam", User.find_by!(sso_uid: "1003").name
   end
 
   test "claims an existing local user by email instead of duplicating" do
