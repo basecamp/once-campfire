@@ -55,4 +55,27 @@ class Internal::Backlit::RoomsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unauthorized
   end
+
+  test "archives and unarchives a room" do
+    post internal_backlit_rooms_url, params: {
+      name: "Admin · Demo",
+      backlit_project_id: "9",
+      backlit_kind: "admin"
+    }.to_json, headers: @headers
+    assert_response :created
+    room_id = JSON.parse(response.body)["id"]
+
+    post memberships_internal_backlit_room_url(room_id), params: { subs: [ "42" ] }.to_json, headers: @headers
+    assert_response :success
+
+    post archive_internal_backlit_room_url(room_id), headers: @headers
+    assert_response :success
+    room = Room.find(room_id)
+    assert room.archived?
+    assert_equal 0, room.memberships.count
+
+    post unarchive_internal_backlit_room_url(room_id), headers: @headers
+    assert_response :success
+    assert_nil room.reload.archived_at
+  end
 end

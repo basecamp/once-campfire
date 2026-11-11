@@ -21,6 +21,12 @@ module Internal
         render json: room_payload(room.reload)
       end
 
+      def unarchive
+        room = find_room!
+        room.update!(archived_at: nil)
+        render json: room_payload(room.reload)
+      end
+
       def list_memberships
         room = find_room!
         subs = room.users.where.not(sso_uid: nil).where.not(role: :bot).pluck(:sso_uid)
