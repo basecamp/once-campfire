@@ -18,13 +18,32 @@ module Internal
           name = params[:name].presence || email.split("@").first
           admin = ActiveModel::Type::Boolean.new.cast(params[:admin])
 
-          user = User.find_or_initialize_by(sso_provider: "backlit", sso_uid: sub)
+          user = find_or_claim_user!(sub:, email:)
           user.email_address = email
           user.name = name
+          user.sso_provider = "backlit"
+          user.sso_uid = sub
           user.role = admin ? :administrator : :member
           user.status = :active if user.new_record? || user.deactivated?
           user.save!
           user
+        end
+
+        # Prefer the Backlit sub. If that is new but the email already exists (pre-cutover
+        # local account), claim that row instead of inserting a duplicate.
+        def find_or_claim_user!(sub:, email:)
+          user = User.find_by(sso_provider: "backlit", sso_uid: sub)
+          return user if user
+
+          by_email = User.where("LOWER(email_address) = ?", email).first
+          if by_email
+            if by_email.sso? && !(by_email.sso_provider == "backlit" && by_email.sso_uid == sub)
+              raise ActiveRecord::RecordNotUnique, "Email #{email} is linked to another SSO identity"
+            end
+            return by_email
+          end
+
+          User.new
         end
 
         def user_payload(user)
