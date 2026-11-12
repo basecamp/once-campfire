@@ -25,7 +25,7 @@ Campfire OmniAuth is configured with PKCE because Backlit Doorkeeper uses `force
 
 All routes require `Authorization: Bearer $BACKLIT_PROVISIONING_TOKEN`.
 
-- `POST /internal/backlit/users` — upsert user by `sub` (JSON: `sub`, `email`, `name`). Always creates members; Campfire administrator is set only in Campfire.
+- `POST /internal/backlit/users` — upsert user by `sub` (JSON: `sub`, `email`, `name`, optional `admin`). When `admin` is present, Backlit sets Campfire `administrator` (`true`) or `member` (`false`). Bots are left alone. Omitting `admin` preserves the current role (new users default to `member`).
 - `PATCH /internal/backlit/users/:sub` — same
 - `POST /internal/backlit/rooms` — create closed room (`name`, `backlit_project_id`, `backlit_kind`)
 - `PATCH /internal/backlit/rooms/:id` — rename

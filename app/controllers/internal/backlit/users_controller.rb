@@ -25,12 +25,23 @@ module Internal
           # Claiming a local or join-code account for Backlit must drop the old
           # password so email/password sign-in cannot keep working.
           user.password_digest = nil if user.password_digest.present?
-          # Backlit never manages Campfire administrator. New users are members;
-          # roles granted in Campfire stay untouched.
-          user.role = :member if user.new_record?
+          apply_backlit_admin_role!(user)
           user.status = :active if user.new_record? || user.deactivated?
           user.save!
           user
+        end
+
+        # Backlit is the source of truth for Campfire administrator when `admin`
+        # is present. Bots stay bots. Omitting `admin` preserves the current role
+        # for older clients (new users still default to member).
+        def apply_backlit_admin_role!(user)
+          return if user.bot?
+
+          if params.key?(:admin)
+            user.role = ActiveModel::Type::Boolean.new.cast(params[:admin]) ? :administrator : :member
+          elsif user.new_record?
+            user.role = :member
+          end
         end
 
         # Prefer Backlit login Name. Never store a full email in Campfire's name.

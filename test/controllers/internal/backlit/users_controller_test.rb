@@ -100,7 +100,7 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "New Name", user.name
   end
 
-  test "ignores admin from Backlit and never changes Campfire administrator" do
+  test "applies admin from Backlit to promote and demote Campfire administrators" do
     existing = User.create!(
       name: "Operator",
       email_address: "operator@example.com",
@@ -117,7 +117,7 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
     }.to_json, headers: @headers
 
     assert_response :created
-    assert existing.reload.administrator?
+    assert existing.reload.member?
 
     member = User.create!(
       name: "Crew",
@@ -135,6 +135,43 @@ class Internal::Backlit::UsersControllerTest < ActionDispatch::IntegrationTest
     }.to_json, headers: @headers
 
     assert_response :created
-    assert member.reload.member?
+    assert member.reload.administrator?
+  end
+
+  test "preserves role when admin is omitted and does not demote bots" do
+    admin = User.create!(
+      name: "Operator",
+      email_address: "keep-admin@example.com",
+      sso_provider: "backlit",
+      sso_uid: "10",
+      role: :administrator
+    )
+
+    post internal_backlit_users_url, params: {
+      sub: "10",
+      email: "keep-admin@example.com",
+      name: "Operator"
+    }.to_json, headers: @headers
+
+    assert_response :created
+    assert admin.reload.administrator?
+
+    bot = User.create!(
+      name: "Backlit Sync",
+      email_address: "bot@example.com",
+      sso_provider: "backlit",
+      sso_uid: "11",
+      role: :bot
+    )
+
+    post internal_backlit_users_url, params: {
+      sub: "11",
+      email: "bot@example.com",
+      name: "Backlit Sync",
+      admin: true
+    }.to_json, headers: @headers
+
+    assert_response :created
+    assert bot.reload.bot?
   end
 end
