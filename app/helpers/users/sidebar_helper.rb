@@ -21,4 +21,3 @@ module Users::SidebarHelper
     (color_map || sidebar_project_color_map)[room.backlit_project_id]
   end
 end
-
