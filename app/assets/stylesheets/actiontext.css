@@ -30,6 +30,8 @@ lexxy-editor {
     border: 0;
     border-radius: 0;
     min-height: 24px;
+    overflow-y: auto;
+    max-height: 360px;
   }
 
   .attachment--content {
