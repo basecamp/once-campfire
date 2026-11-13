@@ -199,6 +199,9 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "SSO profile hides editable identity fields and bio" do
+    previous_issuer = ENV["OIDC_BACKLIT_ISSUER"]
+    ENV["OIDC_BACKLIT_ISSUER"] = "https://bck.lt"
+
     sign_in_sso_user
 
     get user_profile_url
@@ -210,6 +213,13 @@ class Users::ProfilesControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='user[email_address]']", count: 0
     assert_select "textarea[name='user[bio]']", count: 0
     assert_match "Name, email, and password are managed in Backlit", response.body
+    assert_select "a[href='https://bck.lt/users/edit'][target='_blank']", text: "account settings"
+  ensure
+    if previous_issuer.nil?
+      ENV.delete("OIDC_BACKLIT_ISSUER")
+    else
+      ENV["OIDC_BACKLIT_ISSUER"] = previous_issuer
+    end
   end
 
   test "SSO users cannot change name, email, or password through the profile" do

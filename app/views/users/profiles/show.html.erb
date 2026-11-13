@@ -54,7 +54,12 @@
           <p class="txt-large margin-none"><strong><%= @user.name %></strong></p>
           <p class="txt-medium margin-none"><%= @user.email_address %></p>
           <p class="txt-medium margin-none">
-            Name, email, and password are managed in Backlit. Change them there when you need to.
+            Name, email, and password are managed in Backlit.
+            <% if (url = backlit_account_settings_url) %>
+              Change them in your <%= link_to "account settings", url, target: "_blank", rel: "noopener noreferrer" %> when you need to.
+            <% else %>
+              Change them there when you need to.
+            <% end %>
           </p>
         </div>
       <% else %>
