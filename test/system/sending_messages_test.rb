@@ -72,4 +72,234 @@ class SendingMessagesTest < ApplicationSystemTestCase
       assert_message_text "Third time's a charm.", count: 0
     end
   end
+
+  test "a message sent while the one before is on its way waits for it" do
+    record_messages_marked_failed
+
+    taking_longer_to_post "Slow one" do
+      send_message_without_waiting "Slow one"
+      send_message_without_waiting "Quick one"
+
+      assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Quick one", wait: 5
+    end
+
+    assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Slow one"
+    assert_empty page.evaluate_script("window.messagesMarkedFailed")
+    assert_equal [ "Slow one", "Quick one" ], rooms(:designers).messages.ordered.last(2).map { it.plain_text_body.strip }
+  end
+
+  test "a message isn't lost when the next one is sent before it left the browser" do
+    holding_back_posts_of "Held one" do
+      join_room rooms(:designers)
+
+      send_message_without_waiting "Held one"
+      send_message_without_waiting "Next one"
+
+      assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Held one", wait: 5
+    end
+
+    assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Next one"
+    assert_equal [ "Held one", "Next one" ], rooms(:designers).messages.ordered.last(2).map { it.plain_text_body.strip }
+  end
+
+  test "a message that isn't answered holds up the next one for ten seconds at most" do
+    holding_back_posts_of "Stuck one", seconds: 30 do
+      join_room rooms(:designers)
+
+      send_message_without_waiting "Stuck one"
+      send_message_without_waiting "Next one"
+
+      assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Next one", wait: 13
+      assert_selector "[data-pending-message] .message__body", text: "Stuck one"
+    end
+  end
+
+  test "messages that take a while each are still posted in order" do
+    # The first is answered after four seconds and the second after eight more: the third has waited for longer than ten
+    # seconds while the second is still on its way, but not for it.
+    holding_back_posts_of "First one", seconds: 4 do
+      holding_back_posts_of "Second one", seconds: 8 do
+        join_room rooms(:designers)
+
+        send_message_without_waiting "First one"
+        send_message_without_waiting "Second one"
+        send_message_without_waiting "Third one"
+
+        assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Second one", wait: 20
+        assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Third one", wait: 5
+      end
+    end
+
+    assert_equal [ "First one", "Second one", "Third one" ], rooms(:designers).messages.ordered.last(3).map { it.plain_text_body.strip }
+  end
+
+  test "messages sent to a room deleted meanwhile are all marked failed" do
+    posting_to_a_room_thats_gone do
+      holding_back_posts_of "First one" do
+        join_room rooms(:designers)
+
+        send_message_without_waiting "First one"
+        send_message_without_waiting "Second one"
+
+        assert_selector ".message--failed .message__body", text: "First one", wait: 5
+        assert_selector ".message--failed .message__body", text: "Second one"
+      end
+    end
+  end
+
+  test "the answer to a message doesn't change the room's page that was opened meanwhile" do
+    posting_to_a_room_thats_gone do
+      holding_back_posts_of "Anyone here?", seconds: 2 do
+        join_room rooms(:designers)
+
+        send_message_without_waiting "Anyone here?"
+        find("##{dom_id(rooms(:hq), :list)}").click
+        assert_selector "form#composer[action='#{room_messages_path(rooms(:hq))}']"
+
+        # Longer than the post is held back, so its answer has come in meanwhile.
+        assert_not page.has_text?("This room was deleted.", wait: 4)
+      end
+    end
+
+    send_message "Still here"
+    assert_equal "Still here", rooms(:hq).messages.ordered.last.plain_text_body.strip
+  end
+
+  test "sending to a room deleted meanwhile says so, and marks the message failed" do
+    posting_to_a_room_thats_gone do
+      send_message_without_waiting "Anyone here?"
+
+      within ".composer" do
+        assert_text "This room was deleted."
+        assert_no_selector "form"
+      end
+      assert_selector ".message--failed .message__body", text: "Anyone here?"
+    end
+  end
+
+  test "sending a message stops showing its author as typing" do
+    using_session("Kevin") do
+      sign_in "kevin@37signals.com"
+      join_room rooms(:designers)
+      type_in_composer "On my way"
+    end
+
+    assert_selector ".typing-indicator--active", text: "Kevin"
+
+    using_session("Kevin") do
+      press_in_composer :enter
+    end
+
+    # Sooner than the indicator gives up on its own, after five seconds without news.
+    assert_no_selector ".typing-indicator--active", wait: 3
+  end
+
+  test "a message the server refuses is marked failed, and the next one is still sent" do
+    refusing_posts_of "Refused one" do
+      send_message_without_waiting "Refused one"
+      send_message_without_waiting "Fine one"
+
+      assert_selector ".message--failed .message__body", text: "Refused one"
+      assert_selector ".message[data-message-id]:not([data-pending-message]) .message__body", text: "Fine one"
+    end
+  end
+
+  test "a message sent after the session ended, as on signing out in another tab, leads to signing in" do
+    users(:jz).sessions.destroy_all
+
+    send_message_without_waiting "Still there?"
+
+    assert_current_path new_session_path
+  end
+
+  test "a message that can't reach the server is marked failed" do
+    page.driver.browser.network_conditions = { offline: true, latency: 0, throughput: 0 }
+
+    send_message_without_waiting "Lost in space"
+
+    assert_selector ".message--failed .message__body", text: "Lost in space"
+  ensure
+    page.driver.browser.delete_network_conditions
+  end
+
+  private
+    def send_message_without_waiting(text)
+      type_in_composer text
+      press_in_composer :enter
+      assert_no_selector "#composer lexxy-editor", text: text
+    end
+
+    def record_messages_marked_failed
+      page.execute_script <<~JS
+        window.messagesMarkedFailed = []
+        new MutationObserver(() => {
+          for (const message of document.querySelectorAll(".message.message--failed")) {
+            window.messagesMarkedFailed.push(message.querySelector(".message__body").innerText)
+          }
+        }).observe(document.querySelector(".messages"), { subtree: true, attributes: true, attributeFilter: [ "class" ] })
+      JS
+    end
+
+    # The server takes a second to post a message with this text, as when it's busy.
+    # Posting finds no room, as when it was deleted meanwhile, while the rest of the page carries on: deleting it for
+    # real also sends the page's own requests for the room to a not found.
+    def posting_to_a_room_thats_gone
+      Message.define_singleton_method(:create_with_attachment!) { |_attributes| raise ActiveRecord::RecordNotFound }
+
+      yield
+    ensure
+      Message.singleton_class.remove_method(:create_with_attachment!)
+    end
+
+    def taking_longer_to_post(text)
+      Message.define_singleton_method(:create_with_attachment!) do |attributes|
+        sleep 1 if attributes[:body].to_s.include?(text)
+        super(attributes)
+      end
+
+      yield
+    ensure
+      Message.singleton_class.remove_method(:create_with_attachment!)
+    end
+
+    # The server answers 422 for a message with this text, as it would for any refused request.
+    def refusing_posts_of(text)
+      show_exceptions = Rails.application.env_config["action_dispatch.show_exceptions"]
+      Rails.application.env_config["action_dispatch.show_exceptions"] = :rescuable
+
+      Message.define_singleton_method(:create_with_attachment!) do |attributes|
+        raise ActiveRecord::RecordInvalid if attributes[:body].to_s.include?(text)
+        super(attributes)
+      end
+
+      yield
+    ensure
+      Message.singleton_class.remove_method(:create_with_attachment!)
+      Rails.application.env_config["action_dispatch.show_exceptions"] = show_exceptions
+    end
+
+    # The browser holds a post with this text for a while before it sends it, as on a slow or reconnecting network; one
+    # cancelled meanwhile never reaches the server.
+    def holding_back_posts_of(text, seconds: 1.5)
+      script = page.driver.browser.execute_cdp "Page.addScriptToEvaluateOnNewDocument", source: <<~JS
+        {
+          const fetch = window.fetch
+          window.fetch = (resource, options = {}) => {
+            if (!String(options.body?.get?.("message[body]")).includes(#{text.to_json})) return fetch(resource, options)
+
+            return new Promise((resolve, reject) => {
+              const timer = setTimeout(() => fetch(resource, options).then(resolve, reject), #{(seconds * 1000).round})
+              options.signal?.addEventListener("abort", () => {
+                clearTimeout(timer)
+                reject(new DOMException("The request was cancelled.", "AbortError"))
+              })
+            })
+          }
+        }
+      JS
+
+      yield
+    ensure
+      page.driver.browser.execute_cdp "Page.removeScriptToEvaluateOnNewDocument", identifier: script["identifier"] if script
+    end
 end
