@@ -5,3 +5,7 @@
 <% @updated_messages.each do |message| %>
   <%= turbo_stream.replace dom_id(message), partial: "messages/message", locals: { message: message } %>
 <% end %>
+
+<% @deleted_message_ids.each do |id| %>
+  <%= turbo_stream.remove Message.new(id: id) %>
+<% end %>
