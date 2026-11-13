@@ -58,6 +58,39 @@ class ComposerTest < ApplicationInteractionTestCase
     assert_message_text "Hello Claude World"
   end
 
+  test "mentioning a user with @ inserts a mention attachment" do
+    stub_layout "#composer lexxy-editor"
+    type_in_composer "Hey @Jas"
+    pick_mention "Jason"
+    click_send_button
+
+    assert_selector last_message_selector(".mention"), text: "Jason"
+
+    message = rooms(:designers).messages.ordered.last
+    assert_includes message.body.body.to_html, "application/vnd.campfire.mention"
+    assert_equal [ users(:jason) ], message.mentionees
+  end
+
+  test "editing a message with a mention keeps the mention" do
+    stub_layout "#composer lexxy-editor"
+    type_in_composer "Hey @Jas"
+    pick_mention "Jason"
+    click_send_button
+
+    assert_selector last_message_selector(".mention"), text: "Jason"
+    message = rooms(:designers).messages.ordered.last
+
+    within_message message do
+      reveal_message_actions
+      find(".message__edit-btn").click
+      assert_edit_editor_text "Jason"
+      click_on "Save changes"
+    end
+
+    assert_selector last_message_selector(".mention"), text: "Jason"
+    assert_equal [ users(:jason) ], message.reload.mentionees
+  end
+
   test "editing a legacy trix message keeps its mention and embed" do
     body = %(<div>Hey #{mention_attachment_for(:jason)} check <action-text-attachment content-type="application/vnd.actiontext.opengraph-embed" url="https://example.com/image.png" href="https://example.com/" filename="Example title" caption="Example description"></action-text-attachment></div>)
     message = Message.create! room: rooms(:designers), body: body, client_message_id: "legacy", creator: users(:jz)
