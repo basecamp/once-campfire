@@ -32,7 +32,9 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 # Workers do not work on JRuby or Windows (both of which do not support
 # processes).
 #
-worker_count = (Concurrent.processor_count * 0.666).ceil
+# Count the CPUs this container may use: its CPU quota when it has one (ONCE's
+# CPU limit, `docker run --cpus`), otherwise every CPU it can see.
+worker_count = (Concurrent.available_processor_count * 0.666).ceil
 workers ENV.fetch("WEB_CONCURRENCY") { worker_count }
 
 ENV["JOB_CONCURRENCY"] ||= worker_count.to_s

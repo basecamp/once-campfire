@@ -1,1 +1,1 @@
-default: <%= (Concurrent.processor_count * 0.5).ceil %>
+default: <%= (Concurrent.available_processor_count * 0.5).ceil %>
