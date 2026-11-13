@@ -24,7 +24,7 @@ class Room::MessagePusher
     def build_direct_payload
       {
         title: message.creator.name,
-        body: message.plain_text_body,
+        body: excerpt,
         path: Rails.application.routes.url_helpers.room_path(room)
       }
     end
@@ -32,9 +32,15 @@ class Room::MessagePusher
     def build_shared_payload
       {
         title: room.name,
-        body: "#{message.creator.name}: #{message.plain_text_body}",
+        body: "#{message.creator.name}: #{excerpt}",
         path: Rails.application.routes.url_helpers.room_path(room)
       }
+    end
+
+    # The web-push gem won't encrypt a notification over 4 KB, so a long message used to notify no one. A notification
+    # shows only the start of a message anyway.
+    def excerpt
+      message.plain_text_body.truncate(200, omission: "…")
     end
 
     def push_subscriptions_for_users_involved_in_everything
