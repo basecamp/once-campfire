@@ -26,6 +26,17 @@ class Users::AvatarsControllerTest < ActionDispatch::IntegrationTest
     assert_select "text", text: "K"
   end
 
+  test "show initials when the image has more pixels than a preview may have" do
+    users(:kevin).update! avatar: fixture_file_upload("moon.jpg", "image/jpeg")
+
+    stub_const(Message::Attachment, :THUMBNAIL_MAX_PIXELS, 1) do
+      get user_avatar_url(users(:kevin).avatar_token)
+    end
+
+    assert_response :success
+    assert_select "text", text: "K"
+  end
+
   test "show image with invalid token responds 404" do
     get user_avatar_url("not-a-valid-token")
 

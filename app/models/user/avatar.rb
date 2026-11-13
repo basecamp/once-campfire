@@ -18,6 +18,16 @@ module User::Avatar
   end
 
   def avatar_variant
-    avatar.variant(:square).processed if avatar.variable?
+    if avatar.variable?
+      variant = avatar.variant(:square)
+      variant.processed if variant.processed? || avatar_previewable?
+    end
   end
+
+  private
+    # The variant is made in the request that first shows the avatar, so it gets the limit a message's preview has.
+    def avatar_previewable?
+      avatar.analyze unless avatar.analyzed?
+      !Message::Attachment.too_many_pixels_to_preview?(avatar.blob)
+    end
 end
