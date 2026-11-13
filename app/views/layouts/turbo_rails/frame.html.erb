@@ -1,0 +1,9 @@
+<%# Turbo's frame layout without its csrf_meta_tags. Header-only forgery protection needs no secret in cached HTML, and a token masked afresh on each render would give every frame a new ETag. %>
+<html>
+  <head>
+    <%= yield :head %>
+  </head>
+  <body>
+    <%= yield %>
+  </body>
+</html>
