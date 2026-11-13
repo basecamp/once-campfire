@@ -1,6 +1,6 @@
-require "application_system_test_case"
+require "application_interaction_test_case"
 
-class UnreadRoomsTest < ApplicationSystemTestCase
+class UnreadRoomsTest < ApplicationInteractionTestCase
   setup do
     sign_in "jz@37signals.com"
   end

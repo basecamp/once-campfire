@@ -1,6 +1,6 @@
-require "application_system_test_case"
+require "application_interaction_test_case"
 
-class StartingPingsTest < ApplicationSystemTestCase
+class StartingPingsTest < ApplicationInteractionTestCase
   setup do
     sign_in "kevin@37signals.com"
   end
