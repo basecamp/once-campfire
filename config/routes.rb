@@ -63,6 +63,13 @@ Rails.application.routes.draw do
     resources :messages
 
     nested do
+      # Literal "bot" must stay above :bot_key so it is not captured as a key.
+      scope path: "bot", as: :bot_api, defaults: { format: :json } do
+        resources :messages, controller: "messages/by_bots", only: %i[ index create update destroy ] do
+          resources :boosts, controller: "messages/boosts/by_bots", only: %i[ create destroy ]
+        end
+      end
+
       scope path: ":bot_key", as: :bot, defaults: { format: :json } do
         resources :messages, controller: "messages/by_bots", only: %i[ index create update destroy ] do
           resources :boosts, controller: "messages/boosts/by_bots", only: %i[ create destroy ]
