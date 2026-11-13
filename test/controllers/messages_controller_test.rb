@@ -121,6 +121,15 @@ class MessagesControllerTest < ActionDispatch::IntegrationTest
     assert_enqueued_with job: Message::BroadcastUnreadRoomJob, args: [ Message.last ]
   end
 
+  test "creating a message enqueues its jobs in one write" do
+    batches = []
+    ActiveJob.stubs(:perform_all_later).with { |*jobs| batches << jobs.flatten.map(&:class) }
+
+    post room_messages_url(@room, format: :turbo_stream), params: { message: { body: "New one", client_message_id: 999 } }
+
+    assert_equal [ [ Room::PushMessageJob, Message::BroadcastUnreadRoomJob ] ], batches
+  end
+
   test "the unread fanout skips a member who has opened the room since" do
     membership = memberships(:jason_watercooler)
 
