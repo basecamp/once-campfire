@@ -15,8 +15,6 @@ export default class extends Controller {
       disconnected: this.#websocketDisconnected
     })
 
-    this.wasVisible = true
-
     await nextFrame()
     this.dispatch("present", { detail: { roomId: Current.room.id } })
   }
@@ -34,9 +32,14 @@ export default class extends Controller {
     }
   }
 
+  // The server counts every new subscription as present, the one made again after a dropped
+  // connection included, so a page that is hidden by then has to say it's absent once more.
   #websocketConnected = () => {
     this.connected = true
+    this.wasVisible = true
     this.#startRefreshTimer()
+
+    if (!this.#isVisible) this.#hidden()
   }
 
   #websocketDisconnected = () => {
