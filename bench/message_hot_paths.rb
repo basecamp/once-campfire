@@ -38,7 +38,11 @@ paths.each do |name, path|
     2.times { client.get path }
     times, counts, allocations, hashes, headers = [], [], [], [], []
     Integer(ENV.fetch("BENCH_ITERATIONS", "20")).times do
-      Rails.cache.clear if cache == "cold"
+      if cache == "cold"
+        Rails.cache.clear
+        ResponseCache.instance.clear if defined?(ResponseCache)
+        FragmentCache.store.clear if defined?(FragmentCache)
+      end
       queries.clear
       start_allocations = GC.stat(:total_allocated_objects)
       start = Process.clock_gettime(Process::CLOCK_MONOTONIC)

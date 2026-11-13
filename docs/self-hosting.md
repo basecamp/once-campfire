@@ -169,6 +169,10 @@ docker pull ghcr.io/basecamp/once-campfire:latest
 
 Any pending database migrations run automatically when the container boots.
 
+Production `Rails.cache` uses Solid Cache in its own SQLite database, `storage/db/production_cache.sqlite3`. Startup's normal `db:prepare` creates it from the checked-in cache schema. Existing Redis entries are not copied; the cache starts cold and repopulates as requests arrive. Redis remains required for Action Cable. Native view fragments use this shared store; complete responses and authorization snapshots share a separate, approximately 64 MiB in-memory budget per worker. Official images namespace presentation caches by `GIT_REVISION` and signing key. Set an immutable `GIT_REVISION` for custom builds to share fragments across workers; unversioned builds use a fresh boot namespace instead.
+
+See the [Solid Cache upgrade notes](upgrades/solid-cache.md) for backup and restore behavior.
+
 ### Backups
 
 To back up your instance, back up the contents of the `/rails/storage` volume.
@@ -182,7 +186,7 @@ docker exec campfire script/admin/prepare-backup
 
 (If you're using Docker Compose, replace `docker exec campfire` with `docker compose exec web`)
 
-Then archive the whole storage volume to a file on the host:
+Then archive the storage volume to a file on the host, excluding the disposable cache database:
 
 ```sh
 docker run --rm \
@@ -190,10 +194,10 @@ docker run --rm \
   --volume campfire:/rails/storage \
   --volume "$PWD":/backup \
   ghcr.io/basecamp/once-campfire:latest \
-  tar czf "/backup/campfire-backup.tar.gz" -C /rails storage
+  tar czf "/backup/campfire-backup.tar.gz" --exclude='storage/db/production_cache.sqlite3*' -C /rails storage
 ```
 
-This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files.
+This gives you a `campfire-backup.tar.gz` in your current directory containing the database snapshot and all uploaded files. The disposable Solid Cache database is excluded and is rebuilt empty after a restore.
 Copy it somewhere safe, ideally off the machine.
 
 To restore, extract the archive back into a (stopped) instance's volume, and replace the live database with the snapshot:
@@ -207,6 +211,7 @@ docker run --rm \
   bash -c "tar xzf /backup/campfire-backup.tar.gz -C /rails &&
            cp /rails/storage/backups/production.sqlite3 /rails/storage/db/production.sqlite3 &&
            rm -f /rails/storage/db/production.sqlite3-wal /rails/storage/db/production.sqlite3-shm &&
+           rm -f /rails/storage/db/production_cache.sqlite3 /rails/storage/db/production_cache.sqlite3-wal /rails/storage/db/production_cache.sqlite3-shm /rails/storage/db/production_cache.sqlite3-journal &&
            chown -R rails:rails /rails/storage"
 ```
 

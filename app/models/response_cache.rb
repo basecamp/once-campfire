@@ -6,19 +6,17 @@ class ResponseCache
   MAX_ENTRY_BYTES = 1.megabyte
   MAX_KEY_BYTES = 2.kilobytes
 
+  attr_reader :budget
+
   def self.instance
     INSTANCE
   end
 
-  def initialize
+  def initialize(budget: [ ENV.fetch("CAMPFIRE_RESPONSE_CACHE_MB", "64").to_i, 0 ].max.megabytes)
+    @budget = budget
+    @store = ActiveSupport::Cache::MemoryStore.new(size: budget, coder: nil)
     @mutex = Mutex.new
-    @entries = {}
-    @bytes = 0
     @render_locks = Array.new(16) { Mutex.new }
-  end
-
-  def budget
-    [ ENV.fetch("CAMPFIRE_RESPONSE_CACHE_MB", "64").to_i, 0 ].max.megabytes
   end
 
   def version
@@ -30,7 +28,10 @@ class ResponseCache
 
   def read(key, version)
     @mutex.synchronize do
-      @entries[key]&.first if current_version == version
+      if current_version == version
+        entry = @store.read(key)
+        entry if current_version == version
+      end
     end
   rescue SQLite3::Exception
     clear
@@ -49,14 +50,7 @@ class ResponseCache
 
     @mutex.synchronize do
       return unless current_version == version
-      return if @entries.key?(key)
-
-      while @entries.any? && @bytes + size > budget
-        _, (_, removed_size) = @entries.shift
-        @bytes -= removed_size
-      end
-      @entries[key] = [ entry, size ]
-      @bytes += size
+      @store.write(key, entry, unless_exist: true)
     end
   rescue SQLite3::Exception
     clear
@@ -64,8 +58,7 @@ class ResponseCache
 
   def clear
     @mutex.synchronize do
-      @entries.clear
-      @bytes = 0
+      @store.clear
       @observer&.close
       @observer = @database = @version = nil
     end
@@ -75,8 +68,7 @@ class ResponseCache
     def current_version
       database = File.expand_path(ActiveRecord::Base.connection_db_config.database)
       if @database != database || !@observer
-        @entries.clear
-        @bytes = 0
+        @store.clear
         @observer&.close
         @observer = nil
         @observer = SQLite3::Database.new(database, readonly: true)
@@ -87,8 +79,7 @@ class ResponseCache
 
       version = @observer.get_first_value("PRAGMA data_version")
       if @version != version
-        @entries.clear
-        @bytes = 0
+        @store.clear
         @version = version
       end
       [ @database, @namespace, @version ]
