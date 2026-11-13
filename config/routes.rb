@@ -21,12 +21,16 @@ Rails.application.routes.draw do
 
       resource :join_code, only: :create
       resource :logo, only: %i[ show destroy ]
-      resource :custom_styles, only: %i[ edit update ]
+      resource :custom_styles, only: %i[ show edit update ]
     end
   end
 
   direct :fresh_account_logo do |options|
     route_for :account_logo, v: Current.account&.updated_at&.to_fs(:number), size: options[:size]
+  end
+
+  direct :fresh_custom_styles do |options|
+    route_for :account_custom_styles, v: Current.account&.updated_at&.to_fs(:epoch)
   end
 
   get "join/:join_code", to: "users#new", as: :join
