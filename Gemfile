@@ -59,7 +59,7 @@ end
 group :test do
   gem "capybara"
   gem "mocha"
-  gem "rails-jsdom", github: "jakehow/rails-jsdom", branch: "load-app-entry"
+  gem "rails-jsdom", github: "jakehow/rails-jsdom", branch: "main"
   gem "selenium-webdriver"
   gem "webmock", require: false
 end
