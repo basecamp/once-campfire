@@ -67,6 +67,42 @@ class ContentSecurityPolicyTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "import locations resolve independently against the request origin" do
+    host! "www.example.com:8443"
+    https!
+
+    with_relative_url_root("/chat") do
+      urls = [
+        "https://cdn.example.test/assets/chat/assets/first.js",
+        "/chat/assets/application.js",
+        "https://www.example.com:8443/chat/assets/same-origin.js",
+        "//cdn.example.test/chat/assets/external.js",
+        "/chat/assets/nested/../module.js?version=1#entry",
+        "/chat/assets/../../uploads/upload.js",
+        "uploads/relative.js?version=1#entry",
+        "/outside.js?path=/chat/assets/ignored.js",
+        "/chat/assets/%2e%2e/encoded.js",
+        "/mirror/chat/assets/nested/chat/assets/last.js"
+      ]
+      importmap = JSON.generate("imports" => urls.each_with_index.to_h { |url, i| [ "script#{i}", url ] })
+      Rails.application.importmap.stubs(:to_json).returns(importmap)
+
+      get new_session_path
+      assert_response :success
+
+      locations = response.headers["Content-Security-Policy"][/script-src ([^;]+)/, 1].split.reject { it.start_with?("'sha256-") }
+      assert_equal [
+        "https://cdn.example.test/assets/chat/assets/",
+        "www.example.com:8443/chat/assets/",
+        "https://cdn.example.test/chat/assets/",
+        "www.example.com:8443/uploads/upload.js",
+        "www.example.com:8443/uploads/relative.js",
+        "www.example.com:8443/outside.js",
+        "www.example.com:8443/mirror/chat/assets/nested/chat/assets/"
+      ], locations
+    end
+  end
+
   test "the sign-in page is limited to the asset directory too" do
     cookies.delete(:session_token)
     get new_session_url
