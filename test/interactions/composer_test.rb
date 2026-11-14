@@ -1,6 +1,6 @@
-require "application_system_test_case"
+require "application_interaction_test_case"
 
-class ComposerTest < ApplicationSystemTestCase
+class ComposerTest < ApplicationInteractionTestCase
   setup do
     sign_in "jz@37signals.com"
     join_room rooms(:designers)
@@ -59,24 +59,26 @@ class ComposerTest < ApplicationSystemTestCase
   end
 
   test "mentioning a user with @ inserts a mention attachment" do
+    stub_layout "#composer lexxy-editor"
     type_in_composer "Hey @Jas"
     pick_mention "Jason"
     click_send_button
 
     assert_selector last_message_selector(".mention"), text: "Jason"
 
-    message = wait_for_persisted_message
+    message = rooms(:designers).messages.ordered.last
     assert_includes message.body.body.to_html, "application/vnd.campfire.mention"
     assert_equal [ users(:jason) ], message.mentionees
   end
 
   test "editing a message with a mention keeps the mention" do
+    stub_layout "#composer lexxy-editor"
     type_in_composer "Hey @Jas"
     pick_mention "Jason"
     click_send_button
 
     assert_selector last_message_selector(".mention"), text: "Jason"
-    message = wait_for_persisted_message
+    message = rooms(:designers).messages.ordered.last
 
     within_message message do
       reveal_message_actions
@@ -208,7 +210,7 @@ class ComposerTest < ApplicationSystemTestCase
     paste_in_composer "https://example.com/article"
 
     within "#composer" do
-      assert_selector ".og-embed__title", text: "Example Site", wait: 10
+      assert_selector ".og-embed__title", text: "Example Site"
     end
 
     click_send_button
@@ -227,16 +229,5 @@ class ComposerTest < ApplicationSystemTestCase
 
     def assert_no_message_text(text)
       assert_no_selector ".message__body", text: text
-    end
-
-    # The message insert races with the form POST, so give the server a moment
-    def wait_for_persisted_message(room: rooms(:designers), since: 1.minute.ago)
-      message = nil
-      20.times do
-        message = room.messages.ordered.last
-        break if message.created_at > since
-        sleep 0.25
-      end
-      message
     end
 end

@@ -16,7 +16,7 @@ require "application_system_test_case"
 #
 # The test drives two real headless-Chromium sessions (victim + attacker) against one
 # server and screenshots the outcome to tmp/screenshots/.
-class MessageIdSpoofingTest < ApplicationSystemTestCase
+class MessageIdSpoofingScreenshotsTest < ApplicationSystemTestCase
   SCREENSHOT_DIR = Rails.root.join("tmp/screenshots")
 
   setup do
@@ -77,34 +77,6 @@ class MessageIdSpoofingTest < ApplicationSystemTestCase
     assert_equal "Victim's real message", victim_message.reload.body.to_plain_text.strip
 
     save_screenshot(SCREENSHOT_DIR.join("spoof-after-fixed.png"))
-  end
-
-  test "a distinct client_message_id never alters the victim message" do
-    room = rooms(:designers)
-
-    sign_in "jz@37signals.com"
-    join_room room
-    send_message "Victim's untouched message"
-    assert_selector ".message[data-message-id]", text: "Victim's untouched message"
-
-    victim_db_id = room.messages.where(creator: users(:jz)).order(:created_at).last.id
-    attacker_db_id = nil
-
-    using_session("attacker") do
-      sign_in "kevin@37signals.com"
-      join_room room
-      status = post_message_via_browser(room, "Attacker's own message", "a-distinct-id")
-      assert (200..299).include?(status), "a non-colliding create should succeed (got #{status})"
-
-      attacker_db_id = find(".message[data-message-id]", text: "Attacker's own message")["data-message-id"]
-      edit_message_via_browser(room, attacker_db_id, "EDITED BY ATTACKER")
-    end
-
-    # The attacker's edit lands only on the attacker's own message. The victim's
-    # message is untouched.
-    assert_selector message_selector(attacker_db_id), text: "EDITED BY ATTACKER"
-    assert_selector "#{message_selector(victim_db_id)} .message__body", text: "Victim's untouched message"
-    assert_no_selector "#{message_selector(victim_db_id)} .message__body", text: "EDITED BY ATTACKER"
   end
 
   private

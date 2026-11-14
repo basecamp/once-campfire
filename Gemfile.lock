@@ -299,6 +299,13 @@ GEM
     rails-html-sanitizer (1.7.2)
       loofah (~> 2.25, >= 2.25.3)
       nokogiri (>= 1.15.7, != 1.16.7, != 1.16.6, != 1.16.5, != 1.16.4, != 1.16.3, != 1.16.2, != 1.16.1, != 1.16.0.rc1, != 1.16.0)
+    rails-jsdom (0.2.0)
+      actioncable (>= 8.1)
+      actionpack (>= 8.1)
+      importmap-rails (>= 2.0)
+      nokogiri (>= 1.15)
+      propshaft (>= 1.0)
+      turbo-rails (>= 2.0)
     rails_autolink (1.1.8)
       actionview (> 3.1)
       activesupport (> 3.1)
@@ -454,6 +461,7 @@ DEPENDENCIES
   propshaft!
   puma (~> 8.0)
   rails!
+  rails-jsdom (~> 0.2)
   rails_autolink
   redis (~> 5.4)
   resque (~> 2.7.0)
