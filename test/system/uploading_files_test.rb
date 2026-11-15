@@ -19,8 +19,20 @@ class UploadingFilesTest < ApplicationSystemTestCase
     end
     find("#composer [data-action='composer#submit']").click
 
-    assert_selector ".message__body", text: "moon.jpg"
+    message = wait_for_uploaded_message
+    assert_equal "moon.jpg", message.attachment.filename.to_s
+    assert_selector "#" + dom_id(message)
     assert_no_selector "[data-pending-message]"
-    assert_equal "moon.jpg", rooms(:designers).messages.ordered.last.attachment.filename.to_s
   end
+
+  private
+    # The upload is asynchronous, so give the server a moment to save the message
+    def wait_for_uploaded_message(room: rooms(:designers))
+      20.times do
+        message = room.messages.with_attached_attachment.ordered.last
+        return message if message.attachment.attached?
+        sleep 0.25
+      end
+      flunk "no uploaded message was saved"
+    end
 end
