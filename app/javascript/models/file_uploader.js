@@ -13,7 +13,6 @@ export default class FileUploader {
 
     const req = new XMLHttpRequest()
     req.open("POST", this.url)
-    req.setRequestHeader("X-CSRF-Token", document.querySelector("meta[name=csrf-token]").content)
     req.upload.addEventListener("progress", this.#uploadProgress.bind(this))
 
     const result = new Promise((resolve, reject) => {
