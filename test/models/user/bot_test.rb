@@ -31,6 +31,21 @@ class User::BotTest < ActiveSupport::TestCase
     assert User.authenticate_bot(bot.bot_key)
   end
 
+  test "authenticate rejects a key without a token" do
+    bot = User.create_bot!(name: "Bender")
+    bot.update_column(:bot_token, nil)
+
+    assert_nil User.authenticate_bot("#{bot.id}")
+    assert_nil User.authenticate_bot("#{bot.id}-")
+  end
+
+  test "authenticate rejects a key with an empty token" do
+    bot = User.create_bot!(name: "Bender")
+    bot.update_column(:bot_token, "")
+
+    assert_nil User.authenticate_bot("#{bot.id}--anything")
+  end
+
   test "deliver message by webhook" do
     WebMock.stub_request(:post, webhooks(:bender).url).to_return(status: 200)
 
