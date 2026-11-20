@@ -11,6 +11,7 @@ export default class extends Controller {
   static values = { loadedAt: Number, url: String, }
 
   #lastLoadedAt
+  #connected = false
   #offlineTimer = null
   #hiddenAt = null
 
@@ -30,8 +31,12 @@ export default class extends Controller {
     this.channel?.unsubscribe()
   }
 
+  // Only a message that arrives while connected moves where the next refresh starts. One that arrives while
+  // disconnected, like the answer to a message sent then, can be newer than others missed meanwhile.
   messageTargetConnected(target) {
-    this.#lastLoadedAt = Math.max(this.#lastLoadedAt, target.dataset.messageUpdatedAt || 0)
+    if (this.#connected) {
+      this.#lastLoadedAt = Math.max(this.#lastLoadedAt, target.dataset.messageUpdatedAt || 0)
+    }
   }
 
   visibilityChanged() {
@@ -53,6 +58,7 @@ export default class extends Controller {
   }
 
   #channelConnected() {
+    this.#connected = true
     this.#refresh("connection")
 
     clearTimeout(this.#offlineTimer)
@@ -63,6 +69,8 @@ export default class extends Controller {
     this.#offlineTimer = setTimeout(() => {
       this.dispatch("offline", { target: window })
     }, OFFLINE_AFTER_DISCONNECTED_TIMEOUT)
+
+    this.#connected = false
   }
 
   #refresh(reason) {

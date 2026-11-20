@@ -66,10 +66,13 @@ export default class extends Controller {
       if (upToDate) {
         event.detail.render = async (streamElement) => {
           const didScroll = await this.#scrollManager.autoscroll(false, async () => {
+            const messageIds = this.#messageIdsIn(streamElement)
+
             await render(streamElement)
             await nextEventLoopTick()
 
             this.#positionLastMessage()
+            if (this.#paginator.upToDate) this.#positionMessages(messageIds)
             this.#playSoundForLastMessage()
             this.#paginator.trimExcessMessages(true)
           })
@@ -180,6 +183,23 @@ export default class extends Controller {
 
     if (followingMessage) {
       followingMessage.before(this.#lastMessage)
+    }
+  }
+
+  #messageIdsIn(streamElement) {
+    return Array.from(streamElement.templateContent.querySelectorAll(".message"), (message) => message.id).filter(Boolean)
+  }
+
+  // The refresh after a dropped connection brings what was missed and, again, what came in meanwhile, which Turbo moves
+  // to the end with the rest: a message that arrived live since would stay above them all. Only while the list is at
+  // its end, as one that's catching up pages on from its last message.
+  #positionMessages(ids) {
+    for (const id of ids) {
+      const message = document.getElementById(id)
+
+      if (message?.parentElement === this.messagesTarget) {
+        this.#followingMessage(message)?.before(message)
+      }
     }
   }
 
