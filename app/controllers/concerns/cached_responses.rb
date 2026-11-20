@@ -26,12 +26,18 @@ module CachedResponses
   end
 
   def combined_fragment_cache_key(key)
-    @fragment_cache_context ||= [
-      request.base_url, request.script_name, request.format.to_s, I18n.locale,
-      Current.user&.id, (Digest::SHA256.hexdigest(Current.session.token) if Current.session)
-    ].freeze
-    version = @response_cache_version unless Array(key).flatten.any? { |part| part.is_a?(FragmentCache::ContentKey) }
-    super([ version, @fragment_cache_context, key ])
+    if Array(key).flatten.any? { |part| part.is_a?(Message) && part.presentation_versioned? }
+      # The database moves a message's presentation version whenever anything its
+      # fragment renders changes, and none of that is the viewer's, so every viewer
+      # shares one copy across database commits.
+      super([ request.base_url, request.script_name, request.format.to_s, I18n.locale, key ])
+    else
+      @fragment_cache_context ||= [
+        request.base_url, request.script_name, request.format.to_s, I18n.locale,
+        Current.user&.id, (Digest::SHA256.hexdigest(Current.session.token) if Current.session)
+      ].freeze
+      super([ @response_cache_version, @fragment_cache_context, key ])
+    end
   end
 
   private

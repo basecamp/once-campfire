@@ -14,6 +14,7 @@ module RoomMessagesCountDatabaseTasks
     def repair_room_messages_count
       migration_connection_pool.with_connection do |connection|
         Room::MessagesCount.ensure!(connection)
+        Message::PresentationVersion.ensure!(connection)
       end
     end
 end

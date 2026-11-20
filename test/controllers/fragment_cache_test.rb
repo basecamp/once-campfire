@@ -89,6 +89,42 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_equal @room.messages.count, messages[:cache_hits]
   end
 
+  test "another viewer reuses content-validated message fragments and sees only their own page" do
+    ResponseCache.instance.stubs(:budget).returns(0)
+    get room_url(@room)
+    assert_response :success
+
+    jason = open_session do |session|
+      session.host! "once.campfire.test"
+      session.post session_url, params: { email_address: users(:jason).email_address, password: "secret123456" }
+    end
+    collections = []
+    ActiveSupport::Notifications.subscribed(->(event) { collections << event.payload }, "render_collection.action_view") do
+      jason.get room_url(@room)
+    end
+    assert_equal 200, jason.response.status
+    messages = collections.find { |payload| payload[:identifier].end_with?("messages/_message.html.erb") }
+    assert_equal messages[:count], messages[:cache_hits]
+    assert_includes jason.response.body, %(<meta name="current-user-id" content="#{users(:jason).id}")
+    assert_not_includes jason.response.body, %(<meta name="current-user-id" content="#{users(:david).id}")
+  end
+
+  test "a page whose message fragments are all cached loads none of their associations" do
+    ResponseCache.instance.stubs(:budget).returns(0)
+    get room_url(@room)
+    assert_response :success
+
+    queries = []
+    ActiveSupport::Notifications.subscribed(->(event) { queries << event.payload[:sql] }, "sql.active_record") do
+      get room_url(@room)
+    end
+    assert_response :success
+    # Preloading a page's messages reads these tables for many records at once;
+    # the layout's own single lookups (the account logo) are not message associations.
+    preloads = queries.grep(/FROM "(action_text_rich_texts|boosts|users|active_storage_attachments|active_storage_blobs)".* IN \(/)
+    assert_empty preloads
+  end
+
   test "a foreign commit after capture bypasses old native fragment lookups" do
     ResponseCache.instance.stubs(:budget).returns(0)
     get room_messages_url(@room)
