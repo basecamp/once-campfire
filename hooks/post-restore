@@ -1,12 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
-db_name="${RAILS_ENV:-production}.sqlite3"
-snapshot="/rails/storage/backups/$db_name"
-db="/rails/storage/db/$db_name"
+for db_name in "${RAILS_ENV:-production}.sqlite3" "${RAILS_ENV:-production}_queue.sqlite3"; do
+  snapshot="/rails/storage/backups/$db_name"
+  db="/rails/storage/db/$db_name"
 
-if [ -f "$snapshot" ]; then
-  mkdir -p "$(dirname "$db")"
-  cp "$snapshot" "$db"
-  rm -f "$db-wal" "$db-shm"
-fi
+  if [ -f "$snapshot" ]; then
+    mkdir -p "$(dirname "$db")"
+    cp "$snapshot" "$db"
+    rm -f "$db-wal" "$db-shm"
+  fi
+done
+
+for disposable in cache cable; do
+  db="/rails/storage/db/${RAILS_ENV:-production}_$disposable.sqlite3"
+  rm -f "$db" "$db-wal" "$db-shm"
+done
