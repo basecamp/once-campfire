@@ -41,7 +41,8 @@ jobs:
             arch: arm64
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
+      # Everything goes to <repo>-edge, with this repository's own token.
+      IMAGE_NAME: ${{ github.repository }}-edge
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,9 +88,6 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=sha,format=short,prefix=sha-
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           flavor: |
             latest=false
             suffix=-${{ matrix.arch }}
@@ -128,6 +126,8 @@ jobs:
     name: Create multi-arch manifest and sign
     needs: build
     if: github.event_name != 'pull_request'
+    # Multi-platform tags, signed, in <repo>-edge only. basecamp/release-images
+    # promotes v* tags from there into the release package after a reviewer approves.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -136,7 +136,7 @@ jobs:
     timeout-minutes: 20
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
+      IMAGE_NAME: ${{ github.repository }}-edge
     steps:
       - name: Set up Docker Buildx (for imagetools)
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -166,10 +166,6 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=sha,format=short,prefix=sha-
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           flavor: |
             latest=false
           labels: |
@@ -188,10 +184,6 @@ jobs:
             [ -z "$tag" ] && continue
             echo "Creating manifest for $tag"
             src_tag="$tag"
-            if [[ "$tag" == *:latest && "${GITHUB_REF}" == refs/tags/* ]]; then
-              ref="${GITHUB_REF#refs/tags/}"
-              src_tag="${tag%:latest}:$ref"
-            fi
             if [ -n "${IMAGE_DESCRIPTION:-}" ]; then
               docker buildx imagetools create \
                 --tag "$tag" \
