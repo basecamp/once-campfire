@@ -46,7 +46,7 @@ begin
       command.concat environment(RAILS_ENV: "production", SECRET_KEY_BASE: "isolated-benchmark-fixture-key", DISABLE_SSL: true,
         SKIP_TELEMETRY: true, RAILS_LOG_LEVEL: "fatal", WEB_CONCURRENCY: 1, JOB_CONCURRENCY: 1, RAILS_MAX_THREADS: 5,
         REDIS_URL: "redis://#{redis}:6379/0")
-      command.concat [ options[:image], "bundle", "exec", "puma", "-C", "config/puma.rb" ]
+      command.concat [ options[:image], "sh", "-c", "bin/rails db:prepare && exec bundle exec puma -C config/puma.rb" ]
       run(*command)
       deadline = clock + 45
       until client.ready?

@@ -4,9 +4,12 @@ set -euo pipefail
 db_name="${RAILS_ENV:-production}.sqlite3"
 snapshot="/rails/storage/backups/$db_name"
 db="/rails/storage/db/$db_name"
+cache_db="/rails/storage/db/${RAILS_ENV:-production}_cache.sqlite3"
 
 if [ -f "$snapshot" ]; then
   mkdir -p "$(dirname "$db")"
   cp "$snapshot" "$db"
   rm -f "$db-wal" "$db-shm"
 fi
+
+rm -f "$cache_db" "$cache_db-wal" "$cache_db-shm"
