@@ -56,6 +56,10 @@ Membership.disconnect_all
 before_fork { SqliteWalCheckpoint.stop }
 before_worker_boot { SqliteWalCheckpoint.start }
 
+# Compact the master's heap and free its empty pages once before forking, so
+# workers start smaller and keep more of their memory shared with the master.
+before_fork { Process.warmup }
+
 Signal.trap :SIGPROF do
   Thread.list.each do |t|
     puts t
