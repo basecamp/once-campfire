@@ -20,10 +20,10 @@ fi
 if ! command -v gum &>/dev/null; then
   echo
   echo "▸ Installing gum"
-  if command -v pacman &>/dev/null; then
-    sudo pacman -S --noconfirm gum
-  elif command -v brew &>/dev/null; then
+  if command -v brew &>/dev/null; then
     brew install gum
+  elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm gum
   else
     echo "Please install gum: https://github.com/charmbracelet/gum"
     exit 1
