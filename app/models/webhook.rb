@@ -16,6 +16,9 @@ class Webhook < ApplicationRecord
     end
   rescue Net::OpenTimeout, Net::ReadTimeout
     receive_text_reply_to message.room, text: "Failed to respond within #{ENDPOINT_TIMEOUT} seconds"
+  rescue SocketError, SystemCallError, IOError, OpenSSL::SSL::SSLError => error
+    Rails.logger.warn "Failed to reach the webhook of bot #{user_id}: #{error.class}: #{error.message}"
+    receive_text_reply_to message.room, text: "Failed to respond"
   end
 
   private
