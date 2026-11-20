@@ -40,6 +40,10 @@ Rails.application.configure do
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :local
 
+  # Have Thruster send files from disk. Rack::Sendfile no longer takes this from the
+  # X-Sendfile-Type header Thruster adds to each request, so it is set here.
+  config.action_dispatch.x_sendfile_header = "X-Sendfile"
+
   # Assume all access to the app is happening through a SSL-terminating reverse proxy.
   # config.assume_ssl = true
 
