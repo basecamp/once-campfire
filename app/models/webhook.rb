@@ -54,8 +54,15 @@ class Webhook < ApplicationRecord
       Rails.application.routes.url_helpers.room_bot_messages_path(message.room, user.bot_key)
     end
 
+    # A bot that answers later, through its messages URL, still acknowledges the webhook, often with an empty body
+    # that's labeled text/html anyway, as Rails' head :ok is. Nothing to post then. The bytes are checked, so a body
+    # that isn't valid UTF-8 gets as far as it did.
+    def replied?(response)
+      response.code == "200" && response.body.to_s.b.present?
+    end
+
     def extract_text_from(response)
-      String.new(response.body).force_encoding("UTF-8") if response.code == "200" && response.content_type.in?(%w[ text/html text/plain ])
+      String.new(response.body).force_encoding("UTF-8") if replied?(response) && response.content_type.in?(%w[ text/html text/plain ])
     end
 
     def receive_text_reply_to(room, text:)
@@ -63,7 +70,7 @@ class Webhook < ApplicationRecord
     end
 
     def extract_attachment_from(response)
-      if response.code == "200" && response.content_type && mime_type = Mime::Type.lookup(response.content_type)
+      if replied?(response) && response.content_type && mime_type = Mime::Type.lookup(response.content_type)
         ActiveStorage::Blob.create_and_upload! \
           io: StringIO.new(response.body), filename: "attachment.#{mime_type.symbol}", content_type: mime_type.to_s
       end
