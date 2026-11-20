@@ -1,7 +1,10 @@
 import { Controller } from "@hotwired/stimulus"
+import { post } from "@rails/request.js"
 import FileUploader from "models/file_uploader"
-import { onNextEventLoopTick, nextFrame } from "helpers/timing_helpers"
+import { onNextEventLoopTick, nextFrame, delay } from "helpers/timing_helpers"
 import { escapeHTML } from "helpers/string_helpers"
+
+const PREVIOUS_MESSAGE_TIMEOUT = 10_000
 
 export default class extends Controller {
   static classes = ["toolbar"]
@@ -10,6 +13,7 @@ export default class extends Controller {
   static outlets = [ "messages" ]
 
   #files = []
+  #sending = Promise.resolve()
 
   connect() {
     this.#restoreDraft()
@@ -35,12 +39,6 @@ export default class extends Controller {
       this.#submitMessage()
       this.collapseToolbar()
       this.textTarget.focus()
-    }
-  }
-
-  submitEnd(event) {
-    if (!event.detail.success) {
-      this.messagesOutlet.failPendingMessage(this.clientidTarget.value)
     }
   }
 
@@ -137,13 +135,42 @@ export default class extends Controller {
   async #submitMessage() {
     if (this.#validInput()) {
       const clientMessageId = this.#generateClientId()
+      const messages = this.messagesOutlet
 
-      await this.messagesOutlet.insertPendingMessage(clientMessageId, this.textTarget)
+      await messages.insertPendingMessage(clientMessageId, this.textTarget)
       await nextFrame()
 
       this.clientidTarget.value = clientMessageId
-      this.element.requestSubmit()
+      const body = new FormData(this.element)
       this.#reset()
+      this.dispatch("submit")
+
+      this.#send(body, clientMessageId, messages)
+    }
+  }
+
+  // Each message has its own request: submitting the form again would cancel the request of the one before, losing it
+  // if it hadn't reached the server yet. It waits for the one before to be answered, so they're posted in order, but
+  // for no longer than ten seconds after that one went out, so one that's never answered doesn't hold up the rest.
+  #send(body, clientMessageId, messages) {
+    const send = () => Promise.race([ this.#post(body, clientMessageId, messages), delay(PREVIOUS_MESSAGE_TIMEOUT) ])
+    this.#sending = this.#sending.then(send, send)
+  }
+
+  async #post(body, clientMessageId, messages) {
+    const response = await post(this.element.action, { body, responseKind: "turbo-stream" }).catch(() => null)
+
+    // Answered after its room's page was left: what follows would act on the page that's open now.
+    if (!messages.element.isConnected) return
+
+    if (response?.redirected) {
+      // Signed out meanwhile: to the sign in page, as a form submission would go.
+      Turbo.visit(response.response.url)
+    } else if (!(response?.ok && response.isTurboStream)) {
+      // A refusal can still say why, as when the room was deleted.
+      if (response?.isTurboStream) await response.renderTurboStream()
+
+      messages.failPendingMessage(clientMessageId)
     }
   }
 

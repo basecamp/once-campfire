@@ -33,7 +33,7 @@ class MessagesController < ApplicationController
     @message.broadcast_create(html: @message_html)
     deliver_webhooks_to_bots
   rescue ActiveRecord::RecordNotFound
-    render action: :room_not_found
+    render action: :room_not_found, status: :not_found
   end
 
   def show
