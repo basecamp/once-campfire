@@ -4,14 +4,14 @@ require "json"
 require "yaml"
 
 class ProcessMonitor
-  SIGNALS = %w[ INT TERM CLD ]
+  SIGNALS = %w[ INT TERM ]
 
   def initialize(procfile)
     @procs = process_list(procfile)
     handle_signals
 
     @procs.each &:start
-    @procs.each &:wait
+    wait_for_procs
   end
 
   private
@@ -26,22 +26,31 @@ class ProcessMonitor
           @procs.each &:terminate
         end
       end
+
+      # A SIGCHLD ignored by whatever started this one would have the kernel reap the children, unseen by the wait
+      Signal.trap("CLD", "SYSTEM_DEFAULT")
+    end
+
+    # In a container this is PID 1, which also adopts orphans. Waiting for any child reaps them
+    # too, and only the exit of one of the processes stops the others.
+    def wait_for_procs
+      running = @procs.map(&:pid)
+
+      until running.empty?
+        @procs.each &:terminate if running.delete(Process.wait)
+      end
     end
 end
 
 class MonitoredProcess
+  attr_reader :pid
+
   def initialize(name, cmd)
     @name, @cmd = name, cmd
   end
 
   def start
     @pid = Process.spawn(@cmd)
-  end
-
-  def wait
-    Process.wait @pid
-  rescue Errno::ECHILD
-    nil
   end
 
   def terminate
