@@ -72,6 +72,37 @@ class MembershipTest < ActiveSupport::TestCase
     assert_equal 0, @membership.connections
   end
 
+  test "connections that open together each count" do
+    first, second = 2.times.map { Membership.find(@membership.id) }
+
+    first.present
+    second.present
+
+    assert_equal 2, @membership.reload.connections
+  end
+
+  test "connections that close together leave the member disconnected" do
+    2.times { Membership.find(@membership.id).present }
+    first, second = 2.times.map { Membership.find(@membership.id) }
+
+    first.disconnected
+    second.disconnected
+
+    assert_not @membership.reload.connected?
+    assert_equal 0, @membership.connections
+  end
+
+  test "refreshing a stale connection keeps the connections opened since" do
+    2.times { @membership.connected }
+    travel_to Membership::Connectable::CONNECTION_TTL.from_now + 1
+    refreshing = Membership.find(@membership.id)
+    2.times { Membership.find(@membership.id).present }
+
+    refreshing.refresh_connection
+
+    assert_equal 2, @membership.reload.connections
+  end
+
   test "refreshing the connection" do
     @membership.connected
 

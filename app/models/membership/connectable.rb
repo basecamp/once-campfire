@@ -22,8 +22,11 @@ module Membership::Connectable
     connected_at? && connected_at >= CONNECTION_TTL.ago
   end
 
+  # A member's connections come and go together, its tabs reconnecting after a restart or closing with the window, and
+  # each one reads the count before writing it. with_lock reads the row again in a transaction that holds SQLite's
+  # write lock from the start (default_transaction_mode: immediate), so they take turns instead of losing a change.
   def present
-    self.class.connect(self, connected? ? connections + 1 : 1)
+    with_lock { self.class.connect(self, connected? ? connections + 1 : 1) }
   end
 
   def connected
@@ -32,13 +35,17 @@ module Membership::Connectable
   end
 
   def disconnected
-    decrement_connections
-    update! connected_at: nil if connections < 1
+    with_lock do
+      decrement_connections
+      update! connected_at: nil if connections < 1
+    end
   end
 
   def refresh_connection
-    increment_connections unless connected?
-    touch :connected_at
+    with_lock do
+      increment_connections unless connected?
+      touch :connected_at
+    end
   end
 
   def increment_connections
