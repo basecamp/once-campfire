@@ -4,22 +4,22 @@ require File.expand_path("../../config/environment", File.dirname(__FILE__))
 class Backup
   class << self
     def create
-      dest = SQLite3::Database.new(backup_filename)
-      backup = SQLite3::Backup.new(dest, "main", Room.connection.raw_connection, "main")
-
-      backup.step(-1)
-      backup.finish
-      dest.close
+      snapshot SolidQueue::Record
+      snapshot ApplicationRecord
     end
 
     private
-      def backup_filename
-        Rails.root.join("storage", "backups").tap(&:mkpath).join(primary_database_filename)
+      def snapshot(model)
+        dest = SQLite3::Database.new(backup_filename(model))
+        backup = SQLite3::Backup.new(dest, "main", model.connection.raw_connection, "main")
+
+        backup.step(-1)
+        backup.finish
+        dest.close
       end
 
-      def primary_database_filename
-        path = Rails.application.config.database_configuration[Rails.env]["primary"]["database"]
-        File.basename(path)
+      def backup_filename(model)
+        Rails.root.join("storage", "backups").tap(&:mkpath).join(File.basename(model.connection_db_config.database))
       end
   end
 end

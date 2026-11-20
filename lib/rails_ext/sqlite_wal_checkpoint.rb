@@ -2,7 +2,7 @@
 # writer and fsyncs during the request. database.yml sets wal_autocheckpoint=0;
 # this module copies pages off the request thread with PASSIVE checkpoints.
 #
-# Every non-test process starts a contender. Callers that fork (Puma, Resque pool)
+# Every non-test process starts a contender. Callers that fork (Puma, Solid Queue)
 # must stop before fork and start again in the child so the flock is never shared
 # across an inherited file descriptor.
 module SqliteWalCheckpoint
