@@ -89,6 +89,26 @@ class FragmentRenderingTest < ActionDispatch::IntegrationTest
     assert_equal @room.messages.count, messages[:cache_hits]
   end
 
+  test "another viewer reuses content-validated message fragments and sees only their own page" do
+    ResponseCache.instance.stubs(:budget).returns(0)
+    get room_url(@room)
+    assert_response :success
+
+    jason = open_session do |session|
+      session.host! "once.campfire.test"
+      session.post session_url, params: { email_address: users(:jason).email_address, password: "secret123456" }
+    end
+    collections = []
+    ActiveSupport::Notifications.subscribed(->(event) { collections << event.payload }, "render_collection.action_view") do
+      jason.get room_url(@room)
+    end
+    assert_equal 200, jason.response.status
+    messages = collections.find { |payload| payload[:identifier].end_with?("messages/_message.html.erb") }
+    assert_equal messages[:count], messages[:cache_hits]
+    assert_includes jason.response.body, %(<meta name="current-user-id" content="#{users(:jason).id}")
+    assert_not_includes jason.response.body, %(<meta name="current-user-id" content="#{users(:david).id}")
+  end
+
   test "a foreign commit after capture bypasses old native fragment lookups" do
     ResponseCache.instance.stubs(:budget).returns(0)
     get room_messages_url(@room)
