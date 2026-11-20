@@ -8,6 +8,15 @@ module Message::Attachment
   # phone photos have 200 million.
   THUMBNAIL_MAX_PIXELS = 250_000_000
 
+  # Only a size the analyzer read counts. Without one, the analyzer couldn't read the file's header, and the previewer
+  # wouldn't either; before analysis, the size is whatever the uploader said.
+  def self.too_many_pixels_to_preview?(blob)
+    if blob.image? || blob.video?
+      width, height = blob.metadata.values_at(:width, :height)
+      !blob.analyzed? || width.nil? || height.nil? || width * height > THUMBNAIL_MAX_PIXELS
+    end
+  end
+
   included do
     has_one_attached :attachment do |attachable|
       attachable.variant :thumb, resize_to_limit: [ THUMBNAIL_MAX_WIDTH, THUMBNAIL_MAX_HEIGHT ]
@@ -37,7 +46,7 @@ module Message::Attachment
 
     # A file that ffmpeg or libvips can't decode is still the message: post it without a preview.
     def process_attachment_thumbnail
-      return if too_many_pixels_to_preview?
+      return if Message::Attachment.too_many_pixels_to_preview?(attachment)
 
       case
       when attachment.video?
@@ -47,13 +56,5 @@ module Message::Attachment
       end
     rescue ActiveStorage::PreviewError, Vips::Error => error
       Rails.logger.warn "Posted #{attachment.filename} without a preview: #{error.class}: #{error.message.lines.first&.chomp}"
-    end
-
-    # Without a size, the analyzer couldn't read the file's header, and the previewer wouldn't either.
-    def too_many_pixels_to_preview?
-      if attachment.image? || attachment.video?
-        width, height = attachment.metadata.values_at(:width, :height)
-        width.nil? || height.nil? || width * height > THUMBNAIL_MAX_PIXELS
-      end
     end
 end
