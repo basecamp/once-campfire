@@ -184,6 +184,18 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Deployed 🚀!", JSON.parse(response.body)["body"]["plain_text"]
   end
 
+  test "update without a body or attachment" do
+    message = post_bot_message "Deploying..."
+
+    patch room_bot_message_url(@room, users(:bender).bot_key, message)
+    assert_response :unprocessable_content
+
+    patch room_bot_message_url(@room, users(:bender).bot_key, message), params: +"   "
+    assert_response :unprocessable_content
+
+    assert_equal "Deploying...", message.reload.plain_text_body
+  end
+
   test "update can't touch a message the bot did not create" do
     message = messages(:fourth)
     original = message.plain_text_body
