@@ -15,6 +15,19 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "create with the key in an Authorization header instead of the path" do
+    assert_difference -> { Message.count }, +1 do
+      post room_bot_api_messages_url(@room), params: +"Hello from a header", headers: bearer_authorization
+    end
+    assert_response :created
+    assert_equal users(:bender), Message.last.creator
+  end
+
+  test "the path without a key needs one in the Authorization header" do
+    get room_bot_api_messages_url(@room)
+    assert_redirected_to new_session_url
+  end
+
   test "create with UTF-8 content" do
     assert_difference -> { Message.count }, +1 do
       post room_bot_messages_url(@room, users(:bender).bot_key), params: +"Hello 👋!"
@@ -112,6 +125,21 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)
     assert_equal [ messages(:fourth).id ], json.map { it["id"] }
     assert_nil response.headers["Link"]
+  end
+
+  test "index pages without the key when it came in a header" do
+    (Message::PAGE_SIZE - @room.messages.count + 1).times do |i|
+      @room.messages.create!(body: "Filler #{i}", creator: users(:jason), client_message_id: "filler-#{i}")
+    end
+
+    get room_bot_api_messages_url(@room), headers: bearer_authorization
+    assert_response :success
+
+    next_page = response.headers["Link"][/<(.*)>/, 1]
+    assert_not_includes next_page, users(:bender).bot_key
+
+    get next_page, headers: bearer_authorization
+    assert_equal [ messages(:fourth).id ], JSON.parse(response.body).map { it["id"] }
   end
 
   test "index pages newer messages with after" do
@@ -236,6 +264,10 @@ class Messages::ByBotsControllerTest < ActionDispatch::IntegrationTest
   end
 
   private
+    def bearer_authorization
+      { "Authorization" => "Bearer #{users(:bender).bot_key}" }
+    end
+
     def post_bot_message(body)
       post room_bot_messages_url(@room, users(:bender).bot_key), params: +body
       Message.last

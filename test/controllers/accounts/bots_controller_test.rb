@@ -8,6 +8,7 @@ class Accounts::BotsControllerTest < ActionDispatch::IntegrationTest
   test "index" do
     get account_bots_url
     assert_response :ok
+    assert_includes response.body, "Authorization: Bearer #{users(:bender).bot_key}"
   end
 
   test "create" do
