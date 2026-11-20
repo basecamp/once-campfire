@@ -7,6 +7,11 @@ ActiveSupport.on_load(:active_storage_blob) do
 end
 
 Rails.application.configure do
+  # A browser asks for a playing video piece by piece, and for every piece after the first it asks at the URL the
+  # first request was redirected to. When that URL has expired the video stops: after a pause, or whenever a response
+  # was cut short. So it lasts a day, the life of a page left open, instead of Rails' five minutes.
+  config.active_storage.service_urls_expire_in = 1.day
+
   # Rails' filter takes the second of the frames it selects (the first one, keyframes, scene changes), so a video
   # with a single keyframe and no scene change is decoded to its end. Selecting any frame from 5 seconds on stops
   # it there.
