@@ -7,6 +7,9 @@
 # Ignore bundler config.
 /.bundle
 
+# Ignore npm packages, which only the tests use.
+/node_modules/
+
 # Ignore all environment files.
 /.env*
 !/.env.example

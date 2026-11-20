@@ -1,6 +1,6 @@
-require "application_system_test_case"
+require "application_interaction_test_case"
 
-class SendingMessagesTest < ApplicationSystemTestCase
+class SendingMessagesTest < ApplicationInteractionTestCase
   setup do
     sign_in "jz@37signals.com"
     join_room rooms(:designers)

@@ -1,8 +1,9 @@
-require "application_system_test_case"
+require "application_interaction_test_case"
 require "socket"
 
-class UnfurlingLinksTest < ApplicationSystemTestCase
+class UnfurlingLinksTest < ApplicationInteractionTestCase
   setup do
+    WebMock.disable_net_connect!(allow_localhost: true)
     @website = Website.new
     @website.start
     RestrictedHTTP::PrivateNetworkGuard.stubs(:resolve).returns("127.0.0.1")
@@ -13,6 +14,7 @@ class UnfurlingLinksTest < ApplicationSystemTestCase
 
   teardown do
     @website.stop
+    WebMock.disable_net_connect!
   end
 
   test "a quote in the opengraph image URL cannot add attributes to the preview" do

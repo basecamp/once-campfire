@@ -1,6 +1,6 @@
-require "application_system_test_case"
+require "application_interaction_test_case"
 
-class BoostingMessagesTest < ApplicationSystemTestCase
+class BoostingMessagesTest < ApplicationInteractionTestCase
   setup do
     sign_in "kevin@37signals.com"
     join_room rooms(:designers)
@@ -22,7 +22,7 @@ class BoostingMessagesTest < ApplicationSystemTestCase
 
       within "#" + dom_id(boosts(:first)) do
         find("span", text: "Hello").click
-        assert_selector "button", text: "Delete this boost", wait: 5
+        assert_selector "button", text: "Delete this boost"
         click_on "Delete this boost"
       end
 
