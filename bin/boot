@@ -6,12 +6,19 @@ require "yaml"
 class ProcessMonitor
   SIGNALS = %w[ INT TERM CLD ]
 
+  # The other processes use these, so they stop only once the others have exited
+  SERVICES = %w[ redis ]
+
   def initialize(procfile)
     @procs = process_list(procfile)
+    @services, @apps = @procs.partition { |process| SERVICES.include?(process.name) }
     handle_signals
 
     @procs.each &:start
-    @procs.each &:wait
+    @apps.each &:wait
+
+    @services.each &:terminate
+    @services.each &:wait
   end
 
   private
@@ -22,20 +29,29 @@ class ProcessMonitor
 
     def handle_signals
       SIGNALS.each do |signal|
-        Signal.trap(signal) do
-          @procs.each &:terminate
-        end
+        Signal.trap(signal) { stop }
+      end
+    end
+
+    # Only once: a second TERM tells resque-pool to stop waiting for its workers
+    def stop
+      unless @stopping
+        @stopping = true
+        @apps.each &:terminate
       end
     end
 end
 
 class MonitoredProcess
+  attr_reader :name
+
   def initialize(name, cmd)
     @name, @cmd = name, cmd
   end
 
+  # In a process group of its own, so a Ctrl-C in a terminal reaches only bin/boot, which stops everything in order
   def start
-    @pid = Process.spawn(@cmd)
+    @pid = Process.spawn(@cmd, pgroup: true)
   end
 
   def wait

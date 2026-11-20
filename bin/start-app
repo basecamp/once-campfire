@@ -2,4 +2,4 @@
 
 rm -f tmp/pids/server.pid
 ./bin/rails db:prepare
-./bin/rails server
+exec ./bin/rails server
