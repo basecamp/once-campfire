@@ -12,7 +12,8 @@ ruby bench/compare_http.rb --baseline PATH --seed SEED --paths sidebar,search --
 
 Both drivers alternate before/after order and reset fixture storage for each run.
 Results default to ignored `tmp/rails-optimization/results/`; override with `--output PATH`.
-Use `--image` to override `campfire-reference:app`, and `--cpus` to override server CPUs
+Use `--image` to override `campfire-reference:app`, `--baseline-image` when the baseline needs
+another bundle, and `--cpus` to override server CPUs
 `8-11`. HTTP clients use CPUs `12-15` by default (`--client-cpus`). `--help` lists options.
 
 The rendering probe checks exact response bodies, selected headers and unread payloads,
