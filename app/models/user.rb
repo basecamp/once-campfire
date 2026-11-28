@@ -24,7 +24,7 @@ class User < ApplicationRecord
   after_update :sign_out_all_sessions, if: :saved_change_to_password_digest?
 
   scope :ordered, -> { order("LOWER(name)") }
-  scope :filtered_by, ->(query) { where("name like ?", "%#{query}%") }
+  scope :filtered_by, ->(query) { where("unicode_casefold(name) like unicode_casefold(?)", "%#{query}%") }
 
   def initials
     name.scan(/\b\w/).join
